@@ -65,3 +65,29 @@ test('animation retains native continuous transition and bar highlight dimension
   f.handler.placeBarCursor(f.cursor, f.first);
   assert.deepEqual(f.calls.at(-1), ['bounds', 0, 40, 300, 160]);
 });
+
+test('audio-clock cursor places the exact current tick and rejects delayed native animations',()=>{
+  const f=fixture();
+  // The real API lookup resolves the same geometry used for normal paused seeks.
+  const player={settings:{display:{scale:1,resources:{engravingSettings:{glyphWidths:new Map()}}}},
+    tracks:[{index:0}],tickCache:{findBeat:()=>({beat:'first',nextBeat:{beat:'second'},start:0,tickDuration:480,cursorMode:0})},
+    boundsLookup:{findBeat:beat=>beat==='first'?f.first:f.second}};
+  const alpha={model:{MusicFontSymbol:{}},midi:{MidiTickLookupFindBeatResultCursorMode:{ToNextBext:0}}};
+  const handler=create(alpha,player),barCalls=[];
+  handler.onAttach({beatCursor:f.cursor,barCursor:{setBounds:(...args)=>barCalls.push(args)}});
+  handler.sync(240);
+  assert.deepEqual(f.calls.at(-1),['bounds',143,40,1,160]);
+  assert.deepEqual(barCalls.at(-1),[0,40,300,160]);
+  const count=f.calls.length;
+  handler.placeBeatCursor(f.cursor,f.first,100);
+  handler.transitionBeatCursor(f.cursor,f.first,100,200,500,0);
+  assert.equal(f.calls.length,count,'stale nested AlphaTab callbacks cannot move the live cursor');
+  handler.sync(360);assert.equal(f.calls.at(-1)[1],167.5);
+  handler.release();handler.placeBeatCursor(f.cursor,f.first,100);
+  assert.equal(f.calls.at(-1)[1],94,'paused editing keeps native seeks');
+  handler.onDetach(); // Bundled 1.8.4 invokes this when installing the new handler.
+  handler.placeBarCursor({setBounds:(...args)=>barCalls.push(args)},f.first);
+  handler.placeBeatCursor(f.cursor,f.first,100);
+  handler.sync(240);
+  assert.equal(f.calls.at(-1)[1],143,'placement callbacks recover the actual cursor objects');
+});

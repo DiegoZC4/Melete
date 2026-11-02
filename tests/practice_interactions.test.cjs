@@ -30,17 +30,19 @@ test('restoring a collection position bypasses chapter magnets and validates the
 function mixFixture() {
   const c = vm.createContext({
     parts: ['S', 'A', 'T', 'B'].map(name => ({name})), practicePartIndex: 0,
+    pitchCaptureWorker: null,
+    sequence: {}, pitchTraceBaseKey: '', pitchTraceKey: '',
     activePracticeMix: null, practiceMixPartIndex: null, practiceMixUndo: null,
     audibleTracks: new Set([0, 2, 3]), trackVolumes: [85, 70, 110, 45],
     volumeControls: [], elements: {practicePart: {focus() {}}},
     VOLUME_VALUES: Array.from({length: 41}, (_, i) => i * 5),
     nearestAllowed: (value, values) => values.reduce((a, b) => Math.abs(a - value) <= Math.abs(b - value) ? a : b),
     clamp: (v, min, max) => Math.min(max, Math.max(min, v)),
-    updateMixerAppearance() {}, savePreferences() {}, showToast() {}, renderPitchTrace() {},
+    updateMixerAppearance() {}, savePreferences() {}, showToast() {}, renderPitchTrace() {}, renderTakePanel() {},
   });
   for (const name of ['practiceMixMatches', 'normalizePracticeMixUndo', 'cancelPracticeMixSession',
     'snapshotPracticeMix', 'restorePracticeMix', 'currentPracticeMix', 'applyPracticeMix', 'nextPartVolumeMix', 'cyclePartVolumeMix',
-    'setPracticePart', 'setTrackAudible']) vm.runInContext(source(name), c);
+    'roleTraceKey', 'assignPracticePart', 'setPracticePart', 'setTrackAudible']) vm.runInContext(source(name), c);
   return c;
 }
 
@@ -239,10 +241,10 @@ test('loop endpoints include their selected measure and preserve complete measur
   const element = () => ({classList: classes(), setAttribute() {}, dataset: {}, style: {}});
   let tick = 0, loop;
   const c = vm.createContext({
-    sequence: {measures: [[0, 960], [960, 1440], [2400, 960]], endTick: 3360},
+    sequence: {measures: [[0, 960], [960, 1440], [2400, 960]], endTick: 3360}, takePreviewId: null,
     loopStartMeasure: null, loopEndMeasure: null, loopStartTick: null, loopEndTick: null, scoreView: 'standard',
     engine: {tickAtSeconds: s => s, currentSeconds: () => tick, setLoop: (...values) => {loop = values;}},
-    elements: Object.fromEntries(['loopStart', 'loopEnd', 'loopClear', 'loopControls', 'loopBand'].map(k => [k, element()])),
+    elements: Object.fromEntries(['loopToggle', 'loopStart', 'loopEnd', 'loopClear', 'loopControls', 'loopBand'].map(k => [k, element()])),
     clamp: (v, min, max) => Math.min(max, Math.max(min, v)), savePreferences() {}, showToast() {},
   });
   for (const name of ['measureIndexAtTick', 'currentMeasureIndex', 'loopTickRange', 'updateLoopState', 'setLoopPoint', 'clearLoop']) {

@@ -45,7 +45,8 @@ const data = {
 };
 function engine(sequence = data) {
   const c = vm.createContext({config:{}, parts:sequence.parts, clamp:(v,lo,hi)=>Math.max(lo,Math.min(hi,v)),
-    window: {clearInterval() {}, setInterval() { return 1; }},
+    window: {clearInterval() {}, setInterval() { return 1; }, MeleteRecording: require('../template/loop_recorder.js')},
+    requestAnimationFrame: () => 1, cancelAnimationFrame() {}, performance: {now: () => 1000},
     SCHEDULER_INTERVAL_MS:40, SCHEDULER_LEAD_SECONDS:.028, SCHEDULER_HORIZON_SECONDS:.34,
     showToast: message => assert.fail(message)});
   vm.runInContext(guide + '\nglobalThis.Engine = GuideEngine;', c);
@@ -183,6 +184,119 @@ test('canceling cold startup cannot start playback after audio finally wakes', a
   assert.equal(starts, 0);
   assert.equal(e.playing, false);
   assert.equal(e.scheduled.size, 0);
+});
+
+test('a first recording entrance can precede or follow the loop start; repeats return to the downbeat', async () => {
+  for (const entry of [.5, 1.5]) {
+    const e = engine();
+    e.loopStartSeconds = 1; e.loopEndSeconds = 3;
+    e.basePosition = entry;
+    let playback;
+    const transitions = [];
+    e.onTransportChange = kind => transitions.push([kind, e.basePosition]);
+    e.api = {play() { playback = e.play(); }, pause() {}};
+    await e.startTransport({allowLoopLeadIn: entry < 1});
+    await playback;
+    assert.equal(e.basePosition, entry);
+    assert.equal(e.allowLoopLeadIn, false, 'lead-in is one-shot, never a permanent playback mode');
+    e.context.currentTime += 1;
+    e.update();
+    e.context.currentTime += 3 - entry;
+    e.update();
+    assert.equal(e.basePosition, 1);
+    assert.deepEqual(transitions, [['play', entry], ['loop', 1]]);
+    assert.equal(e.loopStartSeconds, 1);
+    assert.equal(e.loopEndSeconds, 3);
+    e.pauseTransport();
+    e.seek(.5);
+    await e.startTransport(); await playback;
+    assert.equal(e.basePosition, 1, 'ordinary playback still starts inside the loop');
+    e.pauseTransport();
+  }
+});
+
+test('canceling a pending pickup start cannot leak the lead-in exception into later playback', async () => {
+  const e = engine();
+  e.loopStartSeconds = 1; e.loopEndSeconds = 3; e.basePosition = .5;
+  let wake, playback, starts = 0;
+  e.context.state = 'suspended';
+  e.context.resume = async () => { await new Promise(resolve => { wake = resolve; }); e.context.state = 'running'; };
+  e.api = {play() { starts++; playback = e.play(); }, pause() {}};
+  const starting = e.startTransport({allowLoopLeadIn: true});
+  e.pauseTransport(); wake(); await starting;
+  assert.equal(starts, 0);
+  assert.equal(e.allowLoopLeadIn, false);
+  await e.startTransport(); await playback;
+  assert.equal(e.basePosition, 1);
+  e.pauseTransport();
+});
+
+test('recording lead-in carries held harmony and runs continuously into the entrance', async () => {
+  const e = engine({...data, legato: []});
+  e.loopStartSeconds = 1; e.loopEndSeconds = 3;
+  let playback;
+  e.api = {play() { playback = e.play(); }, pause() {}};
+  await e.startTransport({allowLoopLeadIn: true, recordingLeadIn: .5}); await playback;
+  assert.equal(e.basePosition, .5);
+  assert.equal(e.scheduled.size, 1, 'the note already held at the count-in start must sound');
+  const anchor = e.anchorTime;
+  e.context.currentTime += .5; e.update();
+  assert.equal(e.currentSeconds(), 1);
+  assert.equal(e.anchorTime, anchor, 'no transport restart at the entry');
+  assert.equal(e.recordingLeadIn, null);
+  e.pauseTransport();
+});
+
+test('explicit recording starts preserve fractional positions before, inside, and after a loop', async () => {
+  for (const position of [.37,1.25,3.25]) {
+    const e=engine();
+    e.loopStartSeconds=1;e.loopEndSeconds=3;
+    let playback;
+    const transitions=[];
+    e.onTransportChange=kind=>transitions.push(kind);
+    e.api={play(){playback=e.play();},pause(){}};
+    await e.startTransport({allowLoopLeadIn:true,recordingLeadIn:position});await playback;
+    assert.equal(e.basePosition,position);
+    assert.equal(e.loopArmed,position>=1&&position<3);
+    if(position>3){
+      assert.equal(e.scheduled.size,1,'the accompaniment after the loop remains audible');
+      near([...e.scheduled][0].oscillator.stops[0],e.context.currentTime+4-position+.01);
+      e.context.currentTime+=.55;e.update();
+      assert.equal(e.nextNoteIndex,e.notes.length,'the final written note is scheduled');
+      assert.deepEqual(transitions,['play'],'a post-loop recording never wraps backward');
+    } else if(position<1) {
+      assert.equal(e.playbackEndSeconds(),3,'manual preparation still obeys the upcoming loop end');
+    } else {
+      e.context.currentTime+=.2;e.update();
+      assert.ok(Math.abs(e.currentSeconds()-(position+.2))<1e-9);
+    }
+    e.pauseTransport();
+  }
+});
+
+test('a selected take uses song end after the loop, not a stale loop cutoff', () => {
+  const e=engine();
+  e.loopStartSeconds=1;e.loopEndSeconds=3;e.basePosition=3.25;e.loopArmed=false;
+  e.takeReview={start:0,end:4,rate:1,latency:0,buffer:{duration:4}};
+  const window=e.takeReviewWindow();
+  assert.ok(window && window.from===3.25 && window.until===4);
+});
+
+test('counting before score zero cannot play the opening notes early', async () => {
+  const e = engine();
+  e.loopStartSeconds = 0; e.loopEndSeconds = 3;
+  let playback;
+  e.api = {play() { playback = e.play(); }, pause() {}};
+  await e.startTransport({allowLoopLeadIn: true, recordingLeadIn: -2}); await playback;
+  assert.equal(e.currentSeconds(), -2);
+  assert.equal(e.presentationSeconds(), -2);
+  assert.equal(e.scheduled.size, 0);
+  e.context.currentTime += 1.8; e.update();
+  const starts = [...e.scheduled].map(voice => voice.oscillator.starts[0]);
+  assert.deepEqual(starts, [12], 'opening note is scheduled exactly two seconds after preparation begins');
+  e.context.currentTime = 12; e.update();
+  assert.equal(e.currentSeconds(), 0);
+  e.pauseTransport();
 });
 
 test('every generic onset survives seek rounding at multiple rates, paused or running', async () => {

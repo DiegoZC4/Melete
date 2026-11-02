@@ -14,9 +14,9 @@
       <direction><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>126.000126000126</per-minute></metronome></direction-type><sound tempo="126.000126000126"/></direction>
       <harmony><root><root-step>C</root-step></root><kind>major</kind></harmony>
       <direction placement="below"><direction-type><dynamics><mf/></dynamics></direction-type></direction>
-      <note><pitch><step>C</step><octave>5</octave></pitch><duration>2</duration><type>eighth</type><notations><slur type="start" number="1"/></notations><lyric><text>oh</text></lyric></note>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>2</duration><type>eighth</type><accidental parentheses="yes">natural</accidental><notations><slur type="start" number="1"/></notations><lyric><text>oh</text></lyric></note>
       <note><pitch><step>D</step><octave>5</octave></pitch><duration>2</duration><type>eighth</type><notations><slur type="stop" number="1"/></notations></note>
-      <note><pitch><step>E</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type><lyric><syllabic>begin</syllabic><text>to</text></lyric></note>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type><accidental cautionary="yes">natural</accidental><lyric><syllabic>begin</syllabic><text>to</text></lyric></note>
       <note><pitch><step>F</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type><lyric><syllabic>end</syllabic><text>gether</text></lyric></note>
       <note><rest/><duration>4</duration><type>quarter</type></note>
     </measure>
@@ -24,7 +24,7 @@
       <direction placement="above" system="only-top"><direction-type><rehearsal>Verse</rehearsal></direction-type></direction>
       <direction><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>83.99998320000336</per-minute></metronome></direction-type><sound tempo="83.99998320000336"/></direction>
       <harmony><root><root-step>F</root-step></root><kind>major</kind></harmony>
-      <note><pitch><step>E</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type><lyric><text>sing</text></lyric></note>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type><accidental bracket="yes">natural</accidental><lyric><text>sing</text></lyric></note>
       <direction placement="above" system="only-top"><direction-type><words>rit.</words></direction-type></direction>
       <note><pitch><step>D</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type><lyric><text>with</text></lyric></note>
       <note><pitch><step>C</step><octave>5</octave></pitch><duration>8</duration><type>half</type><lyric><text>me</text></lyric></note>
@@ -44,7 +44,7 @@
     <measure number="1">
       <attributes><divisions>4</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
       <direction placement="above"><direction-type><words>breathe</words></direction-type></direction>
-      <note><pitch><step>G</step><octave>4</octave></pitch><duration>16</duration><type>whole</type><lyric><text>oh</text></lyric></note>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>16</duration><type>whole</type><accidental editorial="yes" parentheses="yes">natural</accidental><lyric><text>oh</text></lyric></note>
     </measure>
     <measure number="2"><note><pitch><step>A</step><octave>4</octave></pitch><duration>16</duration><type>whole</type><lyric><text>oh</text></lyric></note></measure>
     <measure number="3"><note><pitch><step>G</step><octave>4</octave></pitch><duration>16</duration><type>whole</type><lyric><text>oh</text></lyric></note></measure>

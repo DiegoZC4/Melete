@@ -6,83 +6,128 @@ const vm = require('node:vm');
 const app = fs.readFileSync(path.join(__dirname, '../template/app.js'), 'utf8');
 function source(name) {
   const start = app.search(new RegExp(`  (?:async )?function ${name}\\(`));
-  assert.ok(start >= 0);
+  assert.ok(start >= 0, name);
   return app.slice(start, app.indexOf('\n  }', start) + 4);
 }
-
 function fixture() {
   let requests = 0, resolveRequest;
-  const calls = [];
-  const track = {enabled: false, readyState: 'live', addEventListener() {}};
+  const constraints = [], notices = [], stops = [], listeners = new Map(), stored = new Map();
+  const track = {enabled: false, readyState: 'live', label: 'Test USB mic',
+    addEventListener(name, handler) { listeners.set(name, handler); }, stop() { this.readyState = 'ended'; }};
   const stream = {getAudioTracks: () => [track]};
-  const audio = {state: 'suspended', addEventListener() {}, resume: async function() { this.state = 'running'; },
-    suspend: async function() { this.state = 'suspended'; },
-    createAnalyser: () => ({}), createMediaStreamSource: () => ({
-      connect(target) { calls.push(['connect', target]); }, disconnect(target) { calls.push(['disconnect', target]); },
-    })};
-  const output = {state: 'suspended', addEventListener() {}, resume: async function() { this.state = 'running'; }};
+  const audio = {state: 'suspended', addEventListener() {},
+    async resume() { this.state = 'running'; }, async suspend() { this.state = 'suspended'; },
+    createAnalyser: () => ({}), createMediaStreamSource: () => ({connect() {}, disconnect() {}})};
   const c = vm.createContext({
-    pitchCaptureState: 'off', takeState: 'off', microphoneRequest: null,
+    conductorMode: false, pitchCaptureState: 'off', takeState: 'off', microphoneRequest: null,
+    wantsPitchCapture: false, pitchCapturePageActive: true, pitchCaptureNotice: '',
+    microphoneDeviceId: '', microphoneStreamDeviceId: '', microphoneCheck: null,
     pitchCaptureContext: null, pitchCaptureStream: null, pitchCaptureSource: null,
-    pitchCaptureAnalyser: null, pitchCaptureDetector: null, pitchCaptureBuffer: null,
-    pitchCaptureRequestGeneration: 0, playing: false,
+    pitchCaptureAnalyser: null, pitchCaptureWorker: null, pitchCaptureBuffer: null, playing: false,
     PITCH_CAPTURE_BUFFER_SIZE: 4096, Float32Array, console,
-    navigator: {mediaDevices: {getUserMedia() { requests++; return new Promise(resolve => { resolveRequest = resolve; }); }}},
-    engine: {playbackIsolated: false, context: output, ensureAudio() {}},
-    window: {AudioContext: function() { return audio; }, Pitchy: {PitchDetector: {forFloat32Array: () => ({})}}},
-    pitchCaptureSupported: () => true, savePreferences() {}, updatePitchCaptureAppearance() {}, showToast() {},
-    stopPitchSampling() {}, startPitchSampling() {}, beginPitchCapturePass() {},
+    navigator: {mediaDevices: {getUserMedia(options) {
+      requests++; constraints.push(options); return new Promise(resolve => { resolveRequest = resolve; });
+    }}}, document: {hidden: false}, localStorage: {getItem: key => stored.get(key) || null},
+    elements: {takeMicrophone: {}},
+    engine: {playing: false, context: {async resume() {}, addEventListener() {}}, ensureAudio() {}},
+    window: {AudioContext: function() { return audio; }},
+    savePreferences() { stored.set('sing', c.wantsPitchCapture); }, updatePitchCaptureAppearance() {},
+    showToast(message) { notices.push(message); }, stopPitchSampling() {},
+    startTakeRecording() { stops.push('start'); c.takeState = 'requesting'; return Promise.resolve(); },
+    stopTakeRecording(message) { stops.push(message); c.takeState = 'off'; return Promise.resolve(); },
   });
-  for (const name of ['syncMicrophoneActivity', 'ensureMicrophoneInput', 'disablePitchCapture',
-    'activateCachedPitchCapture', 'startPitchCapture']) vm.runInContext(source(name), c);
-  return {c, track, audio, calls, requests: () => requests, permit: () => resolveRequest(stream)};
+  for (const name of ['readMicrophoneChoice', 'refreshMicrophoneChoices', 'releaseMicrophoneInput',
+    'microphoneFailureMessage', 'syncMicrophoneActivity', 'ensureMicrophoneInput', 'disablePitchCapture',
+    'restorePitchCapture', 'togglePitchCapture']) vm.runInContext(source(name), c);
+  return {c, track, audio, constraints, notices, stops, stored, listeners,
+    requests: () => requests, permit: (input = stream) => resolveRequest(input)};
 }
+const tick = () => new Promise(resolve => setImmediate(resolve));
 
-test('simultaneous Sing and recorder requests share one microphone permission and stream', async () => {
-  const f = fixture();
+test('Sing remembers intent while paused without listening or requiring Google login', () => {
+  const f = fixture(); f.c.togglePitchCapture();
+  assert.equal(f.stored.get('sing'), true); assert.equal(f.requests(), 0);
+  assert.equal(f.c.takeState, 'off'); f.c.restorePitchCapture();
+  assert.equal(f.requests(), 0, 'reload does not acquire input or start recording');
+  f.c.togglePitchCapture(); assert.equal(f.stored.get('sing'), false);
+});
+test('enabling Sing during playback starts the recorder; disabling finalizes and releases input', async () => {
+  const f = fixture(); f.c.engine.playing = true; f.c.togglePitchCapture();
+  assert.deepEqual(f.stops, ['start']);
+  const pending = f.c.ensureMicrophoneInput(); await tick(); f.permit(); await pending;
+  assert.equal(f.track.enabled, true);
+  f.c.pitchCaptureState = 'recording'; f.c.takeState = 'recording'; f.c.togglePitchCapture();
+  assert.equal(f.stops.length, 2); assert.equal(f.track.readyState, 'ended');
+  assert.equal(f.stored.get('sing'), false);
+});
+test('mic check and capture share one raw selected input request', async () => {
+  const f = fixture(); f.stored.set('choir-practice:microphone:v1', 'chosen-device');
   f.c.takeState = 'requesting';
-  const recorder = f.c.ensureMicrophoneInput();
-  const sing = f.c.startPitchCapture();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(f.requests(), 1);
-  f.permit();
-  await recorder; await sing;
-  assert.notEqual(f.c.pitchCaptureContext, f.c.engine.context, 'input stays outside the synthesis graph');
-  assert.equal(f.c.pitchCaptureState, 'armed');
-  assert.equal(f.track.enabled, true);
-  f.c.takeState = 'recording';
-  f.c.disablePitchCapture(false);
-  assert.equal(f.track.enabled, true);
-  assert.equal(f.calls.at(-1)[1], f.c.pitchCaptureAnalyser, 'only the pitch branch disconnects');
-  f.c.takeState = 'off';
-  f.c.syncMicrophoneActivity();
-  assert.equal(f.track.enabled, false);
-  await f.c.startPitchCapture();
-  assert.equal(f.requests(), 1, 'cached input does not prompt again');
-  assert.equal(f.track.enabled, true);
+  const a = f.c.ensureMicrophoneInput(), b = f.c.ensureMicrophoneInput();
+  await tick(); assert.equal(f.requests(), 1); f.permit(); await a; await b;
+  assert.equal(f.constraints[0].audio.deviceId.exact, 'chosen-device');
+  for (const key of ['echoCancellation','noiseSuppression','autoGainControl']) assert.equal(f.constraints[0].audio[key].ideal, false);
+  assert.notEqual(f.c.pitchCaptureContext, f.c.engine.context); assert.equal(f.track.enabled, true);
 });
-
-test('canceling a pending permission request cannot activate input after the late grant', async () => {
-  const f = fixture();
-  const pending = f.c.startPitchCapture();
-  await new Promise(resolve => setImmediate(resolve));
-  f.c.disablePitchCapture(false);
-  f.permit();
-  await pending;
-  assert.equal(f.c.pitchCaptureState, 'off');
-  assert.equal(f.track.enabled, false);
-  assert.equal(f.calls.filter(([kind]) => kind === 'connect').length, 0);
+test('Sing re-enabled during a save resumes capture only if still wanted and playing', async () => {
+  for (const cancel of [false, true]) {
+    const f = fixture(); let finish;
+    f.c.engine.playing = true; f.c.takeState = 'stopping';
+    f.c.takeStopPromise = new Promise(resolve => { finish = resolve; });
+    f.c.togglePitchCapture();
+    assert.deepEqual(f.stops, [], 'wait for the previous segment to finish saving');
+    if (cancel) f.c.togglePitchCapture();
+    f.c.takeState = 'off'; finish(); await tick();
+    assert.deepEqual(f.stops, cancel ? [] : ['start']);
+  }
 });
-
-test('releasing the recorder does not suspend the separate microphone context used by Sing', async () => {
-  const f = fixture();
-  await f.audio.resume();
-  f.c.pitchCaptureContext = f.audio;
-  f.c.engine.context = {};
-  f.c.pitchCaptureState = 'armed';
-  f.c.takeState = 'off';
-  f.c.syncMicrophoneActivity();
-  assert.equal(f.audio.state, 'running');
-  f.c.disablePitchCapture(false);
-  assert.equal(f.audio.state, 'suspended');
+test('late input after cancellation is released rather than silently listening', async () => {
+  const f = fixture(); f.c.takeState = 'requesting';
+  const pending = f.c.ensureMicrophoneInput(); await tick();
+  f.c.disablePitchCapture(false); f.permit(); await pending;
+  assert.equal(f.c.pitchCaptureStream, null); assert.equal(f.track.readyState, 'ended');
+});
+test('closing a mic check cannot stop the active combined capture', async () => {
+  const f = fixture(); f.c.microphoneCheck = {active: true, syncSelector() {}};
+  const pending = f.c.ensureMicrophoneInput(); await tick(); f.permit(); await pending;
+  f.c.microphoneCheck.active = false; f.c.takeState = 'recording'; f.c.syncMicrophoneActivity();
+  assert.equal(f.track.enabled, true); assert.equal(f.track.readyState, 'live');
+  f.c.takeState = 'off'; f.c.syncMicrophoneActivity();
+  assert.equal(f.track.readyState, 'ended'); assert.equal(f.audio.state, 'suspended');
+});
+test('device disconnection names the input, stops capture and preserves opt-in', async () => {
+  const f = fixture(); f.c.wantsPitchCapture = true; f.c.takeState = 'requesting';
+  const pending = f.c.ensureMicrophoneInput(); await tick(); f.permit(); await pending;
+  f.c.takeState = 'recording'; f.c.pitchCaptureState = 'recording'; f.listeners.get('ended')();
+  assert.match(f.notices.at(-1), /Test USB mic/);
+  assert.equal(f.c.pitchCaptureStream, null); assert.equal(f.c.takeState, 'off');
+  assert.equal(f.stored.get('sing'), true);
+});
+test('input errors distinguish permissions, missing hardware and missing audio', () => {
+  const {c} = fixture();
+  assert.match(c.microphoneFailureMessage({name:'NotAllowedError'}), /Allow access in browser settings/);
+  assert.match(c.microphoneFailureMessage({name:'NotFoundError'}), /Choose another input/);
+  assert.match(c.microphoneFailureMessage({message:'No microphone samples arrived'}), /No microphone audio/);
+});
+test('manual segment stop clips the immutable reference and shuts down tracing', async () => {
+  for (const ref of [null,{seconds:10,start:42,end:50,captureStart:40,leadInSeconds:2,
+    notes:[[2,4,[60]],[4,6,[62]]],chapters:[{measure:2,seconds:2},{measure:3,seconds:4}]}]) {
+    let metadata, stopped = false;
+    const before = JSON.stringify(ref);
+    const c = vm.createContext({takeState:'recording',takeStopPromise:null,takeRequestGeneration:0,
+      takeCountIn:null,takeCountHideTimer:0,takeRefreshTimer:0,takeNotice:'',
+      pitchCaptureContext:{currentTime:3.2,sampleRate:100},
+      takeCapture:{async stop(){}},takeJournal:{async flush(){},finish(frame,{segment}){
+        metadata=segment({start:40,end:50,rate:1,label:'2-5',pitchReference:ref},frame/100);
+      }}, window:{clearTimeout(){},clearInterval(){},MeleteTakePitch:require('../template/take_pitch.js')},elements:{takeCountIn:{}},
+      engine:{secondsAtTick:t=>t,tickAtSeconds:s=>s,pauseTransport(){}},
+      scoreLocationAtTick:String,renderTakePanel(){},scoreNextTake(){},stopPitchSampling(){},
+      disablePitchCapture(announce, options) { stopped = options.preservePreference; },
+    });
+    vm.runInContext(source('stopTakeRecording'),c); await c.stopTakeRecording('Stopped',true);
+    assert.equal(c.takeState,'off'); assert.equal(stopped,true);
+    assert.equal(metadata.end,43.2); assert.equal(JSON.stringify(ref),before);
+    if(ref) assert.deepEqual(JSON.parse(JSON.stringify(metadata.pitchReference.notes)),[[2,3.2,[60]]]);
+    else assert.equal(metadata.pitchReference,null);
+  }
 });

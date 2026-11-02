@@ -1,0 +1,7 @@
+{
+  "practiceRoutes": [{
+    "part": 1,
+    "soloist": {"name": "S2 soloist", "short": "S2 solo"},
+    "handoffs": [{"sourcePart": 0, "start": "1.4.5", "end": "3.2"}]
+  }]
+}

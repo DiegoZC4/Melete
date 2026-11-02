@@ -32,14 +32,14 @@ test('follow geometry uses the sounding measure even while the DOM cursor is sti
   const boxes = [{x:10,y:100,w:200,h:300},{x:10,y:600,w:200,h:300}];
   const c = vm.createContext({clamp, pendingNotationReload:null,scoreView:'standard',sequence:{endTick:800},
     engine:{currentSeconds:()=>500,tickAtSeconds:t=>t},measureIndexAtTick:t=>t<400?0:1,
-    masterBarLayoutBox:i=>boxes[i],
+    notationFollowBox:i=>boxes[i],
     elements:{score:{classList:{contains:()=>false},getBoundingClientRect:()=>({left:20,top:-50}),scrollLeft:0,scrollTop:0}}});
   vm.runInContext(source('playbackCursorBounds'),c);
   assert.deepEqual(plain(c.playbackCursorBounds()),{left:30,top:550,right:230,bottom:850,width:200,height:300});
 });
 
 test('paused position changes cannot start a follow-scroll', () => {
-  const c=vm.createContext({engine:{playing:false},pendingNotationReload:null,scoreScrub:null});
+  const c=vm.createContext({conductor:null,engine:{playing:false},pendingNotationReload:null,scoreScrub:null});
   vm.runInContext(source('gentleFollowCursor'),c);
   assert.doesNotThrow(()=>c.gentleFollowCursor(),'must exit before touching the page or stale cursor');
 });

@@ -70,16 +70,17 @@ async function checkLoopLinks(page, origin, settled, {mobile, output}) {
   await page.reload(); await settled();
   await assertLoop(page, start, end);
   await page.evaluate(() => { location.hash = 'loop=2.2.75-3.1.5'; });
-  await page.waitForFunction(() => document.getElementById('loopStart').textContent === '2.2.75');
-  const exactStart = start + seq.division * 1.75, exactEnd = end + seq.division * .5;
-  await assertLoop(page, exactStart, exactEnd);
+  await page.waitForFunction(() => document.getElementById('loopEnd').textContent === '3');
+  const expandedEnd = seq.measures[2][0] + seq.measures[2][1];
+  await assertLoop(page, start, expandedEnd);
+  await checkLoopPlayback(page);
   await page.reload(); await settled();
-  await assertLoop(page, exactStart, exactEnd);
+  await assertLoop(page, start, expandedEnd);
   await page.evaluate(() => { location.hash = 'loop=3-1'; });
   await page.waitForFunction(() => document.getElementById('toastMessage').textContent.includes('loop is unchanged'));
-  await assertLoop(page, exactStart, exactEnd);
+  await assertLoop(page, start, expandedEnd);
 
-  // Exact boundaries must agree with repeat glyphs, not just audio scheduling.
+  // Whole-bar boundaries must agree with repeat glyphs, not just audio scheduling.
   await page.evaluate(() => {
     const state = __qa.pitchbar.captureSettingsState();
     state.scoreView = 'bars'; state.flow = 'wrap'; state.horizontal = 100;
@@ -93,13 +94,13 @@ async function checkLoopLinks(page, origin, settled, {mobile, output}) {
       const left = Number(rect.getAttribute('x')), width = Number(rect.getAttribute('width'));
       return Math.min(Math.abs(left - (x(start) + 1)), Math.abs(left + width - (x(end) - 1)));
     });
-  }), {start:exactStart, end:exactEnd});
+  }), {start, end:expandedEnd});
   assert.equal(offsets.length,2);
   assert.ok(offsets.every(v => v < .001), JSON.stringify(offsets));
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
   await page.evaluate(() => window.scrollTo({top:0,behavior:'instant'}));
   const fit = await page.locator('.loop-point').evaluateAll(nodes => nodes.every(node => node.scrollWidth <= node.clientWidth));
-  assert.equal(fit,true,'fractional labels fit the existing desktop/phone grid');
+  assert.equal(fit,true,'whole-measure labels fit the existing desktop/phone grid');
   await page.screenshot({path:path.join(output, `loop-link-${mobile ? 'mobile' : 'desktop'}.png`)});
   await holdClearLoop(page,page,mobile);
   assert.equal((await loopState(page)).end,null);
@@ -108,7 +109,7 @@ async function checkLoopLinks(page, origin, settled, {mobile, output}) {
   await page.evaluate(() => { location.hash = 'loop=2-4'; });
   await page.waitForFunction(() => document.getElementById('loopEnd').textContent === '3');
   await assertLoop(page, start, seq.measures[3][0]);
-  return {wholeMeasures:true, exactBeats:true, realPlaybackWrap:true, saved:true, invalid:true,
+  return {wholeMeasures:true, fractionalLinksExpandToMeasures:true, realPlaybackWrap:true, saved:true, invalid:true,
     mixPreserved:true, holdClear:true, repeatGeometry:offsets, labelsFit:fit};
 }
 

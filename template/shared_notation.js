@@ -236,7 +236,8 @@ function prepareSharedNotation() {
       });
       // Multiple lyric verses stay local rather than silently losing a verse.
       if (texts.length === 1) lyrics.push({ part, bar: bar.index, tick,
-        end: sharedNotationTools.lyricEnd(beat), text: texts[0], beat });
+        end: sharedNotationTools.lyricEnd(beat), text: texts[0],
+        verse: beat.lyrics.findIndex(text => text?.trim()), beat });
       if (staffDynamicChangesAt(beat)) dynamics.push({ part, bar: bar.index, tick,
         value: typeof writtenDynamicForBeat === "function" ? writtenDynamicForBeat(beat) : beat.dynamics, beat });
     }));
@@ -339,6 +340,7 @@ function installSharedNotation() {
   const factories = window.alphaTab.Environment.defaultRenderers;
   const lyricEffect = factories.flatMap((factory) => factory.effectBands)
     .find((band) => band.effect.notationElement === window.alphaTab.NotationElement.EffectLyrics).effect;
+  installSelectiveLyrics(lyricEffect);
   const originalLyricPredicate = lyricEffect.shouldCreateGlyph.bind(lyricEffect);
   lyricEffect.shouldCreateGlyph = (settings, beat) => originalLyricPredicate(settings, beat)
     && !sharedNotationPlan?.hidden.has(beat);
@@ -414,12 +416,14 @@ function scheduleSharedNotation() {
 
 function renderSharedNotation() {
   elements.score.querySelectorAll(":scope > .shared-notation-layer").forEach((layer) => layer.remove());
+  decorateStandardLyrics();
   if (!sharedNotationPlan || !sharedNotationActive()) return;
   const lookup = api?.boundsLookup || api?.renderer?.boundsLookup;
   if (!lookup) return;
   const scale = api.settings.display.scale;
   const origin = elements.score.getBoundingClientRect();
   const svg = createSvgElement("svg", { class: "shared-notation-layer", "aria-label": "Shared melody and accompaniment lyrics" });
+  const lyricGroups = [];
   const dimensions = { width: elements.score.scrollWidth, height: elements.score.scrollHeight };
   svg.setAttribute("width", dimensions.width);
   svg.setAttribute("height", dimensions.height);
@@ -477,7 +481,12 @@ function renderSharedNotation() {
         if (marks.length || owners !== previousOwners || system !== previousSystem) {
           ownerLabel(marks);
         }
-        text(event.text, y + 24 * scale, LYRIC_FONT_SIZE, "shared-syllable");
+        const syllable = text(event.text, y + 24 * scale, LYRIC_FONT_SIZE, "shared-syllable");
+        const lyricGroup = createSvgElement("g");
+        syllable.replaceWith(lyricGroup);
+        lyricGroup.append(syllable);
+        const words = event.members.map(member => lyricWordAt(member.part, member.tick, member.verse)).filter(Boolean);
+        lyricGroups.push({ group: lyricGroup, words });
         previousOwners = owners;
         previousSystem = system;
       }
@@ -485,4 +494,6 @@ function renderSharedNotation() {
     }
   }
   elements.score.appendChild(svg);
+  lyricGroups.forEach(({ group, words }) => decorateLyric(group, words));
+  updateHiddenLyrics();
 }

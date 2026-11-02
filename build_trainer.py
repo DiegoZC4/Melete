@@ -28,6 +28,8 @@ import zipfile
 from pathlib import Path
 from typing import Any, Iterable
 
+from practice_routes import materialize as materialize_practice_routes
+
 
 BUILDER_VERSION = "1"
 PROJECT_MARKER_NAME = ".choir-practice-builder-project.json"
@@ -141,6 +143,22 @@ def read_required(path: Path, *, binary: bool = False) -> str | bytes:
         raise BuildError(f"Could not read {path}: {exc}") from exc
     except UnicodeDecodeError as exc:
         raise BuildError(f"Expected UTF-8 text in {path}: {exc}") from exc
+
+
+def conductor_assets(config: dict[str, Any]) -> tuple[str, str]:
+    if not config.get("conductorScore"):
+        return "", ""
+    filenames = ("rhythm_timing.js", "onset_worklet.js", "conductor.js", "conductor.css")
+    if any(not (TEMPLATE_DIR / name).is_file() for name in filenames):
+        raise BuildError(
+            "This distribution contains the standalone singer player, not the "
+            "optional conductor extension. Remove conductorScore from the config."
+        )
+    script = (read_required(TEMPLATE_DIR / "rhythm_timing.js") + "\n"
+              + "window.MeleteOnsetSource = "
+              + json.dumps(read_required(TEMPLATE_DIR / "onset_worklet.js")) + ";\n"
+              + read_required(TEMPLATE_DIR / "conductor.js") + "\n")
+    return script, read_required(TEMPLATE_DIR / "conductor.css")
 
 
 def atomic_write(path: Path, data: str | bytes) -> None:
@@ -811,6 +829,19 @@ def load_config(path: Path | None) -> dict[str, Any]:
         raise BuildError(f"Could not read config JSON {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise BuildError("The config file must contain one JSON object.")
+    reference = value.get('referenceAudio')
+    if reference is not None:
+        if not isinstance(reference, dict):
+            raise BuildError('referenceAudio must be an object')
+        if reference.get('path'):
+            audio = (path.parent / reference['path']).resolve()
+            metadata = read_json_object(audio.with_suffix('.json'), 'reference alignment')
+            if audio.stat().st_size > 25 * 1024 * 1024:
+                raise BuildError('Embedded reference recording exceeds 25 MiB')
+            if audio.suffix.lower() != '.mp3':
+                raise BuildError('Use an MP3 for the embedded reference recording')
+            value['referenceAudio'] = {**metadata, 'label': reference.get('label', 'Aligned reference recording'),
+                'mime':'audio/mpeg', 'data':base64.b64encode(audio.read_bytes()).decode('ascii')}
     return value
 
 
@@ -1254,7 +1285,8 @@ def install_system_annotations(app: str) -> str:
 def install_compact_lyrics(app: str, template: str, styles: str) -> tuple[str, str, str]:
     """One display preference for shared annotations and syllable changes."""
     app = replace_once(app, "  function createSvgElement(name, attributes = {}) {",
-                       (TEMPLATE_DIR / "shared_notation.js").read_text()
+                       (TEMPLATE_DIR / "selective_lyrics.js").read_text() + "\n"
+                       + (TEMPLATE_DIR / "shared_notation.js").read_text()
                        + "\n  function createSvgElement(name, attributes = {}) {")
     for old, new in [
         ('      lyrics: defaults.lyrics === "changes" ? "changes" : "full",',
@@ -1291,7 +1323,7 @@ def install_compact_lyrics(app: str, template: str, styles: str) -> tuple[str, s
       .display-annotation-row { min-width: 0; }
       #annotationLayout { width: 100%; grid-column: 1 / -1; justify-self: stretch; }
       .shared-anchor { opacity: 0; pointer-events: none; }
-      .shared-notation-layer { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+      .shared-notation-layer { position: absolute; inset: 0; z-index: 6; pointer-events: none; overflow: visible; }
       .shared-notation-layer text { fill: var(--ink); font-family: Georgia, serif; }
       .shared-notation-layer .shared-syllable { font-style: italic; }
       .shared-notation-layer .shared-owners { font-family: system-ui, sans-serif; font-weight: 700; }
@@ -1605,6 +1637,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         fallback_title=normalized_words(re.sub(r"[-_]+", " ", source.stem)),
     )
     config = effective_config(inferred, override)
+    try:
+        practice_xml, practice_roles = materialize_practice_routes(normalized_xml, config.get("practiceRoutes"))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise BuildError(f"Invalid practiceRoutes: {exc}") from exc
+    if practice_roles:
+        configured_parts = config.setdefault("parts", [{} for _ in inferred["partNames"]])
+        if len(configured_parts) != len(inferred["partNames"]):
+            raise BuildError("Configure only source parts; soloist parts are appended by practiceRoutes")
+        configured_parts.extend({"name": r["name"], "short": r["short"]} for r in practice_roles)
 
     if args.project_dir:
         project_dir = provisional_project
@@ -1647,7 +1688,31 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
         run_extractor(score_path, playback_path, extractor_metadata_path)
         playback = read_json_object(playback_path, "playback data")
+        if config.get('referenceAudio'):
+            expected = {key: playback[key] for key in ('division','endTick','measures','tempos')}
+            if config['referenceAudio'].get('timing') != expected:
+                raise BuildError('Reference recording alignment is stale: score timing changed')
         extracted = read_json_object(extractor_metadata_path, "score metadata")
+        source_playback_hash = sha256(stable_json(playback).encode("utf-8"))
+        reference_fingerprints = {}
+        if practice_roles:
+            practice_path = assets / "practice.musicxml"
+            atomic_write(practice_path, practice_xml)
+            run_extractor(practice_path, playback_path, extractor_metadata_path)
+            playback = read_json_object(playback_path, "practice playback data")
+            extracted = read_json_object(extractor_metadata_path, "practice score metadata")
+            for role in practice_roles:
+                for handoff in role["handoffs"]:
+                    handoff["start"] = round(handoff.pop("startQuarter") * playback["division"])
+                    handoff["end"] = round(handoff.pop("endQuarter") * playback["division"])
+            playback["practiceRoles"] = practice_roles
+            for role in practice_roles:
+                for part in (role["part"], role["soloist"]):
+                    reference_fingerprints[str(part)] = sha256(stable_json([
+                        source_playback_hash, role, part,
+                        [note for note in playback["notes"] if note[0] == part],
+                    ]).encode("utf-8"))
+            atomic_write(playback_path, stable_json(playback, pretty=True))
 
         template = read_required(TEMPLATE_DIR / "index.html")
         styles = read_required(TEMPLATE_DIR / "styles.css")
@@ -1683,7 +1748,26 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         assert isinstance(lucide_license, str)
         app, template, styles = install_compact_lyrics(app, template, styles)
         app = install_system_annotations(app)
+        app = read_required(TEMPLATE_DIR / "written_accidentals.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "notation_range.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "reference_audio.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "practice_routes.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "microphone_check.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "comp_panel.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "comp_cloud.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "practice_comp.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "comp_audio.js") + "\n" + app
+        app = ("window.MeleteStretchSource = "
+               + json.dumps(read_required(VENDOR_DIR / "signalsmith-stretch/SignalsmithStretch.js")) + ";\n"
+               + read_required(TEMPLATE_DIR / "take_stretch.js") + "\n" + app)
+        app = read_required(TEMPLATE_DIR / "take_render.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "take_pitch.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "live_pitch.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "vocal_pitch.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "loop_recorder.js") + "\n" + app
+        conductor_script, conductor_styles = conductor_assets(config)
+        app = conductor_script + app
+        styles += "\n" + conductor_styles
         app = fflate + "\n" + app
         atomic_write(staged_project / "app.js", app)
         atomic_write(staged_project / "styles.css", styles)
@@ -1737,6 +1821,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     },
                     "normalizedScoreSha256": sha256(normalized_xml.encode("utf-8")),
                     "playbackSha256": sha256(playback_bytes),
+                    **({"sourcePlaybackSha256": source_playback_hash,
+                        "practiceReferenceFingerprints": reference_fingerprints} if practice_roles else {}),
                 },
             }
         )
@@ -1751,6 +1837,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             fft_license,
             fflate_license,
         )
+        notices += ("\nSignalsmith Stretch (buffered octave playback)\n"
+                    "https://github.com/Signalsmith-Audio/signalsmith-stretch\n\n"
+                    + read_required(VENDOR_DIR / "signalsmith-stretch/LICENSE-signalsmith-stretch.txt"))
         standalone = render_document(
             template=template,
             styles=styles,
@@ -1758,7 +1847,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             alphatab=alphatab,
             pitchy=pitchy,
             font=font,
-            score_xml=normalized_xml,
+            score_xml=practice_xml,
             playback=playback,
             config=config,
             metadata=metadata,
@@ -1774,7 +1863,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             alphatab=alphatab,
             pitchy=pitchy,
             font=font,
-            score_xml=normalized_xml,
+            score_xml=practice_xml,
             playback=playback,
             config=config,
             metadata=metadata,
@@ -1814,7 +1903,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "title": config["title"],
         "composer": config["composer"],
         "slug": config["slug"],
-        "parts": extracted.get("parts", inferred["partNames"]),
+        "parts": [part["name"] for part in playback["parts"]],
         "measures": extracted.get("measureCount", inferred["measureCount"]),
         "layoutBreaksRemoved": breaks_removed,
         "repeatedLyricsMarked": repeated_lyrics_marked,

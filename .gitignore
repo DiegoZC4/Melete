@@ -8,14 +8,33 @@
 !/THIRD_PARTY_NOTICES.md
 !/CONTRIBUTING.md
 !/build_trainer.py
+!/practice_routes.py
 !/extract_score.mjs
 !/package.json
 !/package-lock.json
 !/template/
 !/vendor/
 !/tests/
-!/docs/
+!/examples/
 !/.github/
+
+# Private extensions remain local; ordinary conversions do not load them.
+template/conductor.js
+template/conductor.css
+template/rhythm_timing.js
+template/onset_worklet.js
+tests/audition*
+tests/browser-audition*
+tests/prepare-audition*
+tests/*cloud*
+tests/conductor.test.cjs
+tests/beat_editor.test.cjs
+tests/waveform_lanes.test.cjs
+tests/recording_timing.test.cjs
+tests/reference_audio.test.cjs
+tests/test_reference_audio.py
+tests/check-reference-warp.py
+tests/browser-melete-preview.cjs
 
 __pycache__/
 *.py[cod]
@@ -23,6 +42,11 @@ node_modules/
 .DS_Store
 .env
 .env.*
+cloud/config.local.php
+cloud/var/
+auditions/config.local.php
+auditions/catalog.json
+auditions/scores/
 *.mscz
 *.mscx
 *.pdf

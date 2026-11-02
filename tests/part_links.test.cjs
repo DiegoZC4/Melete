@@ -27,6 +27,7 @@ function fixture({names = SEED, practicePart = null, divisi = {}, view = 'standa
     classList: {contains: () => false}, focus() {}, ...extra});
   const c = vm.createContext({
     URL,
+    sequence: {}, pitchTraceBaseKey: '', pitchTraceKey: '',
     parts: names.map((name, index) => ({index, id: `P${index + 1}`, name,
       short: name.split(' ').map((word, i) => i ? word : word[0]).join(''), color: '#123456'})),
     partDivisi: names.map((_, index) => ({maxLines: divisi[index] || 1})),
@@ -37,7 +38,7 @@ function fixture({names = SEED, practicePart = null, divisi = {}, view = 'standa
     partChooserKey: 'choir-practice:song:part-chooser', pendingPartLink: null,
     practicePartPager: {setValue: value => calls.push(['pager', value])},
     updateMixerAppearance: () => calls.push(['mixer']), updateNoteActionLabel() {},
-    savePreferences: () => calls.push(['save']), renderPitchTrace() {}, scheduleBarRender: () => calls.push(['bars']),
+    savePreferences: () => calls.push(['save']), renderPitchTrace() {}, renderTakePanel() {}, scheduleBarRender: () => calls.push(['bars']),
     setPracticePart: forbidden('setPracticePart'), applyPracticeMix: forbidden('applyPracticeMix'),
     cyclePartVolumeMix: forbidden('cyclePartVolumeMix'), togglePartPanSeparation: forbidden('togglePartPanSeparation'),
     setTrackAudible: forbidden('setTrackAudible'), restorePracticeMix: forbidden('restorePracticeMix'),
@@ -45,7 +46,7 @@ function fixture({names = SEED, practicePart = null, divisi = {}, view = 'standa
     localStorage: {getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, String(value))},
     document: {activeElement: null, createElement: () => ({dataset: {}, style: {setProperty() {}}})},
     elements: {
-      partChooser: element(), partChooserNote: element(), settingsPanel: element(), practicePart: element(),
+      partChooser: element(), partChooserNote: element(), partChooserTitle: element(), settingsPanel: element(), practicePart: element(),
       settingsToggle: element(),
       partChooserOptions: {replaceChildren: (...children) => { options = children; }},
     },

@@ -3,10 +3,11 @@ const {test} = require('node:test');
 const {takeBytes, takeFilename, takeArchive, DELETE_UNDO_MS, STORAGE_WARNING_BYTES, wavBytes} = require('../template/loop_recorder.js');
 const zip = require('../vendor/fflate/fflate.js');
 
-test('take storage warning counts PCM bytes without loading audio', () => {
+test('take storage warning counts PCM and cached contour bytes without loading audio', () => {
   assert.equal(DELETE_UNDO_MS, 10000);
   assert.equal(STORAGE_WARNING_BYTES, 250 * 1024 * 1024);
   assert.equal(takeBytes([{frames: 48000}, {length: 16000, frames: 8000}]), 128000);
+  assert.equal(takeBytes([{frames: 48000, pitchContour: {pitches: new Float64Array(100)}}]), 96800);
 });
 
 test('favorite archive retains independent byte-identical WAVs and descriptive names', async () => {
@@ -27,7 +28,7 @@ test('favorite archive retains independent byte-identical WAVs and descriptive n
 });
 
 test('archive failure returns no misleading partial ZIP and leaves sources alone', async () => {
-  await assert.rejects(takeArchive([], 'test', () => {}, zip), /No favorites/);
+  await assert.rejects(takeArchive([], 'test', () => {}, zip), /No takes/);
   await assert.rejects(takeArchive([{frames: 0x80000000}], 'test', () => { throw new Error('must not read'); }, zip), /too large/);
   const take = {number: 1, frames: 4};
   await assert.rejects(takeArchive([take], 'test', async () => { throw new Error('read failure'); }, zip), /read failure/);

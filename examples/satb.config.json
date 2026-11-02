@@ -1,0 +1,15 @@
+{
+  "partColors": {
+    "Soprano": "#c84f68",
+    "Alto": "#b47b25",
+    "Tenor": "#397da3",
+    "Bass": "#6759a5"
+  },
+  "defaults": {
+    "tempo": 100,
+    "metronome": 0,
+    "scoreView": "standard",
+    "flow": "wrap",
+    "horizontal": 100
+  }
+}

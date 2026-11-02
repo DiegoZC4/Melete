@@ -32,6 +32,12 @@ system libraries. On Windows set `PYTHON=python` if `python3` is not on PATH.
 `QA_BROWSER_CHANNEL=chrome` uses an already installed Chrome instead of the
 Playwright Chromium download. `GUI_QA_NODE_MODULES` can optionally select an
 existing dependency directory; it is never required.
+`QA_OUTPUT_DIR` isolates reports/screenshots for a separate validation run.
+
+`QA_COMP_ONLY=1` checks local comp persistence, source protection, Undo and
+full-song capture. Cloud-backend checks are explicitly skipped in this
+standalone distribution; neither PHP nor a Google account is required. The
+maintainer's optional cloud/conductor extensions are not published here.
 
 The smoke test makes a fresh standalone build, intercepts requests in an isolated
 browser context (no server), and checks desktop/mobile layouts, all visible-part
@@ -52,6 +58,13 @@ audio, permission denial/cancellation, transport edits, and independent
 Sing/recorder microphone ownership. Temporary
 WAVs are deleted with the test build. `QA_RECORDER_ONLY=1` runs just these focused
 browser checks; add `QA_FILE_ORIGIN=1` to verify a standalone file opened offline.
+`QA_MIC_CHECK_ONLY=1` checks the inline microphone meter on desktop/mobile with
+synthetic MediaStream audio, including silence, quiet input, clipping, permission
+denial, unplugging, late permission grants, and independent Sing ownership.
+`QA_UI_IMPORT_ONLY=1` checks playable ranges, grey/blue note feedback and retained
+loop endpoints. `QA_REFERENCE_ONLY=1` checks an optional embedded recording's
+independent mix, lazy decode and shared transport using synthetic audio.
+
 Keep latency-sensitive audio/browser checks serialized against
 other tests using the same audio device; do not relax their timing assertions to
 accommodate competing render jobs.

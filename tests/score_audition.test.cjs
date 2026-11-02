@@ -30,6 +30,7 @@ function fixture() {
   const window = new Target(), surface = new Target(), voices = [], seeks = [];
   const c = vm.createContext({window, AbortController, ready:true, pinchActive:false, flow:'wrap',
     scoreScrub:null, pitchAuditions:new Map(), keyboardAudition:null,
+    heldNotePreviews:new Map(), paintNoteFeedback(){}, hoverNote(){},
     PITCH_AUDITION_HOLD_MS:250, performance:{now:()=>now},
     document:{documentElement:new Target(), getSelection:()=>({removeAllRanges(){}})},
     applyScoreScrubTarget:target => seeks.push(target.tick),
@@ -126,7 +127,7 @@ test('standard note hits use noteheads, preserve sounding octave, and ignore inv
   const bars=[bar(0,[box(69,50,30)]),bar(1,[box(57,50,60),box(60,50,68)]),bar(2,[box(40,50,100)])];
   const c=vm.createContext({api:{boundsLookup:{findMasterBarByIndex:()=>({bars})}},sequence:{measures:[[]]},
     elements:{score:{getBoundingClientRect:()=>({left:10,top:20}),scrollLeft:5,scrollTop:10}},
-    partIndexForTrack:track=>track, visibleTracks:new Set([0,1])});
+    partIndexForTrack:track=>track, visibleTracks:new Set([0,1]), rangePreviews:[]});
   vm.runInContext(source('standardNoteAtClientPoint'),c);
   const at=(x,y)=>c.standardNoteAtClientPoint(x+5,y+10);
   assert.equal(at(55,64).key,57, 'tenor sounds at its actual octave');

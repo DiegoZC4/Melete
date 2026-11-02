@@ -29,6 +29,7 @@ function fixture() {
     disconnect() { this.targets = []; }
   }
   const context = vm.createContext({scoreView: 'standard', cursorTrimFrame: 0, cursorTrimBurstGeneration: 0,
+    cursorStaffGeometry: new WeakMap(),
     cursorTrimObserver: null, cursorTrimTargets: [], MutationObserver: Observer,
     clamp: (n, min, max) => Math.max(min, Math.min(max, n)),
     requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
@@ -46,6 +47,7 @@ function fixture() {
   return {context, observers, flushMutations,
     frame() { frames.splice(0).forEach(fn => fn()); flushMutations(); },
     geometry(top, height, nextLines) {
+      context.cursorStaffGeometry.delete(surface); // A newly engraved surface.
       bar.bounds = beat.bounds = rect(top, height); lines = nextLines; pending = true;
     },
     replace() { bar = cursor(); beat = cursor(); },

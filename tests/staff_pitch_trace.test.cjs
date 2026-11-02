@@ -21,11 +21,14 @@ function fixture({key=69, scale=1} = {}) {
   ];
   const masters=bars.map((b,index)=>({realBounds:box(30,index?300:100,200,40),bars:[b],
     staffSystemBounds:{index,realBounds:box(30,index?280:80,200,120)}}));
-  const c=vm.createContext({sequence:{division:100,measures:[[0,400],[400,400]],notes:[[0,0,300,key]]},
-    visibleTracks:new Set([0]),practicePartIndex:0,partDivisi:[],divisiSpanAt:()=>null,
+  const c=vm.createContext({sequence:{division:100,endTick:800,measures:[[0,400],[400,400]],notes:[[0,0,300,key]]},
+    window:{MeleteTakePitch:require('../template/take_pitch.js')},
+    visibleTracks:new Set([0]),practicePartIndex:0,partDivisi:[{spans:[{start:0,end:300,pitches:[key]}]}],divisiSpanAt:()=>null,
+    restTraceSource:null,restTraceReferences:new Map(),engine:{secondsAtTick:t=>t/100},
+    pitchNoteSource:null,pitchNoteCount:0,pitchNotesByPart:new Map(),
     partIndexForTrack:t=>t,measureIndexAtTick:t=>t<400?0:1,STAFF_TRACE_CENTS_PER_STEP:25,
     clamp:(v,a,b)=>Math.max(a,Math.min(b,v))});
-  for(const name of ['performedScoreTick','expectedPitchAt','buildStaffTraceSystems','staffTracePoint'])
+  for(const name of ['pitchRestState','performedScoreTick','expectedPitchAt','buildStaffTraceSystems','staffTracePoint'])
     vm.runInContext(source(name),c);
   const rows=c.buildStaffTraceSystems({findMasterBarByIndex:i=>masters[i]});
   return {c,masters,rows,at:(tick,cents=key*100,line=0)=>c.staffTracePoint(rows[tick<400?0:1],tick,cents,line)};
@@ -48,14 +51,36 @@ test('enharmonic accidentals retain written centers; tenor uses sounding pitch',
   assert.equal(flat.at(0,6900).error,100);
   assert.equal(flat.at(0,6900).y,95);
 });
-test('rests keep the preceding note at its written height across system breaks',()=>{
+test('staff error remains centered for octave equivalents without modifying the raw pitch',()=>{
+  const f=fixture();
+  assert.equal(f.at(0,5700).y,f.at(0,6900).y);
+  assert.equal(f.at(0,8100).error,0);
+  assert.equal(f.at(0,5725).y,f.at(0,6925).y);
+});
+test('recorded contours use their own part without changing the practice part or visibility',()=>{
+  const f=fixture();
+  f.c.sequence.notes.push([1,0,300,60]);
+  f.c.practicePartIndex=1;
+  assert.equal(f.at(0),null,'the chosen live-practice part is not on this staff');
+  const recorded=f.c.staffTracePoint(f.rows[0],0,6900,0,0);
+  assert.equal(recorded.track,0);
+  assert.equal(recorded.error,0);
+  assert.equal(recorded.y,115);
+  assert.equal(f.c.practicePartIndex,1);
+  assert.deepEqual([...f.c.visibleTracks],[0]);
+  f.c.visibleTracks.clear();
+  const hidden=f.c.buildStaffTraceSystems({findMasterBarByIndex:i=>f.masters[i]});
+  assert.equal(f.c.staffTracePoint(hidden[0],0,6900,0,0),null,'a hidden staff is never forced visible for a take');
+});
+test('rest guards retain written height but turn red; deeper rests disappear',()=>{
   const f=fixture();
   assert.equal(f.at(350).y,115);
-  assert.equal(f.at(450).y,315);
-  assert.equal(f.at(450,6925).y,310);
+  assert.equal(f.at(350).error,null,'red timing error, not invented cents');
+  assert.equal(f.at(450),null,'more than one beat after release');
   assert.equal(f.c.staffTracePoint(f.rows[0],400,6900,0),null,'never draw diagonally into another system');
   f.c.sequence.notes=[[0,100,300,69]];
-  assert.equal(f.at(0),null,'no guessed target before the first note');
+  f.c.partDivisi=[{spans:[{start:100,end:300,pitches:[69]}]}];
+  assert.equal(f.at(0).error,null,'early entrance is shown red before the first note');
   f.c.visibleTracks.clear();
   const hidden=f.c.buildStaffTraceSystems({findMasterBarByIndex:i=>f.masters[i]});
   assert.equal(f.c.staffTracePoint(hidden[0],120,6900,0),null);
@@ -78,6 +103,7 @@ test('trace timing follows swung engraving columns from every visible part',()=>
 test('ties follow the new system notehead and each divisi lane keeps its own target',()=>{
   const f=fixture();
   f.c.sequence.notes=[[0,0,800,69]];
+  f.c.partDivisi=[{spans:[{start:0,end:800,pitches:[69]}]}];
   f.masters[1].bars[0].beats=[{beat:{absolutePlaybackStart:400},notes:[{
     note:{realValue:69,isTieDestination:true},noteHeadBounds:{x:50,y:324,w:10,h:8},
   }]}];
@@ -85,7 +111,7 @@ test('ties follow the new system notehead and each divisi lane keeps its own tar
   assert.equal(f.c.staffTracePoint(rows[1],400,6900,0).y,328,'use the new engraved tie destination');
   f.masters[0].bars[0].beats[0].notes.push({note:{realValue:65},noteHeadBounds:{x:50,y:131,w:10,h:8}});
   f.c.sequence.notes.push([0,0,300,65]);
-  f.c.partDivisi=[{maxLines:2}];
+  f.c.partDivisi=[{maxLines:2,spans:[{start:0,end:800,pitches:[69,65]}]}];
   f.c.divisiSpanAt=()=>({pitches:[69,65]});
   f.c.divisiLineFor=line=>line;
   rows=f.c.buildStaffTraceSystems({findMasterBarByIndex:i=>f.masters[i]});

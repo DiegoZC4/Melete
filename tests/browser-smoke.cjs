@@ -8,14 +8,29 @@ const {execFileSync} = require('node:child_process');
 const {chromium} = require(process.env.GUI_QA_NODE_MODULES
   ? path.join(process.env.GUI_QA_NODE_MODULES, 'playwright') : 'playwright');
 const {checkMeasureRests} = require('./browser-rest-layout.cjs');
+const {checkWrittenAccidentals} = require('./browser-written-accidentals.cjs');
 const {checkCursorEdges} = require('./browser-cursor-layout.cjs');
 const {checkPanHolds} = require('./browser-pan-hold.cjs');
-const {checkVolumeDrag, checkBoostedAudio} = require('./browser-volume-drag.cjs');
+const {checkNumericClicks, checkVolumeDrag, checkBoostedAudio} = require('./browser-volume-drag.cjs');
 const {checkFirstVisit, checkTouchVolumeTip, checkPartLinks, checkTouchRows, checkScrubLabel} = require('./browser-onboarding.cjs');
 const {pitchbarProbe, checkPitchbarSpacing} = require('./browser-pitchbar-spacing.cjs');
+const {pitchTraceProbe, checkPitchTraceResolution} = require('./browser-pitch-resolution.cjs');
 const {checkLoopLinks} = require('./browser-loop-links.cjs');
+const {loopReloadProbe, checkLoopReload} = require('./browser-loop-reload.cjs');
 const {recordingProbe, checkLoopRecorder} = require('./browser-loop-recorder.cjs');
+const {checkTakePitch} = require('./browser-take-pitch.cjs');
+const {checkComp} = require('./browser-comp.cjs');
+const {checkMicrophone} = require('./browser-microphone-check.cjs');
+const {staffFollowProbe, checkStaffFollow} = require('./browser-staff-follow.cjs');
+const {checkPlaybackTiming} = require('./browser-playback-timing.cjs');
+const {singPreferenceProbe, checkSingPreferences} = require('./browser-sing-preferences.cjs');
+const {expandSettingsFixture, checkSettingsSections} = require('./browser-settings-sections.cjs');
 const {wavBytes} = require('../template/loop_recorder.js');
+const {checkPracticeRoutes} = require('./browser-practice-routes.cjs');
+const {checkLayeredTakes,checkNoteHitAreas} = require('./browser-layered-takes.cjs');
+const {checkSelectiveLyrics, checkLyricNotePriority} = require('./browser-selective-lyrics.cjs');
+const {checkUiImports} = require('./browser-ui-import.cjs');
+const {checkReferenceMix} = require('./browser-reference-mix.cjs');
 
 async function main() {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'melete-shared-smoke-'));
@@ -29,7 +44,7 @@ async function main() {
     const marker = 'engine = new GuideEngine(sequence);';
     assert.equal(html.split(marker).length, 2);
     html = html.replace(marker, marker + `
-      window.__qa = {engine, api, onsets: [], ${pitchbarProbe}, ${recordingProbe} get busy() { return notationRenderInFlight || notationRenderQueued; }};
+      window.__qa = {engine, api, onsets: [], ${staffFollowProbe} ${loopReloadProbe} ${pitchbarProbe}, ${pitchTraceProbe}, ${recordingProbe} ${singPreferenceProbe} get busy() { return Boolean(renderTimer || barRenderFrame || notationRenderInFlight || notationRenderQueued); }};
       const captureCreate = window.MeleteRecording.PcmCapture.create;
       window.MeleteRecording.PcmCapture.create = async function(...args) {
         try { return await captureCreate.apply(this, args); }
@@ -51,23 +66,133 @@ async function main() {
     const offlineFile = path.join(temporary, 'offline.html');
     if (process.env.QA_FILE_ORIGIN) await fs.writeFile(offlineFile, html);
     const origin = process.env.QA_FILE_ORIGIN ? pathToFileURL(offlineFile).href : 'http://127.0.0.1:8809/shared-regression-fixture';
-    const output = path.resolve(__dirname, '../qa');
+    const output = process.env.QA_OUTPUT_DIR ? path.resolve(process.env.QA_OUTPUT_DIR) : path.resolve(__dirname, '../qa');
     await fs.mkdir(output, {recursive: true});
-    for (const mobile of [false, true]) {
+    const newContext = async (mobile, expanded = true) => {
       const context = await browser.newContext({viewport: mobile ? {width:393,height:852} : {width:1440,height:900},
         isMobile: mobile, hasTouch: mobile, deviceScaleFactor: 1, colorScheme: 'dark', permissions: ['microphone']});
-      try {
-        await context.route('**/*', route => {
+      if (expanded) await expandSettingsFixture(context);
+      await context.route('**/*', route => {
           // A ?part= link asks for the same document.
           if (route.request().url().split('?')[0] === origin) return route.fulfill({contentType: 'text/html', body: html});
           requests.push(route.request().url()); return route.abort();
-        });
+      });
+      return context;
+    };
+    const focused = Object.keys(process.env).some(key => /^QA_.*_ONLY$/.test(key) && process.env[key]);
+    if (!focused || process.env.QA_REFERENCE_ONLY) results.push({referenceMix:await checkReferenceMix(browser,temporary,output)});
+    if (!focused || process.env.QA_ROUTES_ONLY) results.push({practiceRoutes:await checkPracticeRoutes(browser,temporary,output)});
+    for (const mobile of [false, true]) {
+      if (process.env.QA_ROUTES_ONLY || process.env.QA_REFERENCE_ONLY) continue;
+      if (!focused || process.env.QA_SECTIONS_ONLY) {
+        const compactContext = await newContext(mobile, false);
+        try {
+          const page = await compactContext.newPage();
+          page.on('pageerror', error => errors.push(error.message));
+          const settled = () => page.waitForFunction(() => window.__qa && !__qa.busy && document.querySelector('#playPause:not(:disabled)'));
+          await page.goto(origin + '?loop=1-2');
+          await settled();
+          results.push({viewport: mobile ? 'mobile' : 'desktop', sections: await checkSettingsSections(page, page, {
+            mobile, output, label: mobile ? 'mobile' : 'desktop',
+            reload: async () => {await page.reload(); await settled(); return page;},
+          })});
+        } finally {await compactContext.close();}
+      }
+      if (process.env.QA_SECTIONS_ONLY) continue;
+      if (!focused || process.env.QA_LYRICS_ONLY) {
+        const lyricContext = await newContext(mobile);
+        try {
+          const page = await lyricContext.newPage();
+          page.on('pageerror', error => errors.push(error.message));
+          const settled = () => page.waitForFunction(() => window.__qa && !__qa.busy
+            && document.querySelector('#playPause:not(:disabled)'));
+          await page.goto(origin);
+          await settled();
+          results.push({viewport:mobile?'mobile':'desktop',lyricNotePriority:await checkLyricNotePriority(page,page,{
+            mobile,output,label:mobile?'mobile':'desktop',
+          })});
+          results.push({viewport:mobile?'mobile':'desktop', lyrics:await checkSelectiveLyrics(page,page,{
+            mobile, output, splitWord:'together', label:mobile?'mobile':'desktop', reload:async()=>{await page.reload();await settled();return page;},
+          })});
+        } finally {await lyricContext.close();}
+        if(process.env.QA_LYRICS_ONLY)continue;
+      }
+      const context = await newContext(mobile);
+      try {
         const page = await context.newPage();
         page.on('pageerror', error => errors.push(error.message));
         const settled = () => page.waitForFunction(() => window.__qa && !__qa.busy &&
           document.querySelector('#playPause:not(:disabled)') && document.querySelector('#score svg, #barScore svg'));
         await page.goto(origin);
         await settled();
+        if (!focused || process.env.QA_UI_IMPORT_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',uiImports:await checkUiImports(page,page,{mobile,output,label:mobile?'mobile':'desktop'})});
+          if (process.env.QA_UI_IMPORT_ONLY) continue;
+          await page.evaluate(()=>localStorage.clear());
+          await page.reload(); await settled();
+        }
+        if (!focused || process.env.QA_ACCIDENTALS_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',writtenAccidentals:await checkWrittenAccidentals(page,page,
+            {output,label:mobile?'mobile':'desktop'})});
+          if(process.env.QA_ACCIDENTALS_ONLY)continue;
+        }
+        assert.equal(await page.locator('#conductorControls').count(), 0, 'ordinary builds have no conductor-mode control');
+        assert.equal(await page.evaluate(() => typeof window.MeleteConductor), 'undefined',
+          'ordinary builds omit the optional conductor extension');
+        assert.equal(await page.evaluate(() => typeof window.MeleteOnsetSource), 'undefined',
+          'ordinary builds omit the conductor microphone worklet');
+        const pitchCheck = () => checkPitchTraceResolution(page, page, {output, label: mobile ? 'mobile' : 'desktop',
+          reload: async () => {await page.reload(); await settled(); return page;}});
+        const takePitchCheck = () => checkTakePitch(page, page, {mobile, output, label: mobile ? 'mobile' : 'desktop',
+          reload: async () => {await page.reload(); await settled(); return page;}});
+        const timingCheck = () => checkPlaybackTiming(page,page,{output,label:mobile?'mobile':'desktop'});
+        const compCheck = () => checkComp(page,page,{output,label:mobile?'mobile':'desktop',
+          reload: async()=>{await page.reload(); await settled(); return page;}});
+        const singCheck = () => checkSingPreferences(page, page, {
+          reload: async () => {await page.reload(); await settled(); return page;}});
+        const loopReloadCheck = () => checkLoopReload(page, page, {output, label: mobile ? 'mobile' : 'desktop',
+          reload: async () => {await page.reload(); await settled(); return page;}});
+        if (process.env.QA_HIT_AREAS_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',hitAreas:await checkNoteHitAreas(page,page)});
+          continue;
+        }
+        if (process.env.QA_LAYERS_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',layers:await checkLayeredTakes(page,page,{output,label:mobile?'mobile':'desktop'})});
+          results.at(-1).hitAreas=await checkNoteHitAreas(page,page);
+          continue;
+        }
+        if (process.env.QA_STAFF_FOLLOW_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',staffFollow:await checkStaffFollow(page,page,{output,label:mobile?'mobile':'desktop'})});
+          continue;
+        }
+        if (process.env.QA_MIC_CHECK_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',microphone:await checkMicrophone(page,page,{output,label:mobile?'mobile':'desktop'})});
+          continue;
+        }
+        if (process.env.QA_COMP_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',comp:await compCheck()});
+          continue;
+        }
+        if (process.env.QA_LOOP_RELOAD_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',loopReload:await loopReloadCheck()});
+          continue;
+        }
+        if (process.env.QA_SING_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',singPreferences:await singCheck()});
+          continue;
+        }
+        if (process.env.QA_TIMING_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',timing:await timingCheck()});
+          continue;
+        }
+        if (process.env.QA_TAKE_PITCH_ONLY) {
+          results.push({viewport: mobile ? 'mobile' : 'desktop', takePitch: await takePitchCheck()});
+          continue;
+        }
+        if (process.env.QA_PITCH_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',pitchResolution:await pitchCheck()});
+          continue;
+        }
         if (process.env.QA_RECORDER_ONLY) {
           results.push({viewport: mobile ? 'mobile' : 'desktop', loopRecorder:
             await checkLoopRecorder(page, origin, settled, {mobile, output, temporary})});
@@ -79,6 +204,28 @@ async function main() {
         const firstVisit = await checkFirstVisit(page, page, {mobile, names});
         if (mobile) await page.locator('#settingsToggle').click();
         const touchTip = mobile ? await checkTouchVolumeTip(page, page, 'Soprano') : null;
+
+        const themeButton = page.locator('#themeToggle');
+        const themeIcon = await themeButton.innerHTML();
+        const themePalettes = [];
+        for (const theme of ['light', 'dark']) {
+          await themeButton.click();
+          assert.equal(await page.locator('html').getAttribute('data-theme'), theme);
+          const next = theme === 'dark' ? 'light' : 'dark';
+          assert.equal(await themeButton.getAttribute('aria-label'), `Switch to ${next} theme`);
+          assert.equal(await themeButton.getAttribute('title'), `Switch to ${next} theme`);
+          assert.equal(await themeButton.innerHTML(), themeIcon, 'theme changes never swap the glyph');
+          assert.equal(await themeButton.locator('svg').count(), 1);
+          const paint = await themeButton.locator('svg').evaluate(svg => {
+            const css = getComputedStyle(svg), box = svg.getBoundingClientRect();
+            return {fill: css.fill, color: css.color, stroke: css.stroke, width: box.width, height: box.height};
+          });
+          assert.equal(paint.fill, paint.color);
+          assert.equal(paint.stroke, 'none');
+          assert.ok(paint.width > 0 && paint.height > 0);
+          themePalettes.push({theme, ...paint});
+          await page.locator('.tools-group').screenshot({path: path.join(output, `theme-${mobile ? 'mobile' : 'desktop'}-${theme}.png`)});
+        }
 
         // All nonempty visibility subsets: global directions survive, local ones do not migrate.
         for (const selected of [[0,1,2],[1,2],[0,2],[0,1],[2],[1],[0]]) {
@@ -166,10 +313,14 @@ async function main() {
         // Explicit scale choices survive reload instead of being overwritten by responsive defaults.
         if (mobile) await page.locator('#settingsToggle').click();
         const panHolds = await checkPanHolds(page, page, mobile, '__qa');
+        await checkNumericClicks(page, page, mobile, '__qa');
+        await settled();
         const volumeDrag = await checkVolumeDrag(page, page, mobile, '__qa',
           path.join(output, `volume-${mobile ? 'mobile' : 'desktop'}.png`));
         const boostedAudio = await checkBoostedAudio(page, '__qa');
         const savedVolumes = await page.locator('[data-volume-index]').evaluateAll(nodes => nodes.map(node => Number(node.dataset.value)));
+        const savedMetronome = Number(await page.locator('#metronome').getAttribute('data-value'));
+        await page.locator('#metronome').press('End');
         await page.locator('[data-volume-index="0"]').press('End');
         await page.locator('[data-pan-index="1"]').press('Shift+Enter');
         assert.deepEqual(await page.locator('[data-pan-index]').evaluateAll(nodes => nodes.map(node => Number(node.dataset.value))),
@@ -184,6 +335,8 @@ async function main() {
           `pan separation is saved (${mobile ? 'mobile' : 'desktop'}): ${JSON.stringify(storedMixes)}`);
         await page.reload(); await settled();
         assert.equal(await page.locator('[data-volume-index="0"]').getAttribute('data-value'), '200', 'boost survives reload');
+        assert.equal(await page.locator('#metronome').getAttribute('data-value'), '200', 'metronome boost survives reload');
+        await page.evaluate(value=>{const s=__qa.pitchbar.captureSettingsState();s.metronome=value;__qa.pitchbar.applySettingsState(s);},savedMetronome);
         await page.evaluate(savedVolumes => {
           const state = __qa.pitchbar.captureSettingsState(); state.volumes = savedVolumes;
           __qa.pitchbar.applySettingsState(state);
@@ -206,18 +359,52 @@ async function main() {
         const touchRows = await checkTouchRows(page, page, {mobile});
         const partLinks = await checkPartLinks(page, origin, settled, {names});
         const loopLinks = await checkLoopLinks(page, origin, settled, {mobile, output});
-        const loopRecorder = await checkLoopRecorder(page, origin, settled, {mobile, output, temporary});
+        const loopReload = await loopReloadCheck();
+        const singPreferences = await singCheck();
+        const timing = await timingCheck();
+        const takePitch = await takePitchCheck();
+        const compContext = await newContext(mobile);
+        try {
+          const compPage = await compContext.newPage();
+          compPage.on('pageerror', error => errors.push(error.message));
+          const compSettled = () => compPage.waitForFunction(() => window.__qa && !__qa.busy && document.querySelector('#playPause:not(:disabled)'));
+          await compPage.goto(origin);
+          await compSettled();
+          results.push({viewport:mobile?'mobile':'desktop',microphone:await checkMicrophone(compPage,compPage,{output,label:mobile?'mobile':'desktop'})});
+          results.push({viewport:mobile?'mobile':'desktop',staffFollow:await checkStaffFollow(compPage,compPage,{output,label:mobile?'mobile':'desktop'})});
+          results.push({viewport:mobile?'mobile':'desktop',comp:await checkComp(compPage,compPage,{
+            output,label:mobile?'mobile':'desktop',reload:async()=>{await compPage.reload();await compSettled();return compPage;},
+          })});
+          await compPage.reload(); await compSettled();
+          results.push({viewport:mobile?'mobile':'desktop',layers:await checkLayeredTakes(compPage,compPage,{output,label:mobile?'mobile':'desktop'})});
+          results.at(-1).hitAreas=await checkNoteHitAreas(compPage,compPage);
+        } finally {await compContext.close();}
+        // Sing tests now save actual recordings. Keep the loop-history fixture
+        // independent rather than deleting sources protected by an earlier comp.
+        const recorderContext = await newContext(mobile);
+        let loopRecorder;
+        try {
+          const recorderPage = await recorderContext.newPage();
+          recorderPage.on('pageerror', error => errors.push(error.message));
+          const recorderSettled = () => recorderPage.waitForFunction(() => window.__qa && !__qa.busy && document.querySelector('#playPause:not(:disabled)'));
+          loopRecorder = await checkLoopRecorder(recorderPage, origin, recorderSettled, {mobile, output, temporary});
+        } finally { await recorderContext.close(); }
+        const pitchResolution = await pitchCheck();
         results.push({viewport: mobile ? 'mobile' : 'desktop', visibilitySubsets: 7, onsetChecks: 4, savedScale: saved,
           fullMeasureRests: {scales:[5,400], count:restLayout.length}, cursorEdges, panHolds, volumeDrag, boostedAudio, pitchbarSpacing,
-          firstVisit, touchTip, scrubLabel, touchRows, partLinks, loopLinks, loopRecorder});
+          firstVisit, touchTip, themePalettes, scrubLabel, touchRows, partLinks, loopLinks, loopReload, loopRecorder, pitchResolution, takePitch, timing, singPreferences});
       } finally { await context.close(); }
     }
     assert.deepEqual(errors, []);
     assert.deepEqual(requests, []);
     const report = {passed: true, freshGenericBuild: true, results, errors, externalRequests: requests};
-    const reportName = process.env.QA_FILE_ORIGIN ? 'recorder-file-smoke.json' : process.env.QA_RECORDER_ONLY ? 'recorder-smoke.json' : 'shared-smoke.json';
-    await fs.writeFile(path.join(__dirname, '../qa', reportName), JSON.stringify(report, null, 2) + '\n');
+    const reportName = process.env.QA_MIC_CHECK_ONLY ? 'microphone-check.json' : process.env.QA_COMP_ONLY ? 'comp-smoke.json' : process.env.QA_SECTIONS_ONLY ? 'settings-sections.json' : process.env.QA_LOOP_RELOAD_ONLY ? 'loop-reload.json' : process.env.QA_SING_ONLY ? 'sing-preferences.json' : process.env.QA_TIMING_ONLY ? 'playback-timing.json' : process.env.QA_TAKE_PITCH_ONLY ? 'take-pitch.json' : process.env.QA_PITCH_ONLY ? 'pitch-resolution.json' : process.env.QA_FILE_ORIGIN ? 'recorder-file-smoke.json' : process.env.QA_RECORDER_ONLY ? 'recorder-smoke.json' : 'shared-smoke.json';
+    await fs.writeFile(path.join(output, process.env.QA_LYRICS_ONLY ? 'selective-lyrics.json'
+      : process.env.QA_STAFF_FOLLOW_ONLY ? 'staff-follow.json' : reportName), JSON.stringify(report, null, 2) + '\n');
     console.log(JSON.stringify(report, null, 2));
+  } catch (error) {
+    if (errors.length) console.error('Browser errors:', errors);
+    throw error;
   } finally {
     await browser?.close();
     await fs.rm(temporary, {recursive: true, force: true});

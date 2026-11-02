@@ -1,6 +1,28 @@
 const assert = require('node:assert/strict');
 const {withMixerSignal} = require('./browser-mixer-signal.cjs');
 
+async function checkNumericClicks(surface, page, mobile, probe) {
+  const original=await surface.evaluate(probe=>window[probe].pitchbar.captureSettingsState(),probe),results=[];
+  try {
+    const reset=()=>surface.evaluate(probe=>{
+      const api=window[probe].pitchbar,state=api.captureSettingsState();
+      state.tempo=100;state.metronome=0;state.vertical=100;state.horizontal=100;state.volumes=state.volumes.map(()=>100);
+      api.applySettingsState(state);
+    },probe);
+    for(const selector of ['#tempo','#metronome','#verticalScale','#horizontalScale','[data-volume-index="0"]']){
+      await reset();
+      const control=surface.locator(selector),before=Number(await control.getAttribute('data-value'));
+      if(mobile)await control.tap();else await control.click();
+      assert.equal(Number(await control.getAttribute('data-value')),before+10,selector+' click adds ten percentage points');
+      await control.press('Enter');assert.equal(Number(await control.getAttribute('data-value')),before+20,selector+' keyboard activation');
+      results.push({selector,before,after:before+20});
+    }
+  } finally {
+    await surface.evaluate(({probe,state})=>window[probe].pitchbar.applySettingsState(state),{probe,state:original});
+  }
+  return results;
+}
+
 async function checkVolumeDrag(surface, page, mobile, probe, screenshot) {
   const controls = surface.locator('#mixer [data-volume-index]');
   const count = await controls.count();
@@ -114,4 +136,34 @@ async function checkBoostedAudio(surface, probe) {
   return report;
 }
 
-module.exports = {checkVolumeDrag, checkBoostedAudio};
+async function checkMetronome(surface) {
+  const control=surface.locator('#metronome'), original=await control.getAttribute('data-value');
+  try {
+    await control.press('End');
+    assert.equal(await control.getAttribute('data-value'),'200');
+    assert.equal(await control.getAttribute('aria-valuemax'),'200');
+    assert.equal(await surface.evaluate(()=>(window.__qa||window.__probe).engine.metronomeVolume),2);
+    const audio=await surface.evaluate(async()=>{
+      const q=window.__qa||window.__probe, Player=q.engine.constructor;
+      const data=JSON.parse(document.getElementById('playback-data').textContent), samples=[];
+      for(const percent of [100,200]) {
+        const player=new Player(data), context=new OfflineAudioContext(2,48000/4,48000), Audio=window.AudioContext;
+        try { window.AudioContext=function(){return context;};player.ensureAudio(); }
+        finally {window.AudioContext=Audio;}
+        player.setMetronome(percent);player.scheduleClick({time:0,downbeat:true},0,.028);
+        const buffer=await context.startRendering(), values=buffer.getChannelData(0);
+        samples.push({percent,peak:Math.max(...values.map(Math.abs)),rms:Math.sqrt(values.reduce((sum,v)=>sum+v*v,0)/values.length)});
+      }
+      return samples;
+    });
+    assert.ok(audio[1].rms>audio[0].rms*1.8,'200% is an audible boost, not just a changed label');
+    assert.ok(audio.every(s=>s.peak>0&&s.peak<1),'metronome stays inside the output headroom');
+    return {ceiling:200,audio};
+  } finally {
+    await surface.evaluate(value=>{
+      const q=window.__qa||window.__probe,state=q.pitchbar.captureSettingsState();state.metronome=Number(value);q.pitchbar.applySettingsState(state);
+    },original);
+  }
+}
+
+module.exports = {checkNumericClicks, checkVolumeDrag, checkBoostedAudio, checkMetronome};

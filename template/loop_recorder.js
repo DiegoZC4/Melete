@@ -1,17 +1,53 @@
 /* Microphone-only takes with device-local storage. No network or guide-audio input. */
 ((root, factory) => {
-  const api = factory();
+  const api = factory(() => typeof module === "object" && module.exports ? require("./take_pitch.js") : root.MeleteTakePitch);
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.MeleteRecording = api;
-})(globalThis, () => {
+})(globalThis, getPitch => {
   "use strict";
 
   const MAX_LOOP_SECONDS = 300;
   const DELETE_UNDO_MS = 10000;
   const STORAGE_WARNING_BYTES = 250 * 1024 * 1024;
 
+  // A fixed review gain, not AGC: quiet microphone files need a comparable
+  // listening level to the guide. Ignore pauses and retain the original WAV.
+  function takePlaybackGain(samples, sampleRate) {
+    const blockSize = Math.max(1, Math.round(sampleRate * 0.05));
+    const levels = [];
+    let peak = 0;
+    for (let start = 0; start < samples.length; start += blockSize) {
+      const end = Math.min(samples.length, start + blockSize);
+      let energy = 0;
+      for (let i = start; i < end; i += 1) {
+        const sample = Number.isFinite(samples[i]) ? samples[i] : 0;
+        peak = Math.max(peak, Math.abs(sample));
+        energy += sample * sample;
+      }
+      const rms = Math.sqrt(energy / (end - start));
+      if (rms >= 0.002) levels.push(rms);
+    }
+    if (!levels.length) return 1;
+    levels.sort((a, b) => a - b);
+    const voicedLevel = levels[Math.floor((levels.length - 1) * 0.75)];
+    return Math.min(16, 0.1 / voicedLevel, 0.85 / peak);
+  }
+
+  // Score seconds and recorded seconds use different scales when practice speed
+  // differs from the saved take. Latency belongs to the original recording.
+  function takePlaybackWindow(take, position, rate, limit, lead = 0) {
+    const ratio = rate / take.rate;
+    const offset = (position - take.start) / take.rate + take.latency;
+    const delay = Math.max(lead, -offset / ratio);
+    const from = Math.max(0, offset + delay * ratio);
+    const until = Math.min(take.buffer.duration,
+      (Math.min(take.end, limit) - take.start) / take.rate + take.latency);
+    return until > from ? {ratio, delay, from, until} : null;
+  }
+
   function takeBytes(takes) {
-    return takes.reduce((total, take) => total + Math.max(0, take.length ?? take.frames ?? 0) * 2, 0);
+    return takes.reduce((total, take) => total + Math.max(0, take.length ?? take.frames ?? 0) * 2
+      + (take.pitchContour?.pitches?.byteLength || 0), 0);
   }
 
   function takeFilename(song, take) {
@@ -20,7 +56,7 @@
   }
 
   async function takeArchive(takes, song, readWav, zipApi, onProgress = () => {}) {
-    if (!takes.length) throw new Error("No favorites to download");
+    if (!takes.length) throw new Error("No takes to download");
     // ZIP32 bounds; refuse an oversized archive rather than returning corrupt data.
     if (takes.length >= 65535 || takeBytes(takes) + takes.length * 2048 >= 0xffffffff) {
       throw new Error("Favorites are too large for one ZIP; download takes individually");
@@ -83,11 +119,11 @@
     const selected = beats.slice(-3);
     const origin = secondsAtTick(selected[0].tick);
     const duration = (secondsAtTick(start) - origin) / rate;
-    return {duration, beats: selected.map(beat => ({label: beat.label,
+    return {start: selected[0].tick, duration, beats: selected.map(beat => ({label: beat.label,
       seconds: (secondsAtTick(beat.tick) - origin) / rate}))};
   }
 
-  function recordingEntrance(rules, range, part, addressTick) {
+  function recordingEntrance(rules, range, part, addressTick, fallback = range.start) {
     for (const rule of rules || []) {
       const endpoints = String(rule.loop || "").split("-");
       if (endpoints.length !== 2 || !rule.parts?.[part]) continue;
@@ -97,17 +133,24 @@
       if (entry !== null && end !== null && entry < end && Math.abs(range.end - end) < 1e-6
         && starts.some(tick => tick !== null && Math.abs(range.start - tick) < 1e-6)) return entry;
     }
-    return range.start;
+    return fallback;
+  }
+
+  function auditionEntrances(config) {
+    // Older builds used the top-level field. An explicit audition config wins.
+    return config.audition ? (config.audition.enabled ? config.audition.recordingEntrances || [] : [])
+      : config.recordingEntrances || [];
   }
 
   class CountIn {
-    constructor(context, destination, plan, onBeat, timers = globalThis) {
+    constructor(context, destination, plan, onBeat, timers = globalThis, startTime = context.currentTime + 0.12) {
       this.context = context;
       this.timers = timers;
       this.nodes = new Set();
       this.settled = false;
       this.done = new Promise(resolve => { this.resolve = resolve; });
-      const start = context.currentTime + 0.12;
+      const start = startTime;
+      this.startTime = start;
       this.endTime = start + plan.duration;
       plan.beats.forEach(beat => {
         const at = start + beat.seconds;
@@ -164,19 +207,20 @@
       this.takes = [];
       this.current = null;
       this.nextId = 1;
-      this.lastChunk = null;
+      this.recentChunks = [];
     }
 
-    begin(frame) {
+    begin(frame, reference = null) {
       this.finish(frame, true);
       // Only working audio is bounded. Saved takes are released, never evicted.
       if (this.takes.length >= 3) throw new Error("Local storage is not keeping up");
-      const take = {id: this.nextId++, start: Math.round(frame), end: null,
+      const take = {id: this.nextId++, start: Math.round(frame), end: null, reference,
         pcm: new Int16Array(this.passFrames), written: 0, gap: false, firstGap: null, completed: false, peak: 0};
       this.takes.push(take);
       this.current = take;
-      // Audio can arrive just before a main-thread transport notification.
-      if (this.lastChunk) this.write(take, this.lastChunk.frame, this.lastChunk.samples);
+      // Audio can lead a main-thread transport notification by more than one
+      // block. Replay actual recent samples, never silence or interpolation.
+      for (const chunk of this.recentChunks) this.write(take, chunk.frame, chunk.samples);
       return take;
     }
 
@@ -198,16 +242,21 @@
       }
       for (let cursor = from; cursor < to; cursor += 1) {
         const value = Math.max(-1, Math.min(1, Number(samples[cursor - frame]) || 0));
-        take.peak = Math.max(take.peak, Math.abs(value));
         take.pcm[cursor - take.start] = Math.round(value * (value < 0 ? 32768 : 32767));
       }
+      const written = take.pcm.subarray(from - take.start, to - take.start);
+      getPitch()?.discardRestAudio(written, this.sampleRate, take.reference, from - take.start);
+      for (const value of written) take.peak = Math.max(take.peak, Math.abs(value) / 32768);
       take.written = to - take.start;
     }
 
     append(frame, samples) {
       if (!samples.length) return;
       this.takes.forEach(take => this.write(take, frame, samples));
-      this.lastChunk = {frame, samples};
+      this.recentChunks.push({frame, samples});
+      const cutoff = frame + samples.length - Math.ceil(this.sampleRate / 4);
+      while (this.recentChunks.length > 1
+        && this.recentChunks[0].frame + this.recentChunks[0].samples.length <= cutoff) this.recentChunks.shift();
     }
 
     info(take) {
@@ -236,14 +285,15 @@
         // Storage failures must not prevent the practice player from starting.
         const factory = this.factory === undefined ? globalThis.indexedDB : this.factory;
         if (!factory) { reject(new Error("Local recording storage is unavailable")); return; }
-        const request = factory.open(this.name, 1);
+        const request = factory.open(this.name, 2);
         let expired = false;
         const timer = setTimeout(() => { expired = true; reject(new Error("Local storage did not open")); }, 5000);
         request.onupgradeneeded = () => {
           const db = request.result;
-          db.createObjectStore("takes", {keyPath: "id"}).createIndex("song", "song");
-          db.createObjectStore("chunks", {keyPath: ["takeId", "offset"]}).createIndex("takeId", "takeId");
-          db.createObjectStore("counters");
+          if (!db.objectStoreNames.contains("takes")) db.createObjectStore("takes", {keyPath: "id"}).createIndex("song", "song");
+          if (!db.objectStoreNames.contains("chunks")) db.createObjectStore("chunks", {keyPath: ["takeId", "offset"]}).createIndex("takeId", "takeId");
+          if (!db.objectStoreNames.contains("counters")) db.createObjectStore("counters");
+          if (!db.objectStoreNames.contains("comps")) db.createObjectStore("comps", {keyPath: "key"}).createIndex("song", "song");
         };
         request.onsuccess = () => {
           clearTimeout(timer);
@@ -287,6 +337,52 @@
       });
     }
 
+    comps(song) {
+      return this.transaction(["comps"], "readonly", (tx, done) => {
+        tx.objectStore("comps").index("song").getAll(song).onsuccess = e => done(e.target.result);
+      });
+    }
+
+    saveComp(state, expectedRevision = state.revision) {
+      return this.transaction(["comps", "takes"], "readwrite", (tx, done, fail) => {
+        const store = tx.objectStore("comps");
+        store.get(state.key).onsuccess = e => {
+          if ((e.target.result?.revision || 0) !== expectedRevision) { fail(new Error("Comp changed in another tab. Reload and try again.")); return; }
+          tx.objectStore("takes").getAll().onsuccess = result => {
+            const records = new Map(result.target.result.map(t => [t.id, t]));
+            const ids = [...state.segments, ...(state.undo || [])].map(s => s.takeId);
+            if (ids.some(id => !records.has(id) || records.get(id).deleteAfter)) { fail(new Error("A comp source was deleted. Reload before editing.")); return; }
+            const next = {...state, revision: expectedRevision + 1, updatedAt: Date.now()};
+            store.put(next); done(next);
+          };
+        };
+      });
+    }
+
+    protectedTakes(tx, callback) {
+      tx.objectStore("comps").getAll().onsuccess = e => callback(new Set(e.target.result.flatMap(s =>
+        [...s.segments, ...(s.undo || [])].map(p => p.takeId))));
+    }
+
+    importComp(state, sources, expectedRevision) {
+      return this.transaction(["comps", "takes", "chunks", "counters"], "readwrite", (tx, done, fail) => {
+        tx.objectStore("comps").get(state.key).onsuccess = e => {
+          if ((e.target.result?.revision || 0) !== expectedRevision) { fail(new Error("Local comp changed during download. Try again.")); return; }
+          tx.objectStore("counters").get(state.song).onsuccess = counter => {
+            let number = counter.target.result || 0;
+            for (const {record, pcm} of sources) {
+              if (!(pcm instanceof Int16Array) || pcm.length !== record.frames) { fail(new Error("Invalid cloud recording")); return; }
+              tx.objectStore("takes").add({...record, song: state.song, number: ++number});
+              tx.objectStore("chunks").add({takeId: record.id, offset: 0, pcm});
+            }
+            const next = {...state, revision: expectedRevision + 1, updatedAt: Date.now()};
+            tx.objectStore("counters").put(number, state.song);
+            tx.objectStore("comps").put(next); done(next);
+          };
+        };
+      });
+    }
+
     append(record, offset, pcm, status) {
       return this.transaction(["takes", "chunks", "counters"], "readwrite", (tx, done, fail) => {
         const takes = tx.objectStore("takes");
@@ -313,6 +409,73 @@
       });
     }
 
+    discardLongRests(take, reference) {
+      const pitch = getPitch();
+      if (!pitch.restPolicyValid(reference)) throw new Error("Missing rest timing");
+      return this.transaction(["takes", "chunks"], "readwrite", (tx, done, fail) => {
+        const takes = tx.objectStore("takes");
+        takes.get(take.id).onsuccess = event => {
+          const record = event.target.result;
+          if (!record || !record.finalized || record.deleteAfter || record.frames !== take.frames
+            || JSON.stringify(record.pitchReference) !== JSON.stringify(take.pitchReference)) {
+            fail(new Error("Recording changed during rest cleanup")); return;
+          }
+          const frames = pitch.readContour(record);
+          record.pitchReference = reference;
+          record.restAudioVersion = pitch.REST_POLICY_VERSION;
+          record.updatedAt = Date.now();
+          if (frames) {
+            const clean = pitch.cleanRestFrames(frames, reference);
+            record.pitchContour = pitch.packContour(clean, record);
+            record.pitchScore = pitch.scoreFrames(clean, reference, record.frames / record.sampleRate);
+          } else { delete record.pitchContour; delete record.pitchScore; }
+          const cursor = tx.objectStore("chunks").index("takeId").openCursor(take.id);
+          cursor.onsuccess = e => {
+            const item = e.target.result;
+            if (!item) { takes.put(record); done(record); return; }
+            const chunk = item.value;
+            pitch.discardRestAudio(chunk.pcm, record.sampleRate, reference, chunk.offset);
+            item.update(chunk);
+            item.continue();
+          };
+        };
+      });
+    }
+
+    rebaseReference(take, reference) {
+      return this.transaction(["takes"], "readwrite", (tx, done) => {
+        const takes = tx.objectStore("takes");
+        takes.get(take.id).onsuccess = event => {
+          const record = event.target.result;
+          if (!record || record.frames !== take.frames || record.updatedAt !== take.updatedAt
+            || JSON.stringify(record.pitchReference) !== JSON.stringify(take.pitchReference)) { done(null); return; }
+          const next = getPitch().rebaseTake(record, reference);
+          if (next && next !== record) takes.put(next);
+          done(next);
+        };
+      });
+    }
+
+    pitchScore(id, frames, reference, result, contour) {
+      return this.transaction(["takes"], "readwrite", (tx, done) => {
+        const takes = tx.objectStore("takes");
+        takes.get(id).onsuccess = event => {
+          const record = event.target.result;
+          // Never resurrect a deleted take, grade a growing checkpoint, or
+          // overwrite a concurrent favorite/deletion edit with stale metadata.
+          if (!record || !record.finalized || record.deleteAfter || record.frames !== frames
+            || JSON.stringify(record.pitchReference) !== JSON.stringify(reference)) { done(null); return; }
+          if (contour && (contour.audioFrames !== record.frames || contour.sampleRate !== record.sampleRate
+            || contour.reference !== JSON.stringify(reference) || contour.analysisVersion !== result.version)) { done(null); return; }
+          record.pitchScore = result;
+          if (contour) record.pitchContour = contour;
+          else if (record.pitchContour?.analysisVersion !== result.version) delete record.pitchContour;
+          takes.put(record);
+          done(record);
+        };
+      });
+    }
+
     favorite(id, favorite) {
       return this.transaction(["takes"], "readwrite", (tx, done, fail) => {
         const takes = tx.objectStore("takes");
@@ -327,16 +490,20 @@
       });
     }
 
-    stageDelete(song, id, now = Date.now()) {
-      return this.transaction(["takes"], "readwrite", (tx, done, fail) => {
+    stageDelete(song, id, now = Date.now(), {includeFavorites = false} = {}) {
+      return this.transaction(["takes", "comps"], "readwrite", (tx, done, fail) => {
         const takes = tx.objectStore("takes");
+        this.protectedTakes(tx, protectedIds => {
+        if (protectedIds.has(id)) { fail(new Error("This recording is used by a track or its Undo. It has been kept.")); return; }
         takes.get(id).onsuccess = event => {
           const record = event.target.result;
-          if (!record || record.song !== song || record.favorite || record.deleteAfter) { done(null); return; }
+          if (!record || record.song !== song || (record.favorite && !includeFavorites) || record.deleteAfter) { done(null); return; }
+          if (includeFavorites) record.deleteFavorite = true;
           record.deleteAfter = now + DELETE_UNDO_MS;
           takes.put(record);
           done(record);
         };
+        });
       });
     }
 
@@ -350,6 +517,7 @@
           const record = cursor.value;
           if (record.deleteAfter > now) {
             delete record.deleteAfter;
+            delete record.deleteFavorite;
             cursor.update(record);
             restored.push(record);
           }
@@ -359,14 +527,15 @@
     }
 
     purgeDeleted(song, now = Date.now()) {
-      return this.transaction(["takes", "chunks"], "readwrite", (tx, done) => {
+      return this.transaction(["takes", "chunks", "comps"], "readwrite", (tx, done) => {
         const deleted = [];
         done(deleted);
+        this.protectedTakes(tx, protectedIds => {
         tx.objectStore("takes").index("song").openCursor(song).onsuccess = event => {
           const cursor = event.target.result;
           if (!cursor) return;
           const record = cursor.value;
-          if (record.deleteAfter && record.deleteAfter <= now && !record.favorite) {
+          if (!protectedIds.has(record.id) && record.deleteAfter && record.deleteAfter <= now && (!record.favorite || record.deleteFavorite)) {
             deleted.push(record.id);
             cursor.delete();
             tx.objectStore("chunks").index("takeId").openCursor(record.id).onsuccess = event => {
@@ -376,18 +545,25 @@
           }
           cursor.continue();
         };
+        });
       });
     }
 
     deleteUnstarred(song, ids) {
-      return this.transaction(["takes", "chunks"], "readwrite", (tx, done) => {
+      return this.deleteTakes(song, ids, {protectFavorites: true});
+    }
+
+    deleteTakes(song, ids, {protectFavorites = false} = {}) {
+      return this.transaction(["takes", "chunks", "comps"], "readwrite", (tx, done) => {
         const takes = tx.objectStore("takes");
         const deleted = [];
         done(deleted);
+        this.protectedTakes(tx, protectedIds => {
         for (const id of new Set(ids)) {
+          if (protectedIds.has(id)) continue;
           takes.get(id).onsuccess = event => {
             const record = event.target.result;
-            if (record && (record.song !== song || record.favorite)) return;
+            if (record && (record.song !== song || (protectFavorites && record.favorite))) return;
             deleted.push(id);
             takes.delete(id);
             tx.objectStore("chunks").index("takeId").openCursor(id).onsuccess = chunk => {
@@ -396,6 +572,7 @@
             };
           };
         }
+        });
       });
     }
 
@@ -426,13 +603,14 @@
   }
 
   class TakeJournal {
-    constructor(store, song, spec, sampleRate, {onSaved = () => {}, onError = () => {}} = {}) {
+    constructor(store, song, spec, sampleRate, {onSaved = () => {}, onDiscard = () => {}, onError = () => {}} = {}) {
       this.store = store;
       this.song = song;
       this.spec = spec;
-      this.buffer = new TakeBuffer(sampleRate, spec.seconds);
+      this.buffer = new TakeBuffer(sampleRate, Math.max(spec.seconds, spec.initial?.seconds || 0));
       this.entries = new Map();
       this.onSaved = onSaved;
+      this.onDiscard = onDiscard;
       this.onError = onError;
       this.failed = null;
       this.closed = false;
@@ -441,23 +619,45 @@
     fail(error) {
       if (this.failed) return;
       this.failed = error;
+      for (const entry of this.entries.values()) entry.discardShortTail = false;
       this.onError(error);
     }
 
     begin(frame) {
       if (this.failed || this.closed) return;
       try {
-        const take = this.buffer.begin(frame);
+        const {initial, ...loop} = this.spec;
+        const spec = this.buffer.nextId === 1 && initial ? {...loop, ...initial} : loop;
+        const take = this.buffer.begin(frame, spec.pitchReference);
         const record = {id: globalThis.crypto.randomUUID(), song: this.song, createdAt: Date.now(),
           sampleRate: this.buffer.sampleRate, frames: 0, favorite: false, finalized: false,
-          complete: false, ...this.spec};
+          complete: false, ...spec,
+          ...(getPitch()?.restPolicyValid(spec.pitchReference) ? {restAudioVersion: getPitch().REST_POLICY_VERSION} : {})};
         this.entries.set(take, {take, record, savedFrames: 0, saving: null});
         this.pump();
       } catch (error) { this.fail(error); }
     }
 
     append(frame, samples) { this.buffer.append(frame, samples); this.pump(); }
-    finish(frame) { this.buffer.finish(frame); this.closed = true; }
+    finish(frame, {discardShortTail = false, segment = null} = {}) {
+      const take = this.buffer.current;
+      this.buffer.finish(frame);
+      this.closed = true;
+      const entry = this.entries.get(take);
+      if (entry && take.end - take.start >= Math.round(entry.record.seconds * this.buffer.sampleRate)) take.completed = true;
+      if (entry && !this.failed && this.spec.mode === "segment" && segment
+        && take.end - take.start > (entry.record.leadInSeconds || 0) * this.buffer.sampleRate) {
+        const seconds = Math.min(entry.record.seconds, (take.end - take.start) / this.buffer.sampleRate);
+        entry.finalMetadata = {...segment(entry.record, seconds), seconds};
+        take.completed = true;
+        return;
+      }
+      if (!entry || this.failed || !discardShortTail) return;
+      const leadIn = Math.round((entry.record.leadInSeconds || 0) * this.buffer.sampleRate);
+      const passage = Math.round(entry.record.seconds * this.buffer.sampleRate) - leadIn;
+      // Count-in is retained in the audio, but cannot make a short attempt qualify.
+      entry.discardShortTail = passage > 0 && take.end - take.start - leadIn < passage;
+    }
 
     views() {
       return [...this.entries.values()].map(({take, record, savedFrames, saving}) => {
@@ -476,10 +676,25 @@
         const finalized = take.end !== null && (take.written >= take.end - take.start || force);
         if (!finalized && info.length - entry.savedFrames < this.buffer.sampleRate) continue;
         if (!info.length && finalized) { this.entries.delete(take); this.buffer.release(take); continue; }
+        if (finalized && entry.discardShortTail && !info.gap && take.written >= take.end - take.start) {
+          // Delete only this unfinished pass, after its pending checkpoints.
+          entry.saving = this.store.deleteTakes(this.song, [entry.record.id]).then(deleted => {
+            entry.discardShortTail = false;
+            if (deleted.includes(entry.record.id)) {
+              this.entries.delete(take);
+              this.buffer.release(take);
+              this.onDiscard(entry.record.id);
+            }
+          }).catch(error => this.fail(error)).finally(() => {
+            entry.saving = null;
+            this.pump(force);
+          });
+          continue;
+        }
         const end = info.length;
         const pcm = take.pcm.slice(entry.savedFrames, end);
         entry.saving = this.store.append(entry.record, entry.savedFrames, pcm,
-          {complete: finalized && info.complete, finalized, gap: info.gap, peak: info.peak})
+          {...(finalized ? entry.finalMetadata : {}), complete: finalized && info.complete, finalized, gap: info.gap, peak: info.peak})
           .then(record => {
             entry.record = record;
             entry.savedFrames = end;
@@ -498,7 +713,7 @@
         await Promise.all([...this.entries.values()].map(entry => entry.saving));
         this.pump(true);
       }
-      this.buffer.lastChunk = null;
+      this.buffer.recentChunks.length = 0;
     }
 
     async retry() { this.failed = null; await this.flush(); }
@@ -525,7 +740,7 @@
     view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
     view.setUint16(32, 2, true); view.setUint16(34, 16, true);
     text(36, "data"); view.setUint32(40, samples.length * 2, true);
-    samples.forEach((value, index) => view.setInt16(44 + index * 2, value, true));
+    for (let i = 0; i < samples.length; i++) view.setInt16(44 + i * 2, samples[i], true);
     return bytes;
   }
 
@@ -637,6 +852,6 @@
   }
 
   return {TakeBuffer, TakeStore, TakeJournal, wavBytes, PcmCapture, CountIn, countInPlan,
-    recordingEntrance, takeBytes, takeFilename, takeArchive, DELETE_UNDO_MS, STORAGE_WARNING_BYTES,
+    recordingEntrance, auditionEntrances, takeBytes, takeFilename, takeArchive, takePlaybackWindow, takePlaybackGain, DELETE_UNDO_MS, STORAGE_WARNING_BYTES,
     MAX_LOOP_SECONDS, WORKLET_SOURCE};
 });

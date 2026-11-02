@@ -17,6 +17,7 @@ embeds notices in each standalone HTML output.
 | fflate 0.8.3 | `vendor/fflate/fflate.js` | [MIT](vendor/fflate/LICENSE); [source](https://github.com/101arrowz/fflate/tree/v0.8.3); unmodified UMD distribution from `https://cdn.jsdelivr.net/npm/fflate@0.8.3/umd/index.js` |
 | Lucide icons | Inline icon paths in `template/index.html` | [ISC](vendor/lucide/LICENSE); [source](https://github.com/lucide-icons/lucide) |
 | YouTube brand icon | Inline path in `template/index.html` | [Simple Icons source](https://github.com/simple-icons/simple-icons/blob/develop/icons/youtube.svg), [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| Signalsmith Stretch (recorded-take octave shifting) | `vendor/signalsmith-stretch/SignalsmithStretch.js` | [MIT](vendor/signalsmith-stretch/LICENSE-signalsmith-stretch.txt); [upstream](https://github.com/Signalsmith-Audio/signalsmith-stretch) |
 
 AlphaTab's bundled header also credits TinySoundFont, SFZero, the Haxe standard
 library, SharpZipLib, NVorbis, and libvorbis. That header is retained verbatim.
@@ -31,6 +32,8 @@ trademark rights or imply endorsement. YouTube is a trademark of Google LLC.
 Playwright is a development-only dependency, pinned in `package-lock.json`
 under Apache 2.0. It is not included in generated HTML. Python, Node.js and
 MuseScore are external prerequisites, not redistributed by this repository.
+Cloud sign-in pages, server dependencies and conductor extensions are not part
+of this standalone-player distribution.
 
 ## Runtime File Fingerprints
 
@@ -43,6 +46,7 @@ SHA-256 hashes of the initial shared release:
 4092b92cec888377666265b724d676628d377d4d5f56b03b76d9c2c27fd061ea  vendor/fft/fft.js
 462ef8041fc970e3615a20a9dd2b2e3047a073b2da729ef4f02b634bba8b7b83  vendor/fflate/fflate.js
 0a1df3a083d0c010560aa342e87959c8c1070e6fd54545741f083f22d0c8b551  vendor/fflate/LICENSE
+97530b11d5bc01015af4cde40d6aa55ff10c40aa1294ca4c8c5762027d517a46  vendor/signalsmith-stretch/SignalsmithStretch.js
 ```
 
 No choir repertoire, recordings, private scores or arrangement exports are

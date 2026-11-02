@@ -412,6 +412,37 @@ test('a long volume drag counts once, not once per input event', () => {
   button.emit('dblclick');
   assert.equal(calls.length, 1, 'programmatic changes and existing shortcuts are not slow input');
 });
+test('numeric click steps by default with configurable increments, without trailing clicks after drags or cancellation', () => {
+  for (const clickStep of [undefined,20]) {
+    const button=new Button(100),control=controls.createDragNumber(button,{
+      values:[80,90,100,110,120,130,140],defaultValue:100,pixelsPerStep:8,clickStep,format:String,aria:String,
+    });
+    const down=()=>button.emit('pointerdown',{button:0,pointerId:1,clientX:100,clientY:100});
+    const up=()=>button.emit('pointerup',{pointerId:1,clientX:100,clientY:100});
+    down();up();button.emit('click',{detail:1});assert.equal(control.value(),100+(clickStep??10));
+    control.setValue(100);down();button.emit('pointermove',{pointerId:1,clientX:100,clientY:76});
+    assert.equal(control.value(),130);button.emit('pointermove',{pointerId:1,clientX:100,clientY:100});up();
+    assert.equal(control.value(),100,'returning to the start is not a click');
+    down();button.emit('pointercancel',{pointerId:1});assert.equal(control.value(),100);
+    button.emit('click',{detail:0});assert.equal(control.value(),100+(clickStep??10));
+    control.setValue(140);down();up();assert.equal(control.value(),140,'bounded numeric values clamp');
+  }
+});
+
+test('click increments are independent of fine drag steps, with explicit cycling only',()=>{
+  const button=new Button(100),control=controls.createDragNumber(button,{
+    values:Array.from({length:41},(_,i)=>i*5),defaultValue:100,clickStep:10,format:String,aria:String,
+  });
+  button.emit('click',{detail:0});assert.equal(control.value(),110);
+  button.emit('keydown',{key:'ArrowUp'});assert.equal(control.value(),115);
+  button.emit('click',{detail:0});assert.equal(control.value(),125);
+  const speed=new Button(.75),rate=controls.createDragNumber(speed,{
+    values:Array.from({length:31},(_,i)=>(50+i*5)/100),defaultValue:1,clickStep:.05,wrapOnClick:true,resetOnDoubleClick:false,format:String,aria:String,
+  });
+  speed.emit('click',{detail:0});assert.equal(rate.value(),.8,'legacy 75% remains valid');
+  speed.emit('dblclick');assert.equal(rate.value(),.8,'rapid pager-style taps must not reset speed');
+  rate.setValue(2);speed.emit('click',{detail:0});assert.equal(rate.value(),.5);
+});
 
 test('pan gestures track completion, ignore cancellations and preserve keyboard input', () => {
   const button = new Button(-50);

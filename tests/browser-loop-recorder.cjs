@@ -1,3 +1,4 @@
+const {toggleRecording, startRecording, stopRecording, deleteUnused} = require('./browser-sing.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -5,35 +6,103 @@ const {checkLocalTakeFailures} = require('./browser-local-takes.cjs');
 const zip = require('../vendor/fflate/fflate.js');
 
 const recordingProbe = `
+  get compDescriptor() { return compDescriptor(); },
+  get compState() { return compPanel?.state(); },
+  refreshComp() { return compPanel?.refresh({force:true}); },
+  // Older takes the armed track already considered stay outside it.
+  async keepLoose(ids) {
+    await compPanel.refresh({force:true, active: takeState !== 'off'});
+    const state = compPanel.state();
+    if (state) await takeStore.saveComp({...state, processed: [...new Set([...state.processed, ...ids])]});
+  },
+  // True once no recording is waiting to be offered or deleted.
+  async tracksSettled() {
+    await compPanel?.refresh({force:true, active: takeState !== 'off'});
+    const comps = await takeStore.comps(takeSongKey()), takes = allTakes();
+    return MeleteComp.discardable(comps, takes).length === 0
+      && takes.every(take => compPanel.loose(take) || comps.some(state => MeleteComp.protectedIds(state).includes(take.id)));
+  },
   get takeStore() { return takeStore; },
+  get takeSong() { return takeSongKey(); },
+  reloadTakes() { return loadTakeLibrary(); },
+  pitchReference(spec) { return takePitchReference(spec); },
+  get takeReview() { return takeReview && {id: takeReview.id, start: takeReview.start, end: takeReview.end,
+    frames: takeReview.frames, track: takeReview.track, duration: takeReview.buffer.duration}; },
+  get savedPractice() { return currentPreferenceState(); },
+  enableAudition(recordingEntrances) {
+    if (recordingEntrances) config.audition = {enabled:true,recordingEntrances};
+    else if (config.audition) config.audition.enabled = true;
+  },
+  get auditionEnabled() { return Boolean(config.audition?.enabled); },
+  get scoreMeasures() { return sequence.measures; },
+  get scoreNotes() { return sequence.notes; },
+  auditionNote(x,y,nearest=false) { return standardNoteAtClientPoint(x,y,nearest); },
+  auditionChord(x,y) { return standardChordTargetAtClientPoint(x,y); },
+  get reviewBounds() { return playbackCursorBounds(); },
   set takeWarningAt(bytes) { takeStorageWarningAt = bytes; renderTakePanel(); },
   get countIn() { return {beat: elements.takeCountIn.dataset.beat, visible: !elements.takeCountIn.hidden,
-    endTime: takeCountIn?.endTime, now: engine.context?.currentTime, spec: recordingLoopSpec(),
-    captureStartDelay: takeJournal?.buffer.current ? takeJournal.buffer.current.start / pitchCaptureContext.sampleRate
+    startTime: takeCountIn?.startTime, endTime: takeCountIn?.endTime,
+    now: engine.context?.currentTime, spec: takeState !== 'off' && takeJournal ? takeJournal.spec : recordingLoopSpec(),
+    captureStartDelay: takeJournal?.buffer.current && takeCountIn ? takeJournal.buffer.current.start / pitchCaptureContext.sampleRate
       - pitchCaptureContext.currentTime + engine.context.currentTime - takeCountIn.endTime : null,
     cursor: playbackCursorBounds()}; },
-  get recording() { return {state: takeState, notice: takeNotice, part: takeJournal?.spec.part,
+  get recording() {
+    if (!window.__captureGapHistory) {
+      window.__captureGapHistory = [];
+      const write = MeleteRecording.TakeBuffer.prototype.write;
+      MeleteRecording.TakeBuffer.prototype.write = function(take, frame, samples) {
+        const previous = take.gap; write.call(this, take, frame, samples);
+        if (!previous && take.gap) window.__captureGapHistory.push({start:take.start,frame,...take.firstGap});
+      };
+    }
+    return {state: takeState, notice: takeNotice, part: takeJournal?.spec.part,
     ready: takeLibraryReady, capacity: takeJournal?.buffer.passFrames || 0,
     sampleRate: takeJournal?.buffer.sampleRate || allTakes()[0]?.sampleRate || 0,
-    takes: allTakes().reverse(),
+    takes: allTakes().sort((a, b) => a.createdAt - b.createdAt || (a.number || 0) - (b.number || 0))
+      .map(take=>({...take, ...(take.gap ? {captureGaps:window.__captureGapHistory} : {})})),
     bytes: takeJournal?.buffer.takes.reduce((n, take) => n + take.pcm.byteLength, 0) || 0,
     microphone: pitchCaptureStream?.getAudioTracks()[0]?.enabled || false,
-    pitch: pitchCaptureState}; },
+    gaps: window.__captureGapHistory, pitch: pitchCaptureState}; },
 `;
 
 async function checkLoopRecorder(page, origin, settled, {mobile, output, temporary}) {
+  const enableAudition = () => page.evaluate(() => {
+    const spec=__qa.countIn.spec;
+    __qa.enableAudition([{loop:spec.label,parts:{[spec.part]:'1'}}]);
+  });
   await page.goto(origin + '?loop=1-1.3');
   await settled();
   await page.waitForFunction(() => __qa.engine.hasLoop() && __qa.recording.ready);
   if (await page.locator('#partChooser').isVisible()) await page.locator('#partChooserDismiss').click();
   assert.equal((await page.evaluate(() => __qa.recording)).state, 'off', 'URL never arms audio recording');
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
-  await page.locator('#loopRecorder').click();
+  if (await page.locator('#practicePart').getAttribute('data-value') === '') {
+    await page.locator('#practicePart').press('ArrowDown');
+    await page.waitForFunction(() => document.getElementById('practicePart').dataset.value !== '');
+  }
+  if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
+  await enableAudition();
   assert.equal(await page.locator('#takePanel').isVisible(), true);
-  await page.locator('#recordTake').click();
+  await page.waitForFunction(() => document.querySelector('#takeMicrophone option[value]:not([value=""])'));
+  const inputId = await page.locator('#takeMicrophone option').evaluateAll(options => options.find(option => option.value)?.value);
+  await page.locator('#takeMicrophone').selectOption(inputId);
+  await page.evaluate(() => {
+    const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    window.microphoneRequests = [];
+    navigator.mediaDevices.getUserMedia = constraints => {
+      microphoneRequests.push(constraints);
+      return original(constraints);
+    };
+  });
+  assert.equal((await page.evaluate(() => __qa.recording)).pitch, 'off', 'choosing an input does not activate Sing');
+  assert.equal(await page.evaluate(() => microphoneRequests.length), 0, 'choosing an input never records');
+  await toggleRecording(page);
   await page.waitForFunction(() => __qa.recording.state === 'counting' && __qa.countIn.visible);
-  assert.equal(await page.evaluate(() => __qa.engine.playing), false, 'no score playback during count-in');
-  assert.equal((await page.evaluate(() => __qa.recording)).takes.length, 0, 'count-in creates no throwaway take');
+  assert.equal(await page.evaluate(() => __qa.engine.playing), true, 'guide transport runs through the count-in');
+  await page.waitForFunction(() => __qa.recording.takes[0]?.seconds > .15);
+  assert.equal((await page.evaluate(() => __qa.recording)).takes.length, 1, 'count-in belongs to the first take');
+  assert.equal(await page.evaluate(() => microphoneRequests[0].audio.deviceId.exact), inputId);
+  assert.equal(await page.locator('#takeMicrophone').isDisabled(), true, 'input cannot change mid-take');
   await page.screenshot({path: path.join(output, `count-in-${mobile ? 'mobile' : 'desktop'}.png`)});
   const cue = await page.locator('#takeCountIn').boundingBox(), viewportBefore = page.viewportSize();
   assert.ok(cue.x >= 0 && cue.y >= 0 && cue.x + cue.width <= viewportBefore.width && cue.y + cue.height <= viewportBefore.height);
@@ -46,37 +115,62 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   assert.equal(await page.locator('#settingsToggle').evaluate(button => button.classList.contains('has-recording')), true);
   const counted = await page.evaluate(() => __qa.countIn);
   assert.ok(counted.now >= counted.endTime && Number.isFinite(counted.captureStartDelay)
-    && counted.captureStartDelay >= -.03 && counted.captureStartDelay < .25,
-    `microphone frames start on the count-in boundary: ${JSON.stringify(counted)}`);
-  await page.waitForFunction(() => __qa.recording.takes.length >= 5 && __qa.recording.takes.at(-1)?.seconds > .2);
-  await page.locator('#recordTake').click();
+    && Math.abs(counted.captureStartDelay + counted.spec.initial.leadInSeconds) < .03,
+    `microphone frames start with the first count, before the entrance: ${JSON.stringify(counted)}`);
+  await page.waitForFunction(() => __qa.recording.takes.length >= 6 && __qa.recording.takes.at(-1)?.seconds > 1.05);
+  await page.waitForFunction(() => __qa.recording.state === 'recording'
+    && __qa.recording.takes.some(take => take.complete && take.pitchScore), null, {timeout: 60000});
+  const passes = (await page.evaluate(() => __qa.recording)).takes.length;
+  assert.ok(passes >= 6, 'no three-take limit while looping');
+  // Later passes replace the first, so keep its audio for the checks below.
+  const complete = await page.evaluate(() => __qa.recording.takes[0]);
+  assert.equal(complete.complete, true);
+  const wav = Buffer.from(await page.evaluate(async id => Array.from(new Uint8Array(await (await __qa.takeStore.wav(id)).arrayBuffer())), complete.id));
+  // Stop early in a pass, so it is still the short unfinished one when Stop lands.
+  await page.waitForFunction(() => {
+    const take = __qa.recording.takes.at(-1);
+    return take && !take.complete && take.seconds < .4;
+  }, null, {polling: 16});
+  const tail = await page.evaluate(() => __qa.recording.takes.at(-1));
+  await toggleRecording(page);
   await page.waitForFunction(() => __qa.recording.state === 'off');
   const result = await page.evaluate(() => __qa.recording);
-  assert.ok(result.takes.length >= 5, 'no three-take limit');
-  assert.ok(result.takes.slice(0, -1).every(take => take.complete), JSON.stringify(result));
-  assert.equal(result.takes.at(-1).complete, false, 'interrupted pass is explicitly partial');
+  assert.ok(result.takes.every(take => take.complete), JSON.stringify(result));
+  assert.ok(!result.takes.some(take => take.id === tail.id), `Stop discards the short last pass: ${JSON.stringify({
+    tail: {id: tail.id, number: tail.number, seconds: tail.seconds, active: tail.active, complete: tail.complete},
+    takes: result.takes.map(({id, number, seconds, complete}) => ({id, number, seconds, complete}))})}`);
+  assert.equal(result.notice, '', 'unfinished loops are discarded without a status explanation');
+  assert.equal(await page.evaluate(id => __qa.takeStore.transaction(['chunks'], 'readonly', (tx, done) => {
+    tx.objectStore('chunks').index('takeId').count(id).onsuccess = event => done(event.target.result);
+  }), tail.id), 0, 'ignored checkpoints do not leave audio chunks behind');
   assert.ok(result.takes.every(take => !take.unsaved));
   assert.ok(result.bytes <= result.capacity * 3 * 2);
   assert.equal(result.bytes, 0, 'saved takes do not retain PCM arrays in RAM');
   assert.equal(result.microphone, false, 'only recorder owned input, so Stop disables it');
+  assert.equal(result.pitch, 'off', 'Sing-off stops pitch capture too');
+  assert.ok(result.takes.every(take => take.pitchReference?.fingerprint && take.pitchReference.notes.length),
+    'real microphone capture snapshots the selected part and performed timing');
+  await page.waitForFunction(() => __qa.recording.takes.every(take => take.pitchScore), null, {timeout: 60000});
+  // Each pass replaced the previous one; only the track and its Undo keep audio.
+  await page.waitForFunction(() => __qa.tracksSettled(), null, {timeout: 30000, polling: 250});
+  const kept = (await page.evaluate(() => __qa.recording)).takes;
+  const keptWav = Buffer.from(await page.evaluate(async id => Array.from(new Uint8Array(await (await __qa.takeStore.wav(id)).arrayBuffer())), kept[0].id));
+  const protectedAfterStop = await page.evaluate(async () => (await __qa.takeStore.comps(__qa.takeSong)).flatMap(MeleteComp.protectedIds));
+  assert.ok(kept.length && kept.length < passes && kept.every(take => protectedAfterStop.includes(take.id)),
+    JSON.stringify({passes, kept: kept.map(({id, number}) => ({id, number})), protectedAfterStop}));
+  assert.ok(!kept.some(take => take.id === complete.id), 'a replaced pass is deleted once Undo moves past it');
+  assert.equal(await page.locator('#takeLoose').isVisible(), false, 'no loose takes after a loop recording');
+  assert.equal(await page.locator('#compRows > .comp-row.is-armed').count(), 1);
+  assert.equal(await page.locator('#takeMicrophone').isEnabled(), true);
   assert.equal(await page.locator('#settingsToggle').evaluate(button => button.classList.contains('has-recording')), false);
-  const complete = result.takes[0];
-  await page.getByRole('button', {name: `Listen to take ${complete.number}`, exact: true}).click();
-  await page.waitForFunction(() => !document.querySelector('#takePreview').paused && document.querySelector('#takePreview').readyState >= 2);
-  assert.equal(await page.evaluate(() => __qa.engine.playing), false, 'preview cannot overlap guide playback');
+  await page.locator('#compRows > .comp-row.is-armed .comp-review').click();
+  await page.waitForFunction(() => __qa.takeReview);
+  assert.equal(await page.evaluate(() => __qa.engine.playing), false, 'selection loads without auto-playing');
+  await page.locator('#playPause').click();
+  await page.waitForFunction(() => __qa.engine.playing && __qa.engine.takeReviewSource);
   await page.keyboard.press('Space');
-  assert.equal(await page.locator('#takePreview').evaluate(audio => audio.paused), true);
-  assert.equal(await page.evaluate(() => __qa.engine.playing), false, 'Space controls an open take preview');
-  const beforePreviewSeek = await page.evaluate(() => __qa.engine.currentSeconds());
-  await page.locator('#takePreview').press('ArrowRight');
-  assert.equal(await page.evaluate(() => __qa.engine.currentSeconds()), beforePreviewSeek, 'native audio keys do not seek the score');
-  const pending = page.waitForEvent('download');
-  await page.getByRole('button', {name: `Download take ${complete.number} as WAV`, exact: true}).click();
-  const download = await pending;
-  const filename = path.join(temporary, `loop-take-${mobile ? 'mobile' : 'desktop'}.wav`);
-  await download.saveAs(filename);
-  assert.match(download.suggestedFilename(), new RegExp(`take-${complete.number}\\.wav$`));
-  const wav = await fs.readFile(filename);
+  assert.equal(await page.evaluate(() => __qa.engine.playing), false, 'Space pauses recording and accompaniment together');
+  await page.locator('#exitTakeReview').click();
   assert.equal(wav.toString('ascii', 8, 12), 'WAVE');
   assert.equal(wav.readUInt16LE(22), 1);
   assert.equal(wav.readUInt32LE(24), result.sampleRate);
@@ -93,7 +187,22 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   const micAmplitude = amplitude(997), guideAmplitude = amplitude(523.251);
   assert.ok(micAmplitude > .05, `microphone signal present (${micAmplitude})`);
   assert.ok(guideAmplitude < .005, `score output not mixed into file (${guideAmplitude})`);
+  assert.ok(complete.seconds > counted.spec.seconds + counted.spec.initial.leadInSeconds - .05);
+  const countFrames = Math.floor(counted.spec.initial.leadInSeconds * result.sampleRate);
+  let countEnergy = 0;
+  for (let i = 0; i < countFrames; i++) countEnergy += (wav.readInt16LE(44 + i * 2) / 32768) ** 2;
+  assert.ok(Math.sqrt(countEnergy / countFrames) > .05, 'download retains actual microphone audio during the count-in');
+  assert.ok(complete.pitchReference.notes[0][0] >= counted.spec.initial.leadInSeconds,
+    'preparation is retained in audio but not graded as the audition');
   await page.screenshot({path: path.join(output, `loop-recorder-${mobile ? 'mobile' : 'desktop'}.png`)});
+  if (!mobile) {
+    const clearance = await page.evaluate(() => {
+      const box = selector => document.querySelector(selector).getBoundingClientRect();
+      return {status: box('#takeStatus').bottom, storage: box('#takeStorage').top,
+        list: box('.take-review').bottom};
+    });
+    assert.ok(clearance.status <= clearance.storage + 1, JSON.stringify(clearance));
+  }
   const bounds = await page.locator('#takePanel').boundingBox();
   const viewport = page.viewportSize();
   assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width + 1);
@@ -114,55 +223,64 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   });
   assert.equal(panelAboveReturn, true, 'floating score controls cannot cover take review');
 
-  await page.getByRole('button', {name: `Favorite take ${complete.number}`, exact: true}).click();
-  await page.waitForFunction(id => __qa.recording.takes.find(take => take.id === id)?.favorite, complete.id);
+  assert.equal(await page.locator('.take-star, #takeFavorites').count(), 0);
   await page.reload(); await settled();
+  await enableAudition();
   await page.waitForFunction(() => __qa.recording.ready);
   const restored = await page.evaluate(() => __qa.recording);
-  assert.equal(restored.takes.length, result.takes.length);
-  assert.equal(restored.takes[0].favorite, true, 'favorites survive reload');
+  assert.equal(restored.takes.length, kept.length);
+  assert.ok(!restored.takes.some(take => take.id === tail.id), 'ignored tail stays gone after reload');
   assert.equal(restored.bytes, 0, 'restoring a library loads metadata, not every audio file');
   assert.equal(restored.state, 'off');
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
-  await page.locator('#loopRecorder').click();
-  const restoredAudio = await page.evaluate(async id => Array.from(new Uint8Array(await (await __qa.takeStore.wav(id)).arrayBuffer())), complete.id);
-  assert.deepEqual(Buffer.from(restoredAudio), wav, 'reloaded WAV is byte-identical');
-  await page.locator('#takeFavorites').click();
-  assert.equal(await page.locator('.take-row').count(), 1);
-  assert.equal(await page.getByRole('button', {name: `Delete take ${complete.number}`, exact: true}).isDisabled(), true);
-  await page.locator('#takeFavorites').click();
-  const unwanted = restored.takes[1];
-  // Favorites export contains only selected WAVs and leaves the local library intact.
+  if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
+  await page.waitForFunction(id => document.getElementById('takeMicrophone').value === id, inputId);
+  const restoredAudio = await page.evaluate(async id => Array.from(new Uint8Array(await (await __qa.takeStore.wav(id)).arrayBuffer())), kept[0].id);
+  assert.deepEqual(Buffer.from(restoredAudio), keptWav, 'reloaded WAV is byte-identical');
+  // Seed one take outside the track to exercise the loose list and its deletion.
+  const unwanted = await page.evaluate(async () => {
+    const id = crypto.randomUUID(), pcm = Int16Array.from({length: 8000}, (_, i) => Math.round(3000 * Math.sin(i / 5)));
+    await __qa.takeStore.append({id, song: __qa.takeSong, createdAt: Date.now(), sampleRate: 8000, part: 'Test',
+      label: 'loose fixture', start: 0, end: 1, rate: 1, peak: .1}, 0, pcm, {finalized: true, complete: true});
+    await __qa.reloadTakes();
+    return __qa.recording.takes.find(take => take.id === id);
+  });
+  await page.locator('#takeLoose').waitFor({state: 'visible'});
+  assert.match(await page.locator('#takeLooseMessage').innerText(), /^1 take not in a track/);
+  assert.equal(await page.getByRole('button', {name: `Delete take ${unwanted.number}`, exact: true}).isEnabled(), true);
+  // Archive export contains all WAVs and leaves the local library intact.
   await page.locator('#takeActions summary').click();
   await page.screenshot({path: path.join(output, `take-actions-${mobile ? 'mobile' : 'desktop'}.png`)});
   const zipPending = page.waitForEvent('download');
-  await page.locator('#downloadFavorites').click();
+  await page.locator('#downloadTakes').click();
   const zipDownload = await zipPending;
-  const zipFile = path.join(temporary, `favorites-${mobile ? 'mobile' : 'desktop'}.zip`);
+  const zipFile = path.join(temporary, `takes-${mobile ? 'mobile' : 'desktop'}.zip`);
   await zipDownload.saveAs(zipFile);
-  assert.match(zipDownload.suggestedFilename(), /-favorites\.zip$/);
+  assert.match(zipDownload.suggestedFilename(), /-takes\.zip$/);
   const files = zip.unzipSync(await fs.readFile(zipFile));
-  assert.equal(Object.keys(files).length, 1);
-  assert.deepEqual(Buffer.from(Object.values(files)[0]), wav);
-  assert.equal((await page.evaluate(() => __qa.recording)).takes.length, restored.takes.length);
+  assert.equal(Object.keys(files).length, kept.length + 1);
+  assert.ok(Object.values(files).some(data => Buffer.from(data).equals(keptWav)));
+  assert.equal((await page.evaluate(() => __qa.recording)).takes.length, kept.length + 1);
   // Exercise the warning at a small test threshold without generating bulk audio.
   await page.evaluate(() => { __qa.takeWarningAt = 1; });
   assert.equal(await page.locator('#takeStorageWarning').isVisible(), true);
-  assert.match(await page.locator('#takeStorageWarningMessage').innerText(), /Nothing is deleted automatically/);
+  assert.match(await page.locator('#takeStorageWarningMessage').innerText(), /Saved takes are never evicted/);
   await page.screenshot({path: path.join(output, `take-storage-warning-${mobile ? 'mobile' : 'desktop'}.png`)});
   await page.locator('#takeStorageCleanup').click();
-  assert.match(await page.locator('#takeDeleteMessage').innerText(), /free [\d.]+ MB.*Favorites are kept/);
+  await page.locator('#takeDeletePrompt').waitFor({state: 'visible'});
+  assert.match(await page.locator('#takeDeleteMessage').innerText(), /delete .*free [\d.]+ MB/);
   await page.locator('#cancelTakeDelete').click();
   await page.locator('#takeStorageKeep').click();
   assert.equal(await page.locator('#takeStorageWarning').isVisible(), false);
-  assert.equal((await page.evaluate(() => __qa.recording)).takes.length, restored.takes.length);
+  assert.equal((await page.evaluate(() => __qa.recording)).takes.length, kept.length + 1);
   const unwantedWav = await page.evaluate(async id => Array.from(new Uint8Array(await (await __qa.takeStore.wav(id)).arrayBuffer())), unwanted.id);
   await page.getByRole('button', {name: `Delete take ${unwanted.number}`, exact: true}).click();
   await page.waitForFunction(id => !__qa.recording.takes.some(take => take.id === id), unwanted.id);
   await page.reload(); await settled();
+  await enableAudition();
   await page.waitForFunction(() => __qa.recording.ready);
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
-  await page.locator('#loopRecorder').click();
+  if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
   assert.equal(await page.locator('#takeUndo').isVisible(), true, 'Undo survives reload within the grace period');
   await page.locator('#undoTakeDelete').click();
   await page.waitForFunction(id => __qa.recording.takes.some(take => take.id === id), unwanted.id);
@@ -171,51 +289,71 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   await page.waitForFunction(id => !__qa.recording.takes.some(take => take.id === id), unwanted.id);
   await page.waitForFunction(async id => !(await __qa.takeStore.usage()).some(take => take.id === id), unwanted.id, {timeout: 15000});
   await page.locator('#takeUndo').waitFor({state: 'hidden'});
-  await page.locator('#takeActions summary').click();
-  await page.locator('#deleteUnstarred').click();
-  assert.match(await page.locator('#takeDeleteMessage').innerText(), /Permanently delete.*free [\d.]+ MB/);
-  await page.locator('#cancelTakeDelete').click();
+  assert.equal(await page.locator('#takeLoose').isVisible(), false, 'track sources are never offered for deletion');
 
-  // Sing and audio recording own separate branches of a single input stream.
-  await page.locator('#closeTakes').click();
+  // Sing and audio capture now have one lifecycle; no trace-only listening.
+  await page.locator('#settingsToggle').click();
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
-  await page.locator('#pitchCapture').click();
-  await page.waitForFunction(() => __qa.recording.pitch === 'armed');
-  await page.locator('#loopRecorder').click();
-  await page.locator('#recordTake').click();
+  if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
+  await toggleRecording(page);
   await page.waitForFunction(() => __qa.recording.state === 'recording');
-  await page.locator('#closeTakes').click();
+  await page.locator('#settingsToggle').click();
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
   await page.locator('#pitchCapture').click();
-  assert.equal((await page.evaluate(() => __qa.recording)).microphone, true, 'Sing off leaves recording input live');
-  await page.waitForFunction(() => __qa.recording.takes.at(-1)?.seconds > .35);
+  await page.waitForFunction(() => __qa.recording.state === 'off');
+  assert.equal((await page.evaluate(() => __qa.recording)).microphone, false, 'Sing off releases capture');
+  assert.equal(await page.evaluate(() => __qa.engine.playing), true, 'Sing off does not interrupt listening');
   await page.locator('#pitchCapture').click();
   await page.waitForFunction(() => __qa.recording.pitch === 'recording');
-  await page.locator('#loopRecorder').click();
-  await page.locator('#recordTake').click();
-  await page.waitForFunction(() => __qa.recording.state === 'off');
-  assert.equal((await page.evaluate(() => __qa.recording)).microphone, true, 'recorder off leaves Sing input live');
-  await page.locator('#closeTakes').click();
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
-  await page.locator('#pitchCapture').click();
+  await toggleRecording(page);
+  await page.waitForFunction(() => __qa.recording.state === 'off');
+  assert.equal((await page.evaluate(() => __qa.recording)).microphone, false);
 
-  // Transport edits retain the interrupted take rather than silently splicing.
-  await page.locator('#loopRecorder').click();
-  // A canceled count-in never records silence, resumes late, or saves an empty take.
-  const beforeCancel = (await page.evaluate(() => __qa.recording)).takes.length;
+  // Space also silently discards a nearly complete pass.
+  await page.waitForFunction(() => __qa.tracksSettled(), null, {timeout: 30000, polling: 250});
+  const beforeNearEnd = (await page.evaluate(() => __qa.recording)).takes.length;
+  await toggleRecording(page);
+  const stopping = await page.waitForFunction(() => {
+    const take = __qa.recording.takes.find(take => take.active), spec = __qa.countIn.spec.initial;
+    if (__qa.recording.state !== 'recording' || !take
+      || take.seconds < spec.leadInSeconds + .92 * (spec.seconds - spec.leadInSeconds)) return false;
+    // Stop within this frame; a protocol round trip can cross the loop boundary.
+    document.dispatchEvent(new KeyboardEvent('keydown', {key: ' ', code: 'Space', bubbles: true, cancelable: true}));
+    return {id: take.id, seconds: take.seconds, end: spec.seconds};
+  });
+  const stoppedAt = await stopping.jsonValue();
+  await stopping.dispose();
+  assert.ok(stoppedAt.seconds < stoppedAt.end, `test must stop before a full pass: ${JSON.stringify(stoppedAt)}`);
+  await page.waitForFunction(() => __qa.recording.state === 'off');
+  const nearEnd = (await page.evaluate(() => __qa.recording)).takes;
+  const recoveredGap = nearEnd.find(take=>take.id===stoppedAt.id);
+  assert.ok(!recoveredGap || (recoveredGap.gap && !recoveredGap.complete && !recoveredGap.unsaved),
+    'ordinary stubs are discarded; genuine missing audio remains recoverable');
+  assert.equal(nearEnd.length, beforeNearEnd + Number(Boolean(recoveredGap)), JSON.stringify({stoppedAt,
+    nearEnd:nearEnd.map(({id,seconds,gap,complete})=>({id,seconds,gap,complete})),
+    gaps:await page.evaluate(()=>__qa.recording.gaps)}));
+
+  // Transport edits discard ordinary interrupted takes rather than splicing.
+  if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
+  // Count-in stubs are discarded for every intentional transport change.
   for (const action of ['space', 'stop', 'rate']) {
-    await page.locator('#recordTake').click();
+    await page.waitForFunction(() => __qa.tracksSettled(), null, {timeout: 30000, polling: 250});
+    const beforeCancel = (await page.evaluate(() => __qa.recording)).takes.length;
+    await toggleRecording(page);
     await page.waitForFunction(() => __qa.recording.state === 'counting' && __qa.countIn.visible);
+    await page.waitForFunction(() => __qa.recording.takes.at(-1)?.seconds > .15);
     if (action === 'space') await page.keyboard.press('Space');
-    else if (action === 'stop') await page.locator('#recordTake').click();
+    else if (action === 'stop') await toggleRecording(page);
     else await page.evaluate(() => __qa.api.playbackSpeed = .8);
     await page.waitForFunction(() => __qa.recording.state === 'off');
     await page.waitForTimeout(2100);
-    assert.equal((await page.evaluate(() => __qa.recording)).takes.length, beforeCancel);
+    const canceled = await page.evaluate(() => __qa.recording.takes);
+    assert.equal(canceled.length, beforeCancel);
     assert.equal(await page.evaluate(() => __qa.engine.playing || __qa.countIn.visible), false);
   }
   for (const operation of ['rate', 'seek', 'loop']) {
-    await page.locator('#recordTake').click();
+    await toggleRecording(page);
     await page.waitForFunction(() => __qa.recording.state === 'recording');
     await page.waitForFunction(() => __qa.recording.takes.at(-1)?.seconds > .12);
     await page.evaluate(operation => {
@@ -224,48 +362,72 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
       if (operation === 'loop') __qa.engine.setLoop(0, 960);
     }, operation);
     await page.waitForFunction(() => __qa.recording.state === 'off');
-    assert.equal((await page.evaluate(() => __qa.recording)).takes.at(-1).complete, false);
+    const stoppedTakes = (await page.evaluate(() => __qa.recording)).takes;
+    assert.ok(stoppedTakes.every(take => take.complete || (take.gap && !take.unsaved)), JSON.stringify({operation,
+      gaps:await page.evaluate(()=>__qa.recording.gaps),
+      incomplete: stoppedTakes.filter(take => !take.complete).map(({id, seconds, frames, gap, error, unsaved}) =>
+        ({id, seconds, frames, gap, error, unsaved}))}));
     assert.equal(await page.evaluate(() => __qa.engine.playing), false);
   }
-  // Hold-clear also works from the keyboard and never starts a new recording.
-  await page.locator('#recordTake').press('Delete');
+  // Every real take can be protected by comp/Undo after rest-aware selection.
+  // Seed a disposable, explicitly ineligible take so cleanup isn't luck-based.
+  const unusedId = await page.evaluate(async () => {
+    const id=crypto.randomUUID();
+    await __qa.takeStore.append({id,song:__qa.takeSong,createdAt:Date.now(),sampleRate:8000,
+      seconds:.01,part:'Test',label:'cleanup fixture',start:0,end:1,rate:1,peak:0},0,new Int16Array(80),
+      {finalized:true,complete:false,gap:true});
+    await __qa.reloadTakes();
+    return id;
+  });
+  await deleteUnused(page);
   await page.locator('#cancelTakeDelete').click();
-  assert.ok((await page.evaluate(() => __qa.recording)).takes.length > 1);
-  await page.locator('#recordTake').press('Delete');
+  assert.ok((await page.evaluate(() => __qa.recording)).takes.some(t=>t.id===unusedId),'cancel keeps the unused take');
+  const retained = await page.evaluate(async () => (await __qa.takeStore.comps(__qa.takeSong)).flatMap(MeleteComp.protectedIds));
+  await deleteUnused(page);
   await page.locator('#confirmTakeDelete').click();
-  await page.waitForFunction(() => __qa.recording.takes.length === 1);
+  await page.waitForFunction(ids => __qa.recording.takes.every(take => ids.includes(take.id)), retained);
+  assert.ok(!(await page.evaluate(() => __qa.recording)).takes.some(t=>t.id===unusedId),'confirmation removes the unused take');
   await page.reload(); await settled();
   await page.waitForFunction(() => __qa.recording.ready);
   assert.equal((await page.evaluate(() => __qa.recording)).state, 'off');
-  assert.equal((await page.evaluate(() => __qa.recording)).takes.length, 1, 'cleanup keeps starred audio');
+  assert.ok((await page.evaluate(() => __qa.recording)).takes.every(take => retained.includes(take.id)), 'cleanup keeps only protected sources');
+  // Remove this disposable fixture's comp before the independent failure tests.
+  await page.evaluate(async () => {
+    const ids = __qa.recording.takes.map(take => take.id);
+    await __qa.takeStore.transaction(['comps'], 'readwrite', (tx, done) => { tx.objectStore('comps').clear(); done(); });
+    await __qa.takeStore.deleteTakes(__qa.takeSong, ids);
+    await __qa.reloadTakes();
+  });
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
-  await page.locator('#loopRecorder').click();
+  if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
   await page.evaluate(() => {
     window.realGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('Test denial', 'NotAllowedError'); };
   });
-  await page.locator('#recordTake').click();
-  await page.waitForFunction(() => __qa.recording.state === 'off' && __qa.recording.notice === 'Microphone access was blocked');
+  await toggleRecording(page);
+  await page.waitForFunction(() => __qa.recording.state === 'off'
+    && __qa.recording.notice === 'Microphone blocked. Allow access in browser settings, then try again.');
   assert.equal(await page.evaluate(() => __qa.engine.playing), false);
   await page.evaluate(() => {
     navigator.mediaDevices.getUserMedia = constraints => new Promise(resolve => {
       window.grantLateMicrophone = async () => resolve(await realGetUserMedia(constraints));
     });
   });
-  await page.locator('#recordTake').click();
+  await toggleRecording(page);
   await page.waitForFunction(() => Boolean(window.grantLateMicrophone));
-  await page.locator('#recordTake').click();
+  await toggleRecording(page);
   await page.evaluate(() => grantLateMicrophone());
   await page.waitForFunction(() => __qa.recording.state === 'off');
   assert.equal((await page.evaluate(() => __qa.recording)).microphone, false, 'late permission cannot restart a canceled take');
-  assert.equal((await page.evaluate(() => __qa.recording)).takes.length, 1);
+  assert.equal((await page.evaluate(() => __qa.recording)).takes.length, 0);
   await page.evaluate(() => { navigator.mediaDevices.getUserMedia = realGetUserMedia; });
-  await page.locator('#closeTakes').click();
+  await page.locator('#settingsToggle').click();
   const localStorage = await checkLocalTakeFailures(page, origin, settled, {mobile, output, temporary});
-  return {retained: result.takes.map(({number, complete}) => ({number, complete})), micAmplitude, guideAmplitude,
-    boundedBytes: result.bytes, wavBytes: wav.length, independentMicrophoneOwners: true, transportEdits: 3,
-    deniedPermission: true, canceledPermission: true, reloadExactAudio: true, favoritesAndDeletion: true,
-    favoritesZip: true, deletionUndo: true, storageWarning: true, localStorage};
+  return {retained: kept.map(({number, complete}) => ({number, complete})), passes, micAmplitude, guideAmplitude,
+    boundedBytes: result.bytes, wavBytes: wav.length, combinedMicrophoneLifecycle: true, transportEdits: 3,
+    deniedPermission: true, canceledPermission: true, singleSingToggle: true, selectedInputPersisted: true,
+    reloadExactAudio: true, noFavorites: true, incompleteTailDiscarded: true, scoringDuringRecording: true,
+    allTakesZip: true, deletionUndo: true, storageWarning: true, localStorage};
 }
 
 module.exports = {recordingProbe, checkLoopRecorder};
