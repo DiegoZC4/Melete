@@ -35,10 +35,13 @@ async function checkLoopReload(frame, page, {probe = '__qa', reload, output, lab
       }, {name: probe, tick: expected});
       const actual = await frame.evaluate(name => {
         const q = window[name], bounds = q.loopReload.bounds();
+        const settings = q.pitchbar.captureSettingsState();
+        const surface = document.getElementById(settings.scoreView === 'bars' ? 'barScore' : 'score');
         return {bounds, top: document.querySelector('.transport').getBoundingClientRect().bottom,
           height: innerHeight, width: innerWidth, scrollY, scoreX: document.getElementById('score').scrollLeft,
           barsX: document.getElementById('barScore').scrollLeft, playing: q.engine.playing,
-          settings: q.pitchbar.captureSettingsState()};
+          surfaceLeft: surface.getBoundingClientRect().left, maxScroll: surface.scrollWidth - surface.clientWidth,
+          settings};
       }, probe);
       assert.equal(actual.playing, false, 'restore never starts audio');
       assert.ok(actual.bounds.top >= actual.top - 2 && actual.bounds.top < actual.height - 20,
@@ -47,7 +50,11 @@ async function checkLoopReload(frame, page, {probe = '__qa', reload, output, lab
       if (flow === 'continuous') {
         assert.ok(actual.bounds.left >= -2 && actual.bounds.left < actual.width - 20,
           JSON.stringify({view, flow, actual}));
-        assert.ok((view === 'bars' ? actual.barsX : actual.scoreX) > 0, 'horizontal reload leaves measure one');
+        const left = view === 'bars' ? actual.barsX : actual.scoreX;
+        // The fixture can fit entirely on a wide viewport. Otherwise the loop
+        // cursor must reach the reading margin or the actual end of the scroll track.
+        const target = Math.max(0, Math.min(actual.maxScroll, left + actual.bounds.left - actual.surfaceLeft - 10));
+        assert.ok(Math.abs(left - target) < 2, JSON.stringify({view, flow, left, target, actual}));
       }
       assert.equal(actual.settings.scoreView, view);
       assert.equal(actual.settings.flow, flow);
