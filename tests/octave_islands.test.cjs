@@ -44,7 +44,9 @@ test('legacy grid repair requires known timing or explicit raw-matched repair an
   assert.deepEqual(vocal.rawPitchGrid(restored.pitches,restored.rawOctaves),raw);
   assert.equal(vocal.restorePitchGrid(raw,[[9,3500,4700],[10,3500,5500],[-1,3500,4700],null]).pitches,raw);
   const slow=vocal.repairPitchGrid(raw,i=>i/64/.25);
-  assert.equal(slow.pitches,raw,'the same bins at 25 percent speed are not a short island');
+  assert.equal(slow.pitches[9],0,'a 125 ms excursion is omitted, not guessed into the other octave');
+  assert.deepEqual(vocal.rawPitchGrid(slow.pitches,slow.rawOctaves),raw);
+  assert.equal(vocal.repairPitchGrid(raw,i=>i/64/.1).pitches,raw,'a sustained register change is retained');
 });
 test('brief octave islands repair up and down, preserving cents deviations and every timestamp', () => {
   for (const shift of [-1200, 1200]) for (const hop of [.005, .01, .02]) {

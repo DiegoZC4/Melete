@@ -18,7 +18,7 @@ test('pausing a different score version cannot delete a trace that was not loade
   assert.equal(values.get('trace'),saved);
   values.set('trace',JSON.stringify({fingerprint:'current-score'}));
   c.savePitchTraceNow();
-  assert.equal(values.has('trace'),false,'silence may still erase the currently loaded trace');
+  assert.equal(values.has('trace'),true,'retired trace-only storage is never edited by the audio journal');
   values.set('trace',JSON.stringify({fingerprint:'current-score',malformed:true}));
   c.pitchTraceLoaded=false;
   c.savePitchTraceNow();
@@ -29,6 +29,20 @@ function source(name) {
   assert.ok(start >= 0, name);
   return app.slice(start, app.indexOf('\n  }', start) + 4);
 }
+test('part-scoped live traces never adopt unknown legacy or other-part contours', () => {
+  const key='choir-practice:example:pitch-trace:part:3:line:1';
+  const values=new Map([['legacy',JSON.stringify({fingerprint:'same-song',lanes:[]})]]);
+  const c=vm.createContext({pitchTraceBaseKey:'choir-practice:example:pitch-trace',pitchTraceKey:key,
+    localStorage:{getItem:k=>values.get(k)||null},
+    storedValueFor(){assert.fail('must not scan legacy traces for another practice part');}});
+  vm.runInContext(source('adoptedPitchTrace'),c);
+  assert.equal(c.adoptedPitchTrace(),null);
+  values.set(key,JSON.stringify({scope:key.replace('part:3','part:2')}));
+  assert.equal(c.adoptedPitchTrace(),null);
+  values.set(key,JSON.stringify({scope:key}));
+  assert.equal(c.adoptedPitchTrace(),values.get(key));
+  assert.equal(values.has('legacy'),true,'unknown old data stays recoverable');
+});
 function fixture({division=960, bpm=84, rate=1}={}) {
   const c = vm.createContext({
     sequence: {division, endTick: division * 16},
@@ -38,6 +52,7 @@ function fixture({division=960, bpm=84, rate=1}={}) {
     PITCH_CAPTURE_MIN_FREQUENCY:55, PITCH_CAPTURE_MAX_FREQUENCY:1200, pitchLastAcceptedCents:null,
     PITCH_TRACE_STORAGE_VERSION:3,
     pitchTraceLanes: new Map(), pitchTraceCount:0, pitchCaptureTimer:0,
+    pitchTraceOriginTick:()=>0, takeJournal:null,practiceWriter:null,captureIsAudio:true,
     pitchCaptureIntervalMs:10, pitchCaptureCadenceMs:10, pitchCapturePreviousAudioTime:null,
     pitchCapturePreviousTick:null, pitchCapturePreviousSeconds:null, pitchCaptureWasSilent:true, pitchCaptureMisses:0,
     pitchCaptureUnvoicedFrame:null, pitchOctaveHistory:[],
@@ -96,7 +111,7 @@ test('unknown legacy timing is never guessed, and verified repairs load before e
   assert.equal(c.pitchTraceLane(0).rawOctaves.get(6).before,3505);
   c.engine=engine;
 });
-test('a newly captured trace may later be intentionally erased even if no trace existed at startup', () => {
+test('new live traces do not create separate localStorage contours', () => {
   const c=fixture({bpm:60}),values=new Map();
   Object.assign(c,{pitchTraceLoaded:false,pitchTraceSaveTimer:0,pitchTraceKey:'trace',
     clearTimeout(){},pitchTraceFingerprint:()=> 'score',showToast(){throw new Error('unexpected error');},
@@ -105,7 +120,7 @@ test('a newly captured trace may later be intentionally erased even if no trace 
   vm.runInContext(source('savePitchTraceNow'),c);
   c.replacePitchTraceWindows([{tick:15,startTick:15,endTick:15,stride:1,pitchCents:4705}]);
   c.savePitchTraceNow();
-  assert.equal(c.pitchTraceLoaded,true);assert.ok(values.get('trace'));
+  assert.equal(c.pitchTraceLoaded,false);assert.equal(values.has('trace'),false);
   c.resetPitchTraceGrid();c.savePitchTraceNow();
   assert.equal(values.has('trace'),false);
 });
@@ -132,6 +147,19 @@ test('256th grid keeps exact binary subdivisions even below 64 PPQ', () => {
     assert.equal(c.pitchTraceBinAtTick(division/4),16,'sixteenth has sixteen finest slots');
     assert.equal(c.pitchTraceBinAtTick(division/64*5.4,2),6,'coarse grid never changes its origin');
   }
+});
+test('count-in bins retain pre-downbeat pitch without shifting written-note timing',()=>{
+  const c=fixture({bpm:60});c.pitchTraceOriginTick=()=>-2880;
+  vm.runInContext(source('pitchTraceTickAtBin'),c);
+  const ticks=[-2880,-15,0,15,960];
+  c.replacePitchTraceWindows(ticks.map(tick=>({tick,startTick:tick,endTick:tick,stride:1,pitchCents:6000})));
+  const lane=c.pitchTraceLane(0);
+  for(const tick of ticks){
+    const bin=c.pitchTraceBinAtTick(tick);
+    assert.equal(c.pitchTraceTickAtBin(bin),tick);
+    assert.equal(lane.pitches[bin],6000);
+  }
+  assert.equal(c.pitchTraceCount,5);
 });
 test('resolution rounds duration UP to a power of two, respecting tempo and playback speed', () => {
   const c=fixture();

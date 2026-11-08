@@ -261,6 +261,7 @@ async function checkLocalTakeFailures(page, origin, settled, {mobile, temporary,
   });
   await page.reload(); await settled();
   await page.waitForFunction(() => __qa.recording.ready);
+  await page.evaluate(async()=>{__qa.enableAudition();await __qa.reloadTakes();});
   await openTakes(page);
   await page.locator('#takeList .take-row').nth(24).waitFor({state: 'attached'});
   assert.equal(await page.locator('#takeList .take-row').count(), 25);

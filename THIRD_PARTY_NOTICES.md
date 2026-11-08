@@ -18,6 +18,7 @@ embeds notices in each standalone HTML output.
 | Lucide icons | Inline icon paths in `template/index.html` | [ISC](vendor/lucide/LICENSE); [source](https://github.com/lucide-icons/lucide) |
 | YouTube brand icon | Inline path in `template/index.html` | [Simple Icons source](https://github.com/simple-icons/simple-icons/blob/develop/icons/youtube.svg), [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
 | Signalsmith Stretch (recorded-take octave shifting) | `vendor/signalsmith-stretch/SignalsmithStretch.js` | [MIT](vendor/signalsmith-stretch/LICENSE-signalsmith-stretch.txt); [upstream](https://github.com/Signalsmith-Audio/signalsmith-stretch) |
+| bravoh-loudness 0.1.0 (BS.1770 recording/mix analysis) | `vendor/bravoh-loudness/dist/index.cjs` | [MIT](vendor/bravoh-loudness/LICENSE); [upstream](https://github.com/ozzaii/bravoh-loudness); unmodified npm distribution pinned to 0.1.0 |
 
 AlphaTab's bundled header also credits TinySoundFont, SFZero, the Haxe standard
 library, SharpZipLib, NVorbis, and libvorbis. That header is retained verbatim.
@@ -47,6 +48,7 @@ SHA-256 hashes of the initial shared release:
 462ef8041fc970e3615a20a9dd2b2e3047a073b2da729ef4f02b634bba8b7b83  vendor/fflate/fflate.js
 0a1df3a083d0c010560aa342e87959c8c1070e6fd54545741f083f22d0c8b551  vendor/fflate/LICENSE
 97530b11d5bc01015af4cde40d6aa55ff10c40aa1294ca4c8c5762027d517a46  vendor/signalsmith-stretch/SignalsmithStretch.js
+cbd821c4555624b832620767f413c01055d9d13c94bdc07e7a6970e4a0ecfb9c  vendor/bravoh-loudness/dist/index.cjs
 ```
 
 No choir repertoire, recordings, private scores or arrangement exports are

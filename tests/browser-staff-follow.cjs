@@ -24,9 +24,10 @@ async function checkStaffFollow(frame, page, {probe='__qa',output,label}) {
     return b&&!q.follow.animating&&b.top>=top-2&&b.bottom<=innerHeight-18;
   },probe,{timeout:10000});
   try {
-    await page.setViewportSize({...viewport,height:600});
+    await page.setViewportSize({...viewport,height:400});
     await frame.evaluate(name=>{
       const q=window[name],state=q.pitchbar.captureSettingsState();
+      delete state.visibleChannels;
       q.engine.pauseTransport();
       q.pitchbar.applySettingsState({...state,practicePart:q.follow.count-1,visible:state.visible.map(()=>true),
         scoreView:'standard',flow:'wrap',vertical:q.follow.count>4?100:160,horizontal:400,
@@ -41,12 +42,14 @@ async function checkStaffFollow(frame, page, {probe='__qa',output,label}) {
     await frame.evaluate(name=>{const q=window[name];q.api.tickPosition=0;window.scrollTo({top:0,behavior:'instant'});},probe);
     await frame.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
     const before=await snapshot();
-    assert.equal(before.bounds.focused,true,JSON.stringify({message:'fixture must exercise an oversized system',before,
+    assert.equal(before.bounds.focused,undefined,JSON.stringify({message:'all See channels have no forced practice focus',before,
       state:await frame.evaluate(name=>window[name].pitchbar.captureSettingsState(),probe),
       geometry:await frame.evaluate(name=>{const q=window[name];return {
         raw:q.follow.rawBox(0),staves:q.api.boundsLookup.findMasterBarByIndex(0).bars.map(b=>({
           track:b.bar.staff.track.index,real:b.realBounds,visual:b.visualBounds}))};},probe)}));
     assert.ok(before.bounds.bottom>before.bottom,'lower staff starts below the visible area');
+    await frame.evaluate(name=>window[name].follow.choose(window[name].follow.count-1),probe);
+    await settled();
     await frame.locator('#playPause').click();
     await frame.waitForFunction(name=>window[name].engine.playing,probe);
     await visible();
@@ -62,7 +65,7 @@ async function checkStaffFollow(frame, page, {probe='__qa',output,label}) {
     await frame.waitForFunction(({name,tick})=>window[name].follow.tick>=tick,{name:probe,tick:transition.tick});
     await visible();
     const next=await snapshot();
-    assert.ok(next.scrollY>first.scrollY,'new system follows the same lower staff');
+    assert.ok(next.scrollY>=first.scrollY,'the next visible system never moves reading backwards');
     await page.screenshot({path:path.join(output,`staff-follow-${label}-next.png`)});
 
     const loop=await frame.evaluate(({name,tick})=>{
@@ -91,14 +94,26 @@ async function checkStaffFollow(frame, page, {probe='__qa',output,label}) {
     const wrapped=await wrappedHandle.jsonValue();await wrappedHandle.dispose();
     assert.ok(wrapped.tick>=loop.startTick&&wrapped.tick<loop.endTick,JSON.stringify({label,loop,wrapped}));
 
-    await frame.evaluate(()=>{
-      window.dispatchEvent(new WheelEvent('wheel',{deltaY:-500}));
-      window.scrollTo({top:0,behavior:'instant'});
-    });
+    assert.equal(wrapped.detached,false,'playback is attached before the deliberate scroll');
+    // Detachment only lasts once playback is off screen, which scrolling to the
+    // top may not do: an isolated part can sit mid-screen at scrollY 0. Scroll
+    // up when that clears playback, otherwise down past it.
+    const deliberate=await frame.evaluate(name=>{
+      const q=window[name],cursor=q.follow.bounds(),from=scrollY;
+      const top=document.querySelector('.transport').getBoundingClientRect().height+8,bottom=innerHeight-20;
+      const target=cursor.top+from>bottom?0:Math.ceil(from+cursor.bottom-top)+1;
+      window.dispatchEvent(new WheelEvent('wheel',{deltaY:target-from}));
+      window.scrollTo({top:target,behavior:'instant'});
+      const moved=q.follow.bounds();
+      return {from,target,scrollY,bounds:moved,offScreen:moved.bottom<top||moved.top>bottom};
+    },probe);
+    assert.ok(deliberate.offScreen,JSON.stringify({label,message:'deliberate scroll must take playback off screen',loop,wrapped,deliberate}));
     try {await frame.waitForFunction(name=>window[name].follow.detached,probe,{timeout:5000});}
-    catch(error) {throw new Error(JSON.stringify({label,loop,wrapped,afterScroll:await snapshot()}),{cause:error});}
+    catch(error) {throw new Error(JSON.stringify({label,loop,wrapped,deliberate,afterScroll:await snapshot()}),{cause:error});}
     await frame.waitForTimeout(250);
-    assert.equal((await snapshot()).scrollY,0,'deliberate detachment is not reclaimed');
+    const held=await snapshot();
+    assert.equal(held.scrollY,deliberate.scrollY,'deliberate detachment is not reclaimed');
+    assert.equal(held.detached,true,'deliberate detachment outlasts the next frames');
     await frame.locator('#playbackReturn').click();
     await visible();
     assert.equal((await snapshot()).detached,false);
@@ -108,6 +123,7 @@ async function checkStaffFollow(frame, page, {probe='__qa',output,label}) {
 
     await frame.evaluate(name=>{
       const q=window[name],state=q.pitchbar.captureSettingsState();q.engine.pauseTransport();
+      delete state.visibleChannels;
       q.pitchbar.applySettingsState({...state,practicePart:q.follow.count-1,
         visible:state.visible.map((_,i)=>i!==q.follow.count-1)});
     },probe);
@@ -115,11 +131,12 @@ async function checkStaffFollow(frame, page, {probe='__qa',output,label}) {
     assert.equal((await snapshot()).bounds.focused,undefined,'hidden practice part is not revealed or followed');
     await frame.evaluate(name=>{
       const q=window[name],state=q.pitchbar.captureSettingsState();
+      delete state.visibleChannels;
       q.pitchbar.applySettingsState({...state,vertical:70,visible:state.visible.map((_,i)=>i===q.follow.count-1)});
     },probe);
     await settled();
     assert.equal((await snapshot()).bounds.focused,undefined,'a fitting one-staff system remains the target');
-    return {first,next,wrapped,upper,manualDetachment:true,returnToPlayback:true,hiddenPartPreserved:true,smallSystemUnchanged:true};
+    return {first,next,wrapped,deliberate,upper,manualDetachment:true,returnToPlayback:true,hiddenPartPreserved:true,smallSystemUnchanged:true};
   } finally {
     await frame.evaluate(({name,state})=>{
       const q=window[name];q.engine.pauseTransport();q.pitchbar.applySettingsState(state);
@@ -132,4 +149,84 @@ async function checkStaffFollow(frame, page, {probe='__qa',output,label}) {
   }
 }
 
-module.exports={staffFollowProbe,checkStaffFollow};
+async function checkHorizontalFollow(frame, {probe = '__qa'} = {}) {
+  const state = await frame.evaluate(name => window[name].pitchbar.captureSettingsState(), probe);
+  if (await frame.locator('#partChooser').isVisible()) await frame.locator('#partChooserDismiss').click();
+  const score = frame.locator('#score');
+  const oldWidth = await score.evaluate(node => node.style.width);
+  const settled = () => frame.waitForFunction(name => !window[name].busy, probe);
+  try {
+    await frame.evaluate(name => {
+      const q = window[name], settings = q.pitchbar.captureSettingsState();
+      q.engine.pauseTransport();
+      delete settings.visibleChannels;
+      q.pitchbar.applySettingsState({...settings, visible: settings.visible.map((_, i) => i === 0),
+        flow: 'continuous', scoreView: 'standard', tempo: 100, vertical: 120, horizontal: 250,
+        loopStart: null, loopEnd: null});
+      // The four-bar generic fixture also needs a reading window shorter than the piece.
+      if (q.pitchbar.sequence.measures.length === 4) document.querySelector('#score').style.width = '320px';
+    }, probe);
+    await settled();
+    const from = await frame.evaluate(name => {
+      const q = window[name], measures = q.pitchbar.sequence.measures;
+      const index = Math.min(18, measures.length - 3), [start, length] = measures[index];
+      q.engine.seek(q.engine.secondsAtTick(start));
+      q.follow.scroll('down', 'auto', true);
+      const surface = document.querySelector('#score'), box = q.follow.rawBox(index);
+      surface.scrollLeft = box.x - surface.clientWidth + 24;
+      return {measure: index + 1, start, length, width: surface.clientWidth, barWidth: box.w,
+        scroll: surface.scrollLeft, maxScroll: surface.scrollWidth - surface.clientWidth};
+    }, probe);
+    const result = await frame.evaluate(async ({name, from}) => {
+      const q = window[name], surface = document.querySelector('#score');
+      const line = surface.querySelector('.at-cursor-beat'), samples = [];
+      await q.engine.startTransport();
+      const deadline = performance.now() + 10000;
+      while (performance.now() < deadline && q.engine.playing) {
+        await new Promise(requestAnimationFrame);
+        const fraction = (q.follow.tick - from.start) / from.length;
+        if (fraction > .82) break;
+        if (fraction < .15) continue;
+        samples.push({scroll: surface.scrollLeft, x: line.getBoundingClientRect().left - surface.getBoundingClientRect().left});
+      }
+      q.engine.pauseTransport();
+      return {samples: samples.length, moves: new Set(samples.map(s => s.scroll)).size,
+        minX: Math.min(...samples.map(s => s.x)), maxX: Math.max(...samples.map(s => s.x)),
+        pan: samples.length && samples.at(-1).scroll - from.scroll};
+    }, {name: probe, from});
+    const info = JSON.stringify({from, result});
+    assert.ok(result.samples >= 4 && result.moves > 2 && result.pan > 10,
+      'the viewport should advance within a single sounding measure: ' + info);
+    assert.ok(result.minX >= 0 && result.maxX < from.width - 8,
+      'the beat line and upcoming music should stay visible: ' + info);
+    await frame.evaluate(async name => {
+      const q = window[name], surface = document.querySelector('#score');
+      await q.engine.startTransport();
+      surface.dispatchEvent(new WheelEvent('wheel', {deltaX: -surface.scrollLeft, bubbles: true}));
+      surface.scrollLeft = 0;
+    }, probe);
+    await frame.waitForFunction(name => window[name].follow.detached &&
+      document.querySelector('#playbackReturn').dataset.direction === 'right', probe);
+    // Outlast the gesture grace period while audio continues.
+    const held = await frame.evaluate(async name => {
+      await new Promise(resolve => setTimeout(resolve, 350));
+      return window[name].engine.playing && window[name].follow.detached && document.querySelector('#score').scrollLeft === 0;
+    }, probe);
+    assert.ok(held, 'a deliberate horizontal scroll stays detached');
+    await frame.locator('#playbackReturn').click();
+    await frame.waitForFunction(name => {
+      const surface = document.querySelector('#score'), line = surface.querySelector('.at-cursor-beat').getBoundingClientRect();
+      const view = surface.getBoundingClientRect();
+      return !window[name].follow.detached && line.left >= view.left && line.right <= view.right;
+    }, probe);
+    return {...from, ...result, manualDetachment: true, returnToPlayback: true};
+  } finally {
+    await score.evaluate((node, width) => { node.style.width = width; }, oldWidth);
+    await frame.evaluate(({name, state}) => {
+      const q = window[name]; q.engine.pauseTransport(); q.pitchbar.applySettingsState(state);
+    }, {name: probe, state});
+    await settled();
+  }
+}
+
+module.exports={staffFollowProbe,checkStaffFollow,checkHorizontalFollow};

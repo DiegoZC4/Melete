@@ -3,14 +3,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const {checkLocalTakeFailures} = require('./browser-local-takes.cjs');
-const zip = require('../vendor/fflate/fflate.js');
 
 const recordingProbe = `
   get compDescriptor() { return compDescriptor(); },
   get compState() { return compPanel?.state(); },
   refreshComp() { return compPanel?.refresh({force:true}); },
+  invalidateCompAudio() { compPanel?.invalidate(); },
   // Older takes the armed track already considered stay outside it.
   async keepLoose(ids) {
+    config.audition = {...config.audition, enabled:true};
     await compPanel.refresh({force:true, active: takeState !== 'off'});
     const state = compPanel.state();
     if (state) await takeStore.saveComp({...state, processed: [...new Set([...state.processed, ...ids])]});
@@ -19,19 +20,45 @@ const recordingProbe = `
   async tracksSettled() {
     await compPanel?.refresh({force:true, active: takeState !== 'off'});
     const comps = await takeStore.comps(takeSongKey()), takes = allTakes();
-    return MeleteComp.discardable(comps, takes).length === 0
-      && takes.every(take => compPanel.loose(take) || comps.some(state => MeleteComp.protectedIds(state).includes(take.id)));
+    const historyIds = MeleteRecording.historySources(await takeStore.compHistory(takeSongKey()));
+    return (config.audition?.enabled || MeleteComp.discardable(comps, takes, historyIds).length === 0)
+      && takes.every(take => compPanel.loose(take) || historyIds.includes(take.id)
+        || comps.some(state => state.processed.includes(take.id) || MeleteComp.protectedIds(state).includes(take.id)));
   },
   get takeStore() { return takeStore; },
+  cleanedTakeBlob(take) { return takeBlob(take); },
+  async forgetCompFixtures(keys) {
+    return takeStore.transaction(['comps','counters'], 'readwrite', (tx,done)=>{
+      const ids = new Set();
+      for (const key of keys) tx.objectStore('comps').get(key).onsuccess=event=>{
+        for(const segment of event.target.result?.segments||[])ids.add(segment.takeId);
+        tx.objectStore('comps').delete(key);
+      };
+      const historyKey=['comp-edit-history',takeSongKey()];
+      tx.objectStore('counters').get(historyKey).onsuccess=event=>{
+        const history=event.target.result;
+        if(history){
+          for(const list of ['past','future'])history[list]=history[list].filter(edit=>{
+            if(!keys.includes(edit.key))return true;
+            for(const segment of [...edit.before.segments,...edit.after.segments])ids.add(segment.takeId);
+            return false;
+          });
+          history.revision++;tx.objectStore('counters').put(history,historyKey);
+        }
+        done([...ids]);
+      };
+    });
+  },
   get takeSong() { return takeSongKey(); },
   reloadTakes() { return loadTakeLibrary(); },
-  pitchReference(spec) { return takePitchReference(spec); },
+  pitchReference(spec, part, line) { return takePitchReference(spec, part, line); },
   get takeReview() { return takeReview && {id: takeReview.id, start: takeReview.start, end: takeReview.end,
-    frames: takeReview.frames, track: takeReview.track, duration: takeReview.buffer.duration}; },
+    frames: takeReview.frames, track: takeReview.track, duration: takeReview.buffer?.duration}; },
+  get pendingCaptureTrace() { return pendingCaptureTrace; },
   get savedPractice() { return currentPreferenceState(); },
   enableAudition(recordingEntrances) {
     if (recordingEntrances) config.audition = {enabled:true,recordingEntrances};
-    else if (config.audition) config.audition.enabled = true;
+    else config.audition = {...config.audition, enabled:true};
   },
   get auditionEnabled() { return Boolean(config.audition?.enabled); },
   get scoreMeasures() { return sequence.measures; },
@@ -39,7 +66,8 @@ const recordingProbe = `
   auditionNote(x,y,nearest=false) { return standardNoteAtClientPoint(x,y,nearest); },
   auditionChord(x,y) { return standardChordTargetAtClientPoint(x,y); },
   get reviewBounds() { return playbackCursorBounds(); },
-  set takeWarningAt(bytes) { takeStorageWarningAt = bytes; renderTakePanel(); },
+  get otherSongBytes() { return takeOtherBytes; },
+  set otherSongBytes(bytes) { takeOtherBytes = bytes; renderTakePanel(); },
   get countIn() { return {beat: elements.takeCountIn.dataset.beat, visible: !elements.takeCountIn.hidden,
     startTime: takeCountIn?.startTime, endTime: takeCountIn?.endTime,
     now: engine.context?.currentTime, spec: takeState !== 'off' && takeJournal ? takeJournal.spec : recordingLoopSpec(),
@@ -76,10 +104,7 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   if (await page.locator('#partChooser').isVisible()) await page.locator('#partChooserDismiss').click();
   assert.equal((await page.evaluate(() => __qa.recording)).state, 'off', 'URL never arms audio recording');
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
-  if (await page.locator('#practicePart').getAttribute('data-value') === '') {
-    await page.locator('#practicePart').press('ArrowDown');
-    await page.waitForFunction(() => document.getElementById('practicePart').dataset.value !== '');
-  }
+  await require('./browser-sing.cjs').choosePart(page);
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
   await enableAudition();
   assert.equal(await page.locator('#takePanel').isVisible(), true);
@@ -151,19 +176,22 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   assert.ok(result.takes.every(take => take.pitchReference?.fingerprint && take.pitchReference.notes.length),
     'real microphone capture snapshots the selected part and performed timing');
   await page.waitForFunction(() => __qa.recording.takes.every(take => take.pitchScore), null, {timeout: 60000});
-  // Each pass replaced the previous one; only the track and its Undo keep audio.
+  // Each pass replaced the previous one; bounded history protects recent passes.
   await page.waitForFunction(() => __qa.tracksSettled(), null, {timeout: 30000, polling: 250});
   const kept = (await page.evaluate(() => __qa.recording)).takes;
   const keptWav = Buffer.from(await page.evaluate(async id => Array.from(new Uint8Array(await (await __qa.takeStore.wav(id)).arrayBuffer())), kept[0].id));
-  const protectedAfterStop = await page.evaluate(async () => (await __qa.takeStore.comps(__qa.takeSong)).flatMap(MeleteComp.protectedIds));
-  assert.ok(kept.length && kept.length < passes && kept.every(take => protectedAfterStop.includes(take.id)),
+  const protectedAfterStop = await page.evaluate(async () => [
+    ...(await __qa.takeStore.comps(__qa.takeSong)).flatMap(MeleteComp.protectedIds),
+    ...MeleteRecording.historySources(await __qa.takeStore.compHistory(__qa.takeSong))]);
+  assert.ok(kept.length && kept.length <= passes && kept.every(take => protectedAfterStop.includes(take.id)),
     JSON.stringify({passes, kept: kept.map(({id, number}) => ({id, number})), protectedAfterStop}));
-  assert.ok(!kept.some(take => take.id === complete.id), 'a replaced pass is deleted once Undo moves past it');
+  assert.ok(kept.some(take => take.id === complete.id), 'recent replaced passes survive for multilevel Undo');
   assert.equal(await page.locator('#takeLoose').isVisible(), false, 'no loose takes after a loop recording');
   assert.equal(await page.locator('#compRows > .comp-row.is-armed').count(), 1);
   assert.equal(await page.locator('#takeMicrophone').isEnabled(), true);
   assert.equal(await page.locator('#settingsToggle').evaluate(button => button.classList.contains('has-recording')), false);
-  await page.locator('#compRows > .comp-row.is-armed .comp-review').click();
+  const reviewButton=page.locator('#compRows > .comp-row.is-armed .comp-review');
+  if(await reviewButton.getAttribute('aria-pressed')!=='true')await reviewButton.click();
   await page.waitForFunction(() => __qa.takeReview);
   assert.equal(await page.evaluate(() => __qa.engine.playing), false, 'selection loads without auto-playing');
   await page.locator('#playPause').click();
@@ -203,6 +231,7 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
     });
     assert.ok(clearance.status <= clearance.storage + 1, JSON.stringify(clearance));
   }
+  await page.locator('#takePanel').scrollIntoViewIfNeeded();
   const bounds = await page.locator('#takePanel').boundingBox();
   const viewport = page.viewportSize();
   assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width + 1);
@@ -246,35 +275,41 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
     return __qa.recording.takes.find(take => take.id === id);
   });
   await page.locator('#takeLoose').waitFor({state: 'visible'});
-  assert.match(await page.locator('#takeLooseMessage').innerText(), /^1 take not in a track/);
+  assert.match(await page.locator('#takeLooseMessage').innerText(), /^Audition takes/);
   assert.equal(await page.getByRole('button', {name: `Delete take ${unwanted.number}`, exact: true}).isEnabled(), true);
-  // Archive export contains all WAVs and leaves the local library intact.
-  await page.locator('#takeActions summary').click();
+  // Individual downloads remain; the redundant archive button is removed.
+  assert.equal(await page.locator('#downloadTakes').count(),0);
   await page.screenshot({path: path.join(output, `take-actions-${mobile ? 'mobile' : 'desktop'}.png`)});
-  const zipPending = page.waitForEvent('download');
-  await page.locator('#downloadTakes').click();
-  const zipDownload = await zipPending;
-  const zipFile = path.join(temporary, `takes-${mobile ? 'mobile' : 'desktop'}.zip`);
-  await zipDownload.saveAs(zipFile);
-  assert.match(zipDownload.suggestedFilename(), /-takes\.zip$/);
-  const files = zip.unzipSync(await fs.readFile(zipFile));
-  assert.equal(Object.keys(files).length, kept.length + 1);
-  assert.ok(Object.values(files).some(data => Buffer.from(data).equals(keptWav)));
   assert.equal((await page.evaluate(() => __qa.recording)).takes.length, kept.length + 1);
-  // Exercise the warning at a small test threshold without generating bulk audio.
-  await page.evaluate(() => { __qa.takeWarningAt = 1; });
-  assert.equal(await page.locator('#takeStorageWarning').isVisible(), true);
-  assert.match(await page.locator('#takeStorageWarningMessage').innerText(), /Saved takes are never evicted/);
-  await page.screenshot({path: path.join(output, `take-storage-warning-${mobile ? 'mobile' : 'desktop'}.png`)});
-  await page.locator('#takeStorageCleanup').click();
-  await page.locator('#takeDeletePrompt').waitFor({state: 'visible'});
-  assert.match(await page.locator('#takeDeleteMessage').innerText(), /delete .*free [\d.]+ MB/);
-  await page.locator('#cancelTakeDelete').click();
-  await page.locator('#takeStorageKeep').click();
-  assert.equal(await page.locator('#takeStorageWarning').isVisible(), false);
+  const storage = page.locator('#takeStorage');
+  assert.match(await storage.innerText(), /^\d+ MB$/);
+  assert.match(await storage.getAttribute('title'), /^Recordings across this site's songs\. This song: \d+ takes? · /);
+  const monitor = await page.evaluate(() => {
+    const box = selector => document.querySelector(selector).getBoundingClientRect();
+    const frame = box('#microphoneCheck'), status = box('#checkMicrophone [role=status]');
+    const today = box('#recordingToday'), stored = box('#takeStorage');
+    return {inside: [status, today, stored].every(r => r.left >= frame.left && r.right <= frame.right && r.top >= frame.top && r.bottom <= frame.bottom),
+      apart: today.right <= stored.left && status.bottom <= today.top + 1,
+      fourRows: box('.take-controls').height <= 4 * 24 + 3 * 3 + .5,
+      list: document.querySelector('.take-review').contains(document.querySelector('#takeStorage'))};
+  });
+  assert.deepEqual(monitor, {inside: true, apart: true, fourRows: true, list: false}, JSON.stringify(monitor));
+  // The size is information, never a warning: a large library only reads in GB.
+  const sizeLook = () => storage.evaluate(el => [el, el.querySelector('output')].map(node => getComputedStyle(node).color).join());
+  const ordinaryLook = await sizeLook(), otherSongBytes = await page.evaluate(() => __qa.otherSongBytes);
+  await page.evaluate(() => { __qa.otherSongBytes = 1.3 * 1024 ** 3; });
+  assert.equal(await storage.innerText(), '1.3 GB');
+  assert.equal(await sizeLook(), ordinaryLook);
+  await page.screenshot({path: path.join(output, `take-storage-large-${mobile ? 'mobile' : 'desktop'}.png`)});
+  await page.evaluate(bytes => { __qa.otherSongBytes = bytes; }, otherSongBytes);
+  assert.equal(await page.locator('#takeDeletePrompt').count(),0);
+  await page.locator('#deleteLooseTakes').click();
+  assert.match(await page.locator('#deleteLooseTakes').getAttribute('class'),/is-delete-armed/);
+  await page.keyboard.press('Escape');
   assert.equal((await page.evaluate(() => __qa.recording)).takes.length, kept.length + 1);
   const unwantedWav = await page.evaluate(async id => Array.from(new Uint8Array(await (await __qa.takeStore.wav(id)).arrayBuffer())), unwanted.id);
   await page.getByRole('button', {name: `Delete take ${unwanted.number}`, exact: true}).click();
+  await page.locator('.take-delete.is-delete-armed').click();
   await page.waitForFunction(id => !__qa.recording.takes.some(take => take.id === id), unwanted.id);
   await page.reload(); await settled();
   await enableAudition();
@@ -286,12 +321,13 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   await page.waitForFunction(id => __qa.recording.takes.some(take => take.id === id), unwanted.id);
   assert.deepEqual(await page.evaluate(async id => Array.from(new Uint8Array(await (await __qa.takeStore.wav(id)).arrayBuffer())), unwanted.id), unwantedWav);
   await page.getByRole('button', {name: `Delete take ${unwanted.number}`, exact: true}).click();
+  await page.locator('.take-delete.is-delete-armed').click();
   await page.waitForFunction(id => !__qa.recording.takes.some(take => take.id === id), unwanted.id);
   await page.waitForFunction(async id => !(await __qa.takeStore.usage()).some(take => take.id === id), unwanted.id, {timeout: 15000});
   await page.locator('#takeUndo').waitFor({state: 'hidden'});
   assert.equal(await page.locator('#takeLoose').isVisible(), false, 'track sources are never offered for deletion');
 
-  // Sing and audio capture now have one lifecycle; no trace-only listening.
+  // Toggling Sing off leaves the transport running; rearming is not a new pass.
   await page.locator('#settingsToggle').click();
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
@@ -304,6 +340,10 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   assert.equal((await page.evaluate(() => __qa.recording)).microphone, false, 'Sing off releases capture');
   assert.equal(await page.evaluate(() => __qa.engine.playing), true, 'Sing off does not interrupt listening');
   await page.locator('#pitchCapture').click();
+  await page.waitForFunction(() => __qa.recording.pitch === 'armed');
+  assert.equal(await page.evaluate(() => __qa.recording.state),'off');
+  await page.keyboard.press('Space');await page.waitForFunction(()=>!__qa.engine.playing);
+  await page.keyboard.press('Space');
   await page.waitForFunction(() => __qa.recording.pitch === 'recording');
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
   await toggleRecording(page);
@@ -339,17 +379,26 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   // Count-in stubs are discarded for every intentional transport change.
   for (const action of ['space', 'stop', 'rate']) {
     await page.waitForFunction(() => __qa.tracksSettled(), null, {timeout: 30000, polling: 250});
-    const beforeCancel = (await page.evaluate(() => __qa.recording)).takes.length;
+    const beforeCancel = (await page.evaluate(() => __qa.recording)).takes.map(take => take.id);
     await toggleRecording(page);
     await page.waitForFunction(() => __qa.recording.state === 'counting' && __qa.countIn.visible);
     await page.waitForFunction(() => __qa.recording.takes.at(-1)?.seconds > .15);
+    const interrupted = await page.evaluate(() => __qa.recording.takes.find(take => take.active)?.id);
+    assert.ok(interrupted, 'cancel an active count-in attempt');
     if (action === 'space') await page.keyboard.press('Space');
     else if (action === 'stop') await toggleRecording(page);
     else await page.evaluate(() => __qa.api.playbackSpeed = .8);
     await page.waitForFunction(() => __qa.recording.state === 'off');
     await page.waitForTimeout(2100);
     const canceled = await page.evaluate(() => __qa.recording.takes);
-    assert.equal(canceled.length, beforeCancel);
+    const recovered = canceled.filter(take => !beforeCancel.includes(take.id));
+    const gaps = await page.evaluate(() => __qa.recording.gaps);
+    assert.deepEqual(canceled.filter(take => beforeCancel.includes(take.id)).map(take => take.id), beforeCancel,
+      'transport changes preserve previously saved takes');
+    assert.ok(recovered.length === 0 || (recovered.length === 1 && recovered[0].id === interrupted
+      && recovered[0].gap && !recovered[0].complete && !recovered[0].unsaved && gaps.length > 0), JSON.stringify({action,beforeCancel,
+      takes:canceled.map(({id,seconds,gap,complete,unsaved})=>({id,seconds,gap,complete,unsaved})),
+      gaps}));
     assert.equal(await page.evaluate(() => __qa.engine.playing || __qa.countIn.visible), false);
   }
   for (const operation of ['rate', 'seek', 'loop']) {
@@ -380,11 +429,13 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
     return id;
   });
   await deleteUnused(page);
-  await page.locator('#cancelTakeDelete').click();
+  await page.keyboard.press('Escape');
   assert.ok((await page.evaluate(() => __qa.recording)).takes.some(t=>t.id===unusedId),'cancel keeps the unused take');
-  const retained = await page.evaluate(async () => (await __qa.takeStore.comps(__qa.takeSong)).flatMap(MeleteComp.protectedIds));
+  const retained = await page.evaluate(async () => [
+    ...(await __qa.takeStore.comps(__qa.takeSong)).flatMap(MeleteComp.protectedIds),
+    ...MeleteRecording.historySources(await __qa.takeStore.compHistory(__qa.takeSong))]);
   await deleteUnused(page);
-  await page.locator('#confirmTakeDelete').click();
+  await page.locator('#deleteLooseTakes.is-delete-armed').click();
   await page.waitForFunction(ids => __qa.recording.takes.every(take => ids.includes(take.id)), retained);
   assert.ok(!(await page.evaluate(() => __qa.recording)).takes.some(t=>t.id===unusedId),'confirmation removes the unused take');
   await page.reload(); await settled();
@@ -394,12 +445,14 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   // Remove this disposable fixture's comp before the independent failure tests.
   await page.evaluate(async () => {
     const ids = __qa.recording.takes.map(take => take.id);
-    await __qa.takeStore.transaction(['comps'], 'readwrite', (tx, done) => { tx.objectStore('comps').clear(); done(); });
+    await __qa.forgetCompFixtures((await __qa.takeStore.comps(__qa.takeSong)).map(s=>s.key));
     await __qa.takeStore.deleteTakes(__qa.takeSong, ids);
     await __qa.reloadTakes();
   });
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
+  if (await page.locator('#pitchCapture').getAttribute('aria-pressed') === 'true') await page.locator('#pitchCapture').click();
+  await page.waitForFunction(() => !__qa.recording.microphone);
   await page.evaluate(() => {
     window.realGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('Test denial', 'NotAllowedError'); };

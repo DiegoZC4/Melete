@@ -2,31 +2,37 @@
 const sharedNotationTools = (() => {
   const normalize = (text) => text.replace(/[\u2018\u2019]/g, "'").trim();
 
-  function annotationPreferences(stored = {}) {
-    // Explicit viewport choices win over the former repetition-only setting.
-    const legacyCompact = stored?.lyrics === "changes";
-    return {
-      desktop: ["part", "shared"].includes(stored?.annotationLayouts?.desktop)
-        ? stored.annotationLayouts.desktop : legacyCompact ? "shared" : "part",
-      mobile: stored?.annotationLayouts?.mobile === "part" ? "part" : "shared",
-    };
+  function annotationPreferences() { return {desktop: "shared", mobile: "shared"}; }
+
+  const breath = require("./lyric_breath.json");
+  const backing = new Set(breath.backingSyllables);
+  function singingSpans(notes, division) {
+    const spans = new Map();
+    for (const [track, start, end] of [...notes].sort((a, b) => a[1] - b[1])) {
+      if (!spans.has(track)) spans.set(track, []);
+      const list = spans.get(track), last = list.at(-1);
+      if (last && start <= last.end) last.end = Math.max(last.end, end);
+      else list.push({start, end, phrase: last ? last.phrase + Number(start - last.end > division * breath.maxRestQuarters) : 0});
+    }
+    return spans;
   }
 
-  function repeatedLyrics(lyrics, minimum = 2) {
-    const hidden = new Set(), runs = new Map();
+  function repeatedLyrics(lyrics, notes = [], division = 960) {
+    const hidden = new Set(), runs = new Map(), spans = singingSpans(notes, division);
     const finish = (run) => {
-      if (run?.length >= minimum) run.slice(1).forEach((lyric) => hidden.add(lyric));
+      if (run?.length >= 2) run.slice(1).forEach((lyric) => hidden.add(lyric));
     };
     for (const lyric of lyrics) {
       const text = String(lyric[3] || "").trim().replace(/\s+/gu, " ");
       if (!text) continue;
       const key = `${lyric[0]}:${lyric[2]}`;
-      const run = runs.get(key);
-      if (run?.text === text) run.push(lyric);
+      const run = runs.get(key), span = spans.get(lyric[0])?.findLast((s) => s.start <= lyric[1]);
+      if (run?.text === text && (run.span === span || (backing.has(text.toLowerCase()) && run.span?.phrase === span?.phrase))) run.push(lyric);
       else {
         finish(run);
         const next = [lyric];
         next.text = text;
+        next.span = span;
         runs.set(key, next);
       }
     }
@@ -210,7 +216,7 @@ const sharedNotationTools = (() => {
 if (typeof module === "object" && module.exports) module.exports = sharedNotationTools;
 
 let annotationLayouts = sharedNotationTools.annotationPreferences();
-let annotationLayout = "part";
+let annotationLayout = "shared";
 let sharedNotationPlan = null;
 let sharedNotationFrame = 0;
 let notationLyricRows = new Map();
@@ -307,11 +313,9 @@ function restoreAnnotationLayouts(stored, options) {
 
 function setAnnotationLayout(value, { render = true, persist = true } = {}) {
   const previous = annotationLayout;
-  if (["part", "shared"].includes(value)) annotationLayouts[annotationViewport()] = value;
-  annotationLayout = annotationLayouts[annotationViewport()];
-  setLyricsMode(annotationLayout === "shared" ? "changes" : "full", { reload: false, persist: false });
-  const toggle = document.getElementById("annotationLayout");
-  toggle?.setAttribute("aria-pressed", String(annotationLayout === "shared"));
+  annotationLayouts = sharedNotationTools.annotationPreferences();
+  annotationLayout = "shared";
+  setLyricsMode("changes", { reload: false, persist: false });
   if (previous !== annotationLayout && render) {
     if (buildMetadata.repeatedLyricsMarked) {
       if (!reloadNotationForDisplay()) {
@@ -326,13 +330,6 @@ function setAnnotationLayout(value, { render = true, persist = true } = {}) {
 }
 
 function installSharedNotation() {
-  const toggle = document.getElementById("annotationLayout");
-  toggle.addEventListener("click", () => {
-    setAnnotationLayout(annotationLayout === "shared" ? "part" : "shared");
-  });
-  registerResetTarget(toggle, "compact lyrics", (state, defaults) => {
-    state.annotationLayouts[annotationViewport()] = defaults.annotationLayouts[annotationViewport()];
-  });
   setAnnotationLayout(undefined, { render: false, persist: false });
   window.matchMedia("(max-width: 600px)").addEventListener("change", () => {
     setAnnotationLayout(undefined, { persist: false });
@@ -461,7 +458,7 @@ function renderSharedNotation() {
         const element = text("", y + 9 * scale, 9, "shared-owners", "start");
         for (const { part, text: content } of sharedNotationTools.ownerSegments(event.owners, parts)) {
           const span = createSvgElement("tspan");
-          if (part !== null) span.style.fill = `var(--part-${part + 1}, ${parts[part].color})`;
+          if (part !== null) span.style.fill = parts[part].color;
           span.textContent = content;
           element.appendChild(span);
         }

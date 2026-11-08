@@ -221,7 +221,7 @@ console.log(JSON.stringify({{
         self.assertIn('name="color-scheme" content="light dark"', document)
         self.assertIn('media="(prefers-color-scheme: dark)"', document)
         self.assertIn("@media (prefers-color-scheme: dark)", styles)
-        self.assertIn(".at-surface-svg { filter: var(--score-filter); }", styles)
+        self.assertIn(".at-surface-svg > :not(.score-pitch-trace) { filter: var(--score-filter); }", styles)
         self.assertIn(".at-surface-svg { filter: none; }", styles)
         self.assertIn("--group-top: var(--panel-solid)", styles)
         self.assertIn("--group-bottom: var(--panel-solid)", styles)
@@ -401,14 +401,16 @@ console.log(JSON.stringify([
         self.assertIn("function packedPitchTraceBreaks(breaks)", app)
         self.assertIn("function loadPitchTraceV3(stored)", app)
         self.assertIn("function loadPitchTraceV2(stored)", app)
-        self.assertIn("pitches: bytesToBase64(new Uint8Array(", app)
-        self.assertIn("breaks: bytesToBase64(packedPitchTraceBreaks(lane.breaks))", app)
+        self.assertIn("function liveTraceVisible()", app)
+        save = app.split("function savePitchTraceNow()", 1)[1].split("\n  }", 1)[0]
+        self.assertNotIn("localStorage", save)
         self.assertNotIn("PITCH_TRACE_MAX_SAMPLES", app)
         self.assertNotIn("pitchTraceSamples", app)
         self.assertNotIn("pitchTraceSegment", app)
 
         incremental = app.split("function updatePitchTraceIncrementally(changed)", 1)[1].split("function pitchBarRepeatSign", 1)[0]
-        self.assertIn('scoreView === "bars" ? barSystems : staffTraceSystems', incremental)
+        self.assertIn('if (scoreView !== "bars" || barTraceResumeTimer)', incremental)
+        self.assertNotIn("staffTraceSystems", incremental)
         # Every step is scoped to the line that changed, so a take of one line
         # cannot redraw or erase another line's contour.
         self.assertIn("removePitchTraceEdgesAtBin(system, line, bin)", incremental)
@@ -438,6 +440,7 @@ const visibleTracks = new Set([0]);
 // No part chosen, so grading falls back to the nearest note on screen.
 const practicePartIndex = null;
 const practiceLines = [];
+const practiceDivisi = [];
 const partDivisi = [];
 const divisiSpanAt = () => null;
 const divisiLineFor = () => 0;
@@ -736,18 +739,12 @@ console.log(JSON.stringify({{
         # The tap is decided before the drag branches, so neither runs for a tap.
         self.assertLess(release.index("if (!drag.moved) {"), release.index("if (drag.unset) {"))
 
-    def test_practice_part_prompt_is_not_a_cyclic_pager_value(self) -> None:
+    def test_practice_part_comes_from_see_not_a_second_selector(self) -> None:
         app = (ROOT / "template" / "app.js").read_text(encoding="utf-8")
-        styles = (ROOT / "template" / "styles.css").read_text(encoding="utf-8")
-        self.assertNotIn('{ value: null, label: "Choose part" }', app)
-        self.assertIn('placeholder: "Choose part"', app)
-        self.assertIn(".practice-part-pager.has-part", styles)
-        self.assertIn('elements.practicePart.style.setProperty("--part-color"', app)
-        self.assertIn("populateLayer(layer, option", app)
-        self.assertIn("color: part.color", app)
-        self.assertIn(".practice-part-layer.has-option-color", styles)
-        self.assertIn("--pager-option-color", styles)
-        self.assertIn("box-shadow: inset 0 -1px", styles)
+        document = (ROOT / "template" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="practicePart" class="practice-part-pager', document)
+        self.assertIn('function syncPracticeFromSee()', app)
+        self.assertNotIn('placeholder: "Choose part"', app)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
     def test_holding_a_part_leaves_only_that_part_on_its_own_row(self) -> None:
@@ -755,7 +752,7 @@ console.log(JSON.stringify({{
         self.assertIn("const MIXER_SOLO_HOLD_MS = 500;", app)
         # The row a press lands on supplies its own reader and writer, so a
         # solo in See can never reach Hear.
-        self.assertIn('on: (part) => visibleTracks.has(part), set: setTrackVisibility', app)
+        self.assertIn('on: (part) => visibleChannels.has(part), set: setTrackVisibility', app)
         self.assertIn('on: (part) => audibleTracks.has(part), set: setTrackAudible', app)
         # See/Hear isolate, Vol cycles its mix, and Pan separates stereo:
         # none may also trigger the generic individual reset on a touch hold.
@@ -771,8 +768,6 @@ console.log(JSON.stringify({{
 // on() answers with a real boolean, as Set.has does, because the rule
 // compares it strictly against part === row.index.
 const row = (index) => ({ index, on: (part) => state[part] === true, set: (part, next) => {
-  // the real setter refuses to empty a row, and the rule must not depend on that
-  if (!next && state.filter(Boolean).length === 1 && state[part]) return;
   state[part] = next === true;
 } });
 let state;
@@ -802,10 +797,9 @@ console.log(JSON.stringify({
         self.assertEqual(got["holdLeavesOnlyThatPart"], "0010")
         # The kept part is switched on first, so the row never has to empty.
         self.assertEqual(got["holdFromAPartThatIsOff"], "0010")
-        # Nothing on is never wanted, so the last one standing puts them back,
-        # by hold or by a plain press.
+        # Hold restores a soloed row; a plain press can mute/hide its last part.
         self.assertEqual(got["holdOnTheLastOneStanding"], "1111")
-        self.assertEqual(got["pressOnTheLastOneStanding"], "1111")
+        self.assertEqual(got["pressOnTheLastOneStanding"], "0000")
         # A press on a different part while one is soloed is an ordinary toggle.
         self.assertEqual(got["pressOnAnotherWhileSoloed"], "1010")
         self.assertEqual(got["holdWhenTwoAreOn"], "1000")
@@ -1026,7 +1020,8 @@ console.log(JSON.stringify(out));
         self.assertIn('attachHoldReset(elements.loopStart', app)
         self.assertIn('attachHoldReset(elements.loopEnd', app)
         sing = styles.split(".sing-control.icon-button {", 1)[1].split("}", 1)[0]
-        self.assertIn("grid-row: 2 / 4", sing)
+        self.assertIn("grid-row: 1;", sing)
+        self.assertIn(".audio-record-control.icon-button { grid-column:3; grid-row:2;", styles)
         self.assertIn("grid-column: 3", sing)
 
     def test_takes_are_a_permanent_compact_settings_group(self) -> None:
@@ -1035,7 +1030,7 @@ console.log(JSON.stringify(out));
         styles = (ROOT / "template" / "styles.css").read_text(encoding="utf-8")
         header = document.split("</header>", 1)[0]
         self.assertIn('class="control-group take-panel" id="takePanel"', header)
-        self.assertIn('class="group-label" id="takeTitle">Takes', header)
+        self.assertIn('class="group-label" id="takeTitle">Record', header)
         self.assertNotIn('id="loopRecorder"', document)
         self.assertNotIn('id="closeTakes"', document)
         self.assertNotIn("positionTakePanel", app)
@@ -1071,7 +1066,7 @@ console.log(JSON.stringify(out));
     def test_percentage_controls_have_one_fixed_width(self) -> None:
         app = (ROOT / "template" / "app.js").read_text(encoding="utf-8")
         styles = (ROOT / "template" / "styles.css").read_text(encoding="utf-8")
-        rule = styles.split(".drag-number {", 1)[1].split("}", 1)[0]
+        rule = styles.split("\n.drag-number {", 1)[1].split("}", 1)[0]
         self.assertIn("width: var(--toolbar-unit-width)", rule)
         self.assertIn("min-width: var(--toolbar-unit-width)", rule)
         self.assertIn("max-width: var(--toolbar-unit-width)", rule)
@@ -1284,11 +1279,11 @@ console.log(JSON.stringify({{ opening: describe(1), closing: describe(-1) }}));
         # Sweeping before the adoptions would throw away data this build wants.
         self.assertLess(app.index("      loadAnnotations();"),
                         app.index("      if (!conductorMode) sweepSupersededStorage(config.slug"))
-        # A trace recorded under a build that no longer exists is rescued by its
-        # own fingerprint before the sweep can take it.
+        # The obsolete standalone live trace is not adopted. Saved take contours
+        # live in IndexedDB alongside the corresponding audio.
         self.assertLess(app.index("      loadPitchTrace();"),
                         app.index("      if (!conductorMode) sweepSupersededStorage(config.slug"))
-        self.assertIn("const stored = JSON.parse(adoptedPitchTrace() || \"null\");", app)
+        self.assertNotIn("const stored = JSON.parse(adoptedPitchTrace() || \"null\");", app)
         self.assertIn('if (!value?.includes(wanted) || JSON.parse(value)?.fingerprint !== wanted) continue;', app)
 
         start = app.index("  function sweepSupersededStorage")
@@ -1376,7 +1371,7 @@ console.log(JSON.stringify(sweepSupersededStorage("autumn")));
         self.assertNotIn("fill: parts[", app)
         self.assertNotIn("fill: pitchStripe(", app)
         self.assertIn("note.style.fill = pitchStripe(", app)
-        self.assertIn("stripe.style.fill = parts[track]?.color || partPaint(track);", app)
+        self.assertIn("stripe.style.fill = mixerParts[track].color;", app)
 
     def test_accent_follows_the_practice_part(self) -> None:
         app = (ROOT / "template" / "app.js").read_text(encoding="utf-8")
@@ -1418,8 +1413,8 @@ console.log(JSON.stringify(sweepSupersededStorage("autumn")));
         self.assertIn("wantsPitchCapture = stored.sing === true;", app)
         self.assertIn("engine.beforeStart = () =>", app)
         self.assertIn("disablePitchCapture(false, { preservePreference: true });", app)
-        restoration = app.split("  function restorePitchCapture() {", 1)[1].split("  function ", 1)[0]
-        self.assertNotIn("ensureMicrophoneInput", restoration)
+        restoration = app.split("  function restorePitchCapture() {", 1)[1].split("  async function ", 1)[0]
+        self.assertIn("armMicrophone()", restoration)
         self.assertNotIn("startTakeRecording", restoration)
         self.assertIn("preferences: { ...currentPreferenceState(), sing: false },", app)
         self.assertIn("""    updatePitchCaptureAppearance();
@@ -1457,7 +1452,9 @@ console.log(JSON.stringify(sweepSupersededStorage("autumn")));
 
         start = app.index("  function beatTicksWithin")
         end = app.index("\n  }", start) + len("\n  }")
+        pulses = app[app.index("    static measurePulses"):app.index("    buildMetronomeEvents")]
         script = f"""
+const config = {{}}, GuideEngine = class {{ {pulses} }};
 const sequence = {{ division: 960, measures: [] }};
 const measureIndexAtTick = (tick) => {{
   let index = 0;
@@ -1519,7 +1516,7 @@ console.log(JSON.stringify({{
         self.assertIn('panLabel.classList.add("is-group-drag", "is-horizontal");', app)
         self.assertIn('panLabel.setAttribute("aria-label", "All part pans");', app)
         # Wired after the ring controls exist, or it would ride an empty row.
-        self.assertLess(app.index("panControls.push(control);"),
+        self.assertLess(app.index("panControls[index] = control;"),
                         app.index("attachGroupDrag(panLabel,"))
         self.assertIn(".mixer-row-label.is-group-drag.is-horizontal { cursor: ew-resize; }", styles)
 
@@ -1717,6 +1714,7 @@ const sequence = {{ division: 480, endTick: 1920, measures: [[0, 1920, 4, 4]], n
 const engine = {{secondsAtTick: tick => tick / 480}};
 let parts = [{{}}, {{}}, {{}}, {{}}];
 let practiceLines = [0, 0, 0, 0];
+let practiceDivisi = [null, null, null, null];
 let partDivisi = [];
 let practicePartIndex = null;
 const visibleTracks = new Set([0, 1, 2, 3]);
@@ -1783,7 +1781,7 @@ console.log(JSON.stringify(out));
         # is not, because there is nothing to come back from.
         self.assertIn('elements.loopControls.classList.toggle("has-complete-loop", hasEnd);', app)
         self.assertIn('elements.loopControls.classList.toggle("has-partial-loop", hasStart && !hasEnd);', app)
-        self.assertIn("    if (hasEnd) {\n      const { start, end } = loopTickRange();", app)
+        self.assertIn("    if (hasEnd && engine) {\n      const { start, end } = loopTickRange();", app)
         self.assertIn("start: startMeasure ? loopStartTick ?? startMeasure[0] : 0,", app)
 
         start = app.index("  function currentMeasureIndex")
@@ -1826,7 +1824,7 @@ console.log(JSON.stringify({{
         self.assertIn('const current = currentMeasureIndex();', app)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
-    def test_a_singer_can_change_divisi_line_mid_note(self) -> None:
+    def test_unassigned_contours_can_follow_either_divisi_line(self) -> None:
         app = (ROOT / "template" / "app.js").read_text(encoding="utf-8")
         # Nothing remembers which line a passage "belongs" to; both lines are
         # real music and the singer moves between them freely.
@@ -1840,6 +1838,7 @@ console.log(JSON.stringify({{
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 let parts = [{{}}];
 let practicePartIndex = 0;
+let practiceDivisi = [null];
 let partDivisi = [];
 let sequence = {{ notes: [
   [0, 0, 1920, 60], [0, 0, 1920, 55],     // one long divided note, a fifth apart
@@ -1892,7 +1891,8 @@ console.log(JSON.stringify({{
         for _, suffix in current:
             self.assertNotRegex(suffix, r":?v\d+$")
         self.assertIn("const PITCH_TRACE_STORAGE_VERSION = 3;", app)
-        self.assertIn("version: PITCH_TRACE_STORAGE_VERSION,", app)
+        save = app.split("function savePitchTraceNow()", 1)[1].split("\n  }", 1)[0]
+        self.assertNotIn("localStorage", save)
         # Versioned names may only be read, once, on the way out.
         for versioned in re.findall(r'`\$\{songKey\("[^"]+"\)\}:v\d+`', block):
             line = next(l for l in block.splitlines() if versioned in l)
@@ -1987,7 +1987,7 @@ console.log(JSON.stringify({{
         self.assertIn("const requestedTick = target.exactTick ? rawTick : clamp(snapTickToEighth(", app)
         self.assertIn("function beginScoreScrub(event, targetAtPointer)", app)
         self.assertIn("function cancelScoreScrub(pointer = null)", app)
-        self.assertIn("api.tickPosition = requestedTick", app)
+        self.assertIn("seekPlaybackTick(requestedTick)", app)
         self.assertNotIn("engine.seek(engine.secondsAtTick(requestedTick))", app)
         self.assertIn("updateBarPlayhead(requestedTick)", app)
         self.assertIn('elements.score.addEventListener("pointerdown"', app)
@@ -2182,8 +2182,8 @@ console.log(JSON.stringify({{
         # One limit, used by everything that sends playback somewhere: the seek
         # bar, its keys, and a click or drag on either score surface.
         self.assertEqual(app.count("latestSeekTick()"), 4)   # its own definition, then three callers
-        self.assertIn("return clamp(Math.round(engine.tickAtSeconds(Number(milliseconds) / 1000)), 0, latestSeekTick());", app)
-        self.assertIn("), 0, latestSeekTick());", app)
+        self.assertIn("return clamp(Math.round(engine.tickAtSeconds(Number(milliseconds) / 1000)), pitchTraceOriginTick(), latestSeekTick());", app)
+        self.assertIn("), pitchTraceOriginTick(), latestSeekTick());", app)
         self.assertNotIn("api.tickPosition = engine.tickAtSeconds(value / 1000)", app)
         # The end of the piece stops attracting seeks, or its snap window would
         # swallow the whole closing bar.
@@ -2347,7 +2347,7 @@ console.log(JSON.stringify({{
         template = (ROOT / "template" / "index.html").read_text(encoding="utf-8")
         app = (ROOT / "template" / "app.js").read_text(encoding="utf-8")
         app, template, styles = build_trainer.install_compact_lyrics(app, template, "")
-        self.assertEqual(template.count('id="annotationLayout"'), 1)
+        self.assertEqual(template.count('id="annotationLayout"'), 0)
         self.assertNotIn('id="lyricsToggle"', template)
         self.assertNotIn("Unique lyrics", template)
         self.assertIn("function prepareSharedNotation()", app)
@@ -2362,7 +2362,7 @@ console.log(JSON.stringify({{
         document = (ROOT / "template" / "index.html").read_text(encoding="utf-8")
         styles = (ROOT / "template" / "styles.css").read_text(encoding="utf-8")
         self.assertIn('class="control-stack display-controls"', document)
-        self.assertEqual(document.count('class="display-control-row'), 4)
+        self.assertEqual(document.count('class="display-control-row'), 3)
         self.assertIn('>Scroll</span>', document)
         self.assertIn('>Scale</span>', document)
         self.assertNotIn('>Stretch</span>', document)
@@ -2371,11 +2371,10 @@ console.log(JSON.stringify({{
         self.assertIn('aria-label="Horizontal scale"', document)
         self.assertNotIn('class="display-control-row display-mode-row"', document)
         self.assertNotIn('class="display-control-row display-mic-row"', document)
-        self.assertIn('class="binary-feature-button display-lyrics-toggle"', document)
-        self.assertIn('id="annotationLayout" type="button" aria-label="Compact Lyrics" aria-pressed="false"', document)
-        self.assertIn('>Compact</button>', document)
-        self.assertIn('id="showAllLyrics"', document)
-        self.assertIn('id="lyricEditing" type="button" aria-label="Hide words" aria-pressed="false"', document)
+        self.assertNotIn('id="annotationLayout"', document)
+        self.assertNotIn('>Compact</button>', document)
+        self.assertNotIn('id="showAllLyrics"', document)
+        self.assertIn('id="lyricEditing" type="button" aria-label="Hide Lyrics" aria-pressed="false"', document)
         lyrics_button_rule = styles.split(
             ".display-feature-row .display-lyrics-toggle {", 1
         )[1].split("}", 1)[0]
@@ -2451,8 +2450,8 @@ console.log(JSON.stringify({{
         self.assertIn('aria-label="Show setting help"', document)
         self.assertIn('<circle cx="12" cy="12" r="10"></circle>', document)
         self.assertIn('id="settingsTooltip" role="tooltip" aria-hidden="true" hidden', document)
-        self.assertIn('data-help="Tap to advance; drag to browse."', document)
-        self.assertIn('data-help="Record and trace locally. Hold: clear trace."', document)
+        self.assertIn('id="practicePart" class="practice-part-pager', document)
+        self.assertIn('Save pitch only. Rec adds audio.', document)
         self.assertNotIn('title="Unique lyrics', document)
         self.assertIn("let settingsHelpEnabled = false", app)
         self.assertIn("function setupSettingsHelp()", app)
@@ -2479,7 +2478,7 @@ console.log(JSON.stringify({{
         toggle = app.split("  function togglePracticePlayback() {", 1)[1].split("  function ", 1)[0]
         self.assertIn('if (takeState !== "off")', toggle)
         self.assertIn('["requesting", "counting"].includes(takeState) ? "Count-in canceled" : "Stopped"', toggle)
-        self.assertIn('true, {discardShortTail: true}', toggle)
+        self.assertRegex(toggle, r'true, \{discardShortTail: true,\s*preserveRecordIntent:\s*true\}')
         self.assertIn("      engine?.toggleTransport();", app)
         self.assertIn('if (takeState === "off") { void startTakeRecording(); return true; }', app)
         self.assertNotIn('takePreviewUrl', app)
@@ -2539,7 +2538,7 @@ console.log(JSON.stringify({{
         self.assertEqual(again, hyphenated)
         self.assertEqual(second, 0)
 
-    def test_short_repeated_lyrics_keep_only_syllable_changes(self) -> None:
+    def test_lyrics_hide_repeats_and_restart_after_rests(self) -> None:
         raw = '''<?xml version="1.0" encoding="UTF-8"?>
 <score-partwise version="4.0">
   <part-list><score-part id="P1"><part-name>S</part-name></score-part></part-list>
@@ -2547,21 +2546,35 @@ console.log(JSON.stringify({{
     <note><lyric number="1"><text>doo</text></lyric><lyric number="2"><text>doo</text></lyric></note>
     <note><rest/></note>
     <note><lyric number="1"><text>doo</text></lyric><lyric number="2"><text>verse</text></lyric></note>
-    <note><lyric number="1"><text>words</text></lyric><lyric number="2"><text>doo</text></lyric></note>
-    <note><lyric number="1"><text>doo</text></lyric><lyric number="2"><text>doo</text></lyric></note>
+    <note><lyric number="1"><text>doo</text></lyric><lyric number="2"><text>hold</text></lyric></note>
+    <note><rest/></note>
+    <note><lyric number="1"><text>words</text></lyric><lyric number="2"><text>hold</text></lyric></note>
   </measure></part>
 </score-partwise>'''
         marked, count = build_trainer.annotate_repeated_lyrics(raw)
-        self.assertEqual(count, 2)
+        self.assertEqual(count, 1)
         root = build_trainer.ET.fromstring(marked)
         lyrics = [element for element in root.iter() if build_trainer.local_name(element.tag) == "lyric"]
         self.assertEqual(
             [lyric.attrib.get(build_trainer.REPEATED_LYRIC_ATTRIBUTE) for lyric in lyrics],
-            [None, None, "true", None, None, None, None, "true"],
+            [None, None, None, None, "true", None, None, None],
         )
         marked_again, count_again = build_trainer.annotate_repeated_lyrics(marked)
-        self.assertEqual(count_again, 2)
+        self.assertEqual(count_again, 1)
         self.assertEqual(marked_again, marked)
+
+    def test_backing_breaths_only_bridge_one_quarter_in_the_same_voice(self) -> None:
+        word = lambda text, voice=1: f"<note><voice>{voice}</voice><duration>3</duration><lyric><text>{text}</text></lyric></note>"
+        rest = lambda duration, voice=1: f"<note><rest/><voice>{voice}</voice><duration>{duration}</duration></note>"
+        music = (word("mm") + rest(3) + word("mm") + rest(6, 2) + word("mm")
+                 + rest(2) + rest(2) + word("mm") + rest(1) + word("oo")
+                 + word("hold") + rest(1) + word("hold"))
+        raw = "<score-partwise><part><measure><attributes><divisions>3</divisions></attributes>" + music + "</measure></part></score-partwise>"
+        marked, count = build_trainer.annotate_repeated_lyrics(raw)
+        self.assertEqual(count, 2)
+        words = list(build_trainer.ET.fromstring(marked).iter("lyric"))
+        self.assertEqual([i for i, w in enumerate(words) if w.get(build_trainer.REPEATED_LYRIC_ATTRIBUTE)], [1, 2])
+        self.assertEqual(build_trainer.annotate_repeated_lyrics(marked), (marked, count))
 
     def test_long_repeats_are_isolated_by_part_and_verse_and_keep_transitions(self) -> None:
         lyrics = [(1, "doo")] * 4 + [(1, "word")] + [(1, "doo")] * 3
@@ -2585,8 +2598,8 @@ console.log(JSON.stringify({{
         self.assertIn('[data-choir-repeated-lyric="true"]', app)
         self.assertIn("function setLyricsMode(next", app)
         shared = (ROOT / "template" / "shared_notation.js").read_text(encoding="utf-8")
-        self.assertIn('setAttribute("aria-pressed", String(annotationLayout === "shared"))', shared)
-        self.assertIn('setLyricsMode(annotationLayout === "shared" ? "changes" : "full"', shared)
+        self.assertIn('annotationLayout = "shared"', shared)
+        self.assertIn('setLyricsMode("changes"', shared)
         self.assertIn("scoreXmlForDisplayMode()", app)
         self.assertIn("lyrics: lyricsMode", app)
 

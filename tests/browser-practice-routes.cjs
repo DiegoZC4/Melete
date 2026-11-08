@@ -38,6 +38,9 @@ async function checkPracticeRoutes(browser, temporary, output) {
       const choir=await page.evaluate(()=>__roleQa.snapshot());
       assert.equal(choir.part,1);
       assert.deepEqual(choir.parts,['Soprano 1','Soprano 2','S2 soloist']);
+      const paints=await page.locator('[data-visible-index]').evaluateAll(buttons=>buttons.map(b=>getComputedStyle(b).getPropertyValue('--part-color').trim()));
+      assert.equal(new Set(paints).size,3,'fresh singer builds distinguish the solo and both staves');
+      assert.ok(paints.every(p=>p.startsWith('oklch(')));
       assert.deepEqual(choir.lyrics.map(l=>l[3]),['Before','Join','shared','hold','Return','after']);
       assert.deepEqual(choir.notes.filter(n=>n[0]===1 && n[1]===3360).map(n=>n[3]),[74]);
       assert.deepEqual(choir.notes.filter(n=>n[0]===2 && n[1]===4800).map(n=>n[3]),[71]);
@@ -104,14 +107,8 @@ async function checkSeedRoutes(frame,page,{output,label}) {
   }
   const choose=async index=>{
     if(await frame.locator('#settingsToggle').getAttribute('aria-expanded')!=='true') await frame.locator('#settingsToggle').click();
-    const picker=frame.locator('#practicePart');
-    let current=(await frame.evaluate(()=>__roleQa.snapshot())).part;
-    for(let i=0;current!==index && i<=before.parts.length;i++) {
-      const next=current===null?0:(current+1)%before.parts.length;
-      await picker.press('ArrowDown');
-      await frame.waitForFunction(next=>__roleQa.snapshot().part===next&&!__roleQa.busy,next);
-      current=next;
-    }
+    await require('./browser-sing.cjs').choosePart(frame,index);
+    await frame.waitForFunction(index=>__roleQa.snapshot().part===index&&!__roleQa.busy,index);
     assert.equal((await frame.evaluate(()=>__roleQa.snapshot())).part,index);
   };
   // Keyboard pager navigation exercises the same route as mouse/touch changes.

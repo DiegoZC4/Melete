@@ -7,6 +7,16 @@ const seconds = tick => tick / 960 * .5;
 const start18 = measures[17][0], start19 = measures[18][0];
 const planAt = (start, rate = 1) => countInPlan(measures, 960, start, seconds, rate);
 
+test('optional song count-ins supply three or four full preparation beats',()=>{
+  for(const count of [3,4])for(const rate of [.5,1,1.5]){
+    const plan=countInPlan(measures,960,0,seconds,rate,count);
+    assert.equal(plan.start,-count*960);
+    assert.equal(plan.duration,count*.5/rate);
+    assert.deepEqual(plan.beats.map(b=>b.label),Array.from({length:count},(_,i)=>i+1));
+    assert.ok(plan.beats.at(-1).seconds<plan.duration,'the final click is before the entrance');
+  }
+});
+
 test('Seed entrances count 5-6-7 into soprano pickups and the A2 downbeat, 1-2-3 into the others', () => {
   const sop = planAt(start18 + 6 * 960);
   assert.equal(sop.start, start18 + 4 * 960);

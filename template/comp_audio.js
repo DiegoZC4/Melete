@@ -18,14 +18,17 @@
     }
   }
   function workerSource(recording) {
-    return `"use strict";
+    return `"use strict";\n${globalThis.MeleteLoudnessSource || ""}
       const splice = ${splice.toString()};
       const wavBytes = ${recording.wavBytes.toString()};
       const takePlaybackGain = ${recording.takePlaybackGain.toString()};
       let out, rate;
       onmessage = ({data: m}) => { try {
         if (m.type === "init") { rate = m.rate; out = new Float32Array(m.length); }
-        if (m.type === "source") splice(out, new Float32Array(m.input), m.segments, m.origin, m.latency, rate);
+        if (m.type === "source") {
+          const input = m.wav ? MeleteLoudnessMeter.decodeWav(m.wav).channels[0] : new Float32Array(m.input);
+          splice(out, input, m.segments, m.origin, m.latency, rate);
+        }
         if (m.type === "finish") {
           const pcm = new Int16Array(out.length);
           for (let i = 0; i < out.length; i++) pcm[i] = Math.round(Math.max(-1, Math.min(1, out[i])) * 32767);
@@ -35,7 +38,8 @@
       } catch (e) { postMessage({error: e.message}); } };`;
   }
   async function prepare(context, snapshot, takes, wav, signal) {
-    const seconds = snapshot.descriptor.reference.seconds;
+    const origin = Math.min(0, snapshot.segments[0]?.from || 0);
+    const seconds = snapshot.descriptor.reference.seconds - origin;
     if (seconds > 1200) throw new Error("Comp audio review is limited to 20 minutes");
     const url = URL.createObjectURL(new Blob([workerSource(globalThis.MeleteRecording)], {type: "text/javascript"}));
     let worker, timer, abort;
@@ -54,18 +58,26 @@
       for (const id of new Set(snapshot.segments.map(s => s.takeId))) {
         signal.throwIfAborted();
         const take = takes.get(id), blob = await wav(take);
-        const decoded = await context.decodeAudioData(await blob.arrayBuffer());
+        const bytes = await blob.arrayBuffer();
         signal.throwIfAborted();
-        const input = decoded.getChannelData(0).slice();
-        worker.postMessage({type: "source", input: input.buffer, origin: take.origin,
-          latency: take.pitchReference.latency, segments: snapshot.segments.filter(s => s.takeId === id)}, [input.buffer]);
+        const message = {type: "source", origin: take.origin - origin,
+          latency: take.pitchReference.latency, segments: snapshot.segments.filter(s => s.takeId === id)
+            .map(s => ({...s, from:s.from - origin, to:s.to - origin}))};
+        if (take.sampleRate === context.sampleRate) {
+          worker.postMessage({...message, wav: bytes}, [bytes]);
+        } else {
+          const decoded = await context.decodeAudioData(bytes);
+          signal.throwIfAborted();
+          const input = decoded.getChannelData(0).slice();
+          worker.postMessage({...message, input:input.buffer}, [input.buffer]);
+        }
       }
       worker.postMessage({type: "finish"});
       const {samples, wav: bytes, gain} = await result;
       signal.throwIfAborted();
       const buffer = context.createBuffer(1, samples.byteLength / 4, context.sampleRate);
       buffer.copyToChannel(new Float32Array(samples), 0);
-      return {buffer, blob: new Blob([bytes], {type: "audio/wav"}), playbackGain: gain};
+      return {buffer, blob: new Blob([bytes], {type: "audio/wav"}), playbackGain: gain, origin};
     } finally {
       clearTimeout(timer); signal.removeEventListener("abort", abort);
       worker?.terminate(); URL.revokeObjectURL(url);

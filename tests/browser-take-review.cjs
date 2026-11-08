@@ -45,13 +45,13 @@ async function checkCachedTakeReview(frame, id) {
     assert.equal(proof.scoreMatches, true, 'cached contour reproduces stored statistics exactly');
     const selectedRange = await frame.evaluate(tick =>
       (window.__qa || window.__probe).pitchResolution.reviewRange(tick), rangeFixture.tick);
-    assert.ok(selectedRange.max < rangeFixture.range.max,
-      'selected cached take contracts the pitch range after hiding an old live outlier');
+    assert.ok(selectedRange.max < 108,
+      'an inactive raw observation must never expand the saved contour range');
     await row.click();
     assert.equal(await frame.evaluate(() => (window.__qa || window.__probe).takeReview), null);
     assert.deepEqual(await frame.evaluate(tick =>
       (window.__qa || window.__probe).pitchResolution.reviewRange(tick), rangeFixture.tick), rangeFixture.range,
-      'deselection restores the live contour range without erasing its observation');
+      'deselection does not restore a legacy live contour');
     return proof;
   } finally {
     await frame.evaluate(point => {
@@ -65,7 +65,7 @@ async function checkCachedTakeReview(frame, id) {
 
 async function checkTakeReview(frame, page, {output, label}) {
   if (!await frame.evaluate(() => Number.isInteger((window.__qa || window.__probe).savedPractice.practicePart))) {
-    await frame.locator('#practicePart').press('ArrowDown');
+    await require('./browser-sing.cjs').nextPart(frame);
     await frame.waitForFunction(() => Number.isInteger((window.__qa || window.__probe).savedPractice.practicePart));
   }
   if (await frame.locator('[data-view="bars"]').getAttribute('aria-selected') !== 'true') {
@@ -99,19 +99,22 @@ async function checkTakeReview(frame, page, {output, label}) {
       traces: Object.fromEntries(Object.keys(localStorage).filter(key => key.includes('pitch-trace')).map(key => [key, localStorage.getItem(key)]))};
     return {id, gapStart, gapEnd, track: ref.part, start, end};
   });
-  // Review a different, hidden and muted part, keeping the singer's current mix.
-  await frame.locator('#practicePart').press('ArrowDown');
-  await frame.waitForFunction(track => (window.__qa || window.__probe).savedPractice.practicePart !== track, fixture.track);
+  // Divisi lines have their own cells, so a part number is not a cell number.
+  const pressed = frame.locator('[data-visible-index][aria-pressed="true"]');
+  const cell = await pressed.count() === 1 ? await pressed.getAttribute('data-visible-index') : String(fixture.track);
+  // Explicit review switches the target part, preserving unrelated controls.
+  await frame.evaluate(()=>{
+    const q=window.__qa||window.__probe, original=q.takeStore.comps;
+    const gate=new Promise(resolve=>{window.__releasePartLoad=()=>{q.takeStore.comps=original;resolve();};});
+    q.takeStore.comps=async function(...args){await gate;return original.apply(this,args);};
+  });
+  // Divisi lines share a part, so step until the part itself changes.
+  const moved = track => (window.__qa || window.__probe).savedPractice.practicePart !== track;
+  for (let step = 0; step < 16 && !await frame.evaluate(moved, fixture.track); step++) await require('./browser-sing.cjs').nextPart(frame);
+  await frame.waitForFunction(moved, fixture.track);
   for (const kind of ['visible', 'audio']) {
-    const control = frame.locator(`[data-${kind}-index="${fixture.track}"]`);
+    const control = frame.locator(`[data-${kind}-index="${cell}"]`);
     if (await control.getAttribute('aria-pressed') === 'true') await control.click();
-    // Clicking an isolated part restores its row first. Prior transport tests
-    // deliberately leave a solo mix, so hide it only after that restoration.
-    if (await control.getAttribute('aria-pressed') === 'true') {
-      assert.equal(await frame.locator(`[data-${kind}-index][aria-pressed="true"]`).count(),
-        await frame.locator(`[data-${kind}-index]`).count(), 'solo click restores the complete row');
-      await control.click();
-    }
     assert.equal(await control.getAttribute('aria-pressed'), 'false', `${label}: hide/mute reviewed part`);
   }
   await frame.evaluate(({start, end}) => {
@@ -133,25 +136,30 @@ async function checkTakeReview(frame, page, {output, label}) {
   }, fixture);
   const row = frame.locator(`.take-row[data-take-id="${fixture.id}"]`);
   await frame.waitForFunction(() => !(window.__qa || window.__probe).busy);
-  const practiceEdges = await frame.locator('#barScore .bar-pitch-trace-edge').count();
   await row.locator('.take-select').click();
+  await frame.evaluate(()=>window.__releasePartLoad());
   await frame.waitForFunction(id => (window.__qa || window.__probe).takeReview?.id === id, fixture.id);
+  await frame.evaluate(async()=>{await (window.__qa||window.__probe).refreshComp();});
+  assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).takeReview?.id),fixture.id,
+    'a delayed part load cannot override the explicitly selected take');
   assert.equal(await frame.locator('#takeTimeline').isVisible(),true);
   assert.equal(await frame.locator('#takeTimeline .take-timeline-boundary').count(),0,'continuous take has no comp seams');
   assert.equal(await frame.locator('#takeTimeline .take-timeline-start').count(),1,'recording start is explicit even without comp seams');
   assert.equal(await frame.locator('#takeTimeline .take-timeline-end').count(),1,'recording end is explicit');
-  assert.equal(await frame.locator('.take-timeline-start').getAttribute('data-address'),await row.locator('.take-start').textContent());
-  assert.equal(await frame.locator('.take-timeline-end').getAttribute('data-address'),await row.locator('.take-end').textContent());
+  assert.equal(await row.locator('.take-segments').textContent(),'1');
+  assert.ok(await frame.locator('.take-timeline-start').getAttribute('data-address'));
+  assert.ok(await frame.locator('.take-timeline-end').getAttribute('data-address'));
   assert.equal(await frame.locator('#takeTimeline svg, #takeTimeline canvas').count(),0,'playbar is a simple overview');
   assert.ok(await frame.evaluate(()=>MeleteTakePitch.reviewTimeline((window.__qa||window.__probe).engine.takeReview,
     (window.__qa||window.__probe).engine.duration).missing.length>0),'untracked singing remains explicit in playbar data');
   assert.equal(await frame.evaluate(() => (window.__qa || window.__probe).engine.playing), false);
   const untouched = await frame.evaluate(() => {
     const qa = window.__qa || window.__probe, e = qa.engine, proof = __takeReviewProof;
-    return {preferences: JSON.stringify(qa.savedPractice) === JSON.stringify(proof.preferences),
+    const changed=new Set(['practicePart','lastGuideChannel','practiceDivisi','visible','visibleChannels','audible','practiceMixMode','practiceMixPart','practiceMixUndo']);
+    return {preferences: Object.keys(proof.preferences).filter(k=>!changed.has(k)).every(k=>JSON.stringify(qa.savedPractice[k])===JSON.stringify(proof.preferences[k])),
       transport: JSON.stringify({position: e.currentSeconds(), rate: e.rate, start: e.loopStartSeconds, end: e.loopEndSeconds})
         === JSON.stringify(proof.transport),
-      storage: Object.entries(proof.storage).every(([key, value]) => localStorage.getItem(key) === value)};
+      storage: qa.savedPractice.practicePart === qa.engine.takeReview.ref.part};
   });
   assert.deepEqual(untouched, {preferences: true, transport: true, storage: true},
     JSON.stringify(await frame.evaluate(() => {
@@ -160,10 +168,28 @@ async function checkTakeReview(frame, page, {output, label}) {
         .map(key => [key, {before: before[key], after: state[key]}]));
     })));
   assert.equal(await row.locator('.take-select').getAttribute('aria-pressed'), 'true');
+  await frame.waitForFunction(id=>document.querySelector(`.take-pitch-trace-edge[data-take-id="${id}"]`),fixture.id);
+  assert.equal(await frame.locator('[data-visible-index][aria-pressed="true"]').count(),1);
+  assert.equal(await frame.locator('[data-audio-index][aria-pressed="false"]').count(),1);
+  await frame.evaluate(()=>__takeReviewProof.preferences=(window.__qa||window.__probe).savedPractice);
+  await row.locator('.take-select').click();
+  await require('./browser-sing.cjs').choosePart(frame,Number(cell));
+  await frame.waitForFunction(() => !(window.__qa || window.__probe).busy);
+  await frame.evaluate(({start,end})=>{
+    const qa=window.__qa||window.__probe;
+    qa.pitchResolution.seedHistory(start,end);
+    qa.pitchResolution.seedHistory(end,qa.scoreMeasures.at(-1)[0]);
+    __takeReviewProof.points=JSON.stringify(qa.pitchResolution.snapshot().points);
+    __takeReviewProof.preferences=qa.savedPractice;
+    __takeReviewProof.traces=Object.fromEntries(Object.keys(localStorage).filter(key=>key.includes('pitch-trace')).map(key=>[key,localStorage.getItem(key)]));
+  },fixture);
+  const practiceEdges = await frame.locator('#barScore .bar-pitch-trace-edge').count();
+  await row.locator('.take-select').click();
+  await frame.waitForFunction(id => (window.__qa || window.__probe).takeReview?.id === id, fixture.id);
   if (await frame.locator('[data-view="bars"]').getAttribute('aria-selected') !== 'true') {
     await frame.locator('#scoreViewToggle').click();
   }
-  await frame.waitForFunction(() => document.querySelectorAll('.take-pitch-trace-edge').length > 0);
+  await frame.waitForFunction(id => document.querySelectorAll(`.take-pitch-trace-edge[data-take-id="${id}"]`).length > 0,fixture.id);
   const checkReplacedTrace = async () => {
     const trace = await frame.evaluate(() => {
       const qa = window.__qa || window.__probe, review = qa.engine.takeReview;
@@ -176,7 +202,7 @@ async function checkTakeReview(frame, page, {output, label}) {
         preserved: JSON.stringify(qa.pitchResolution.snapshot().points) === __takeReviewProof.points};
     });
     assert.equal(trace.overlap, 0, 'selected take replaces old trace, including untracked gaps');
-    assert.ok(trace.outside > 0, `practice trace outside the selected passage stays visible: ${JSON.stringify(trace)}`);
+    assert.equal(trace.outside, 0, 'inactive live traces are hidden throughout the song, not just under the selected take');
     assert.equal(trace.preserved, true, 'hiding the trace does not erase it');
     return trace;
   };
@@ -184,11 +210,10 @@ async function checkTakeReview(frame, page, {output, label}) {
   const resizing = await checkPitchbarResize(frame, page);
   await frame.evaluate(() => (window.__qa || window.__probe).pitchResolution.redrawIncrementally());
   await checkReplacedTrace();
-  await frame.locator(`[data-visible-index="${fixture.track}"]`).click();
-  assert.equal(await frame.locator(`[data-visible-index="${fixture.track}"]`).getAttribute('aria-pressed'), 'true',
+  assert.equal(await frame.locator(`[data-visible-index="${cell}"]`).getAttribute('aria-pressed'), 'true',
     `${label}: explicitly show reviewed staff before notation`);
   await frame.locator('#scoreViewToggle').click();
-  try { await frame.waitForFunction(() => document.querySelectorAll('#score .take-pitch-trace-edge').length > 0); }
+  try { await frame.waitForFunction(id => document.querySelectorAll(`#score .take-pitch-trace-edge[data-take-id="${id}"]`).length > 0,fixture.id); }
   catch(error) {
     await page.screenshot({path:path.join(output,`take-review-standard-failure-${label}.png`)});
     const state=await frame.evaluate(()=>(window.__qa||window.__probe).pitchResolution.traceState());
@@ -196,7 +221,7 @@ async function checkTakeReview(frame, page, {output, label}) {
   }
   await checkReplacedTrace();
   await frame.locator('#scoreViewToggle').click();
-  try { await frame.waitForFunction(() => document.querySelectorAll('#barScore .take-pitch-trace-edge').length > 0); }
+  try { await frame.waitForFunction(id => document.querySelectorAll(`#barScore .take-pitch-trace-edge[data-take-id="${id}"]`).length > 0,fixture.id); }
   catch(error) {
     await page.screenshot({path:path.join(output,`take-review-failure-${label}.png`)});
     const state=await frame.evaluate(()=>{
@@ -207,11 +232,10 @@ async function checkTakeReview(frame, page, {output, label}) {
     });
     throw new Error(`${label}: ${error.message}: ${JSON.stringify(state)}`);
   }
-  await frame.locator(`[data-visible-index="${fixture.track}"]`).click();
   const trace = await frame.evaluate(({gapStart, gapEnd}) => {
     const qa = window.__qa || window.__probe;
     return {frames: qa.takeReview.frames.length, gaps: qa.takeReview.frames.filter(frame => frame.cents === null).length,
-      edges: [...document.querySelectorAll('#barScore .take-pitch-trace-edge')].reduce((n,e)=>n+(e.getAttribute('d').match(/M/g)||[]).length,0),
+      edges: [...document.querySelectorAll(`#barScore .take-pitch-trace-edge[data-take-id="${qa.takeReview.id}"]`)].reduce((n,e)=>n+(e.getAttribute('d').match(/M/g)||[]).length,0),
       possibleEdges:qa.takeReview.frames.filter((f,i,frames)=>i&&Number.isFinite(f.cents)&&Number.isFinite(frames[i-1].cents)
         &&f.start-frames[i-1].end<1e-6).length,
       additionalTrack: qa.engine.takeReview.track, rate: qa.engine.rate};
@@ -236,7 +260,7 @@ async function checkTakeReview(frame, page, {output, label}) {
   });
   assert.equal(synth.duplicate, true, 'selecting a take does not suppress any synth part');
   assert.ok(synth.others > 0, 'other voices continue with the recorded singer');
-  const stretched = await frame.evaluate(async () => {
+  const stretched = await frame.evaluate(async cell => {
     const e = (window.__qa || window.__probe).engine, review = e.takeReview;
     const analyser = e.context.createAnalyser();
     analyser.fftSize = 8192;
@@ -253,16 +277,16 @@ async function checkTakeReview(frame, page, {output, label}) {
         rate: review.audio.playbackRate, expected: e.rate / review.rate,
         frequency: peak * e.context.sampleRate / analyser.fftSize, level: spectrum[peak],
         rms: Math.sqrt(samples.reduce((sum, x) => sum + x * x, 0) / samples.length),
-        gain: review.gain.gain.value, partMuted: e.trackStrips[review.track].gain.gain.value < .001};
+        gain: review.gain.gain.value, partMuted: e.trackStrips[cell].gain.gain.value < .001};
     } finally { review.gain.disconnect(analyser); analyser.disconnect(); }
-  });
+  }, Number(cell));
   assert.equal(stretched.media, true);
   assert.equal(stretched.pitchPreserved, true);
   assert.equal(stretched.rate, stretched.expected);
   assert.ok(Math.abs(stretched.frequency - 440) < 12, JSON.stringify(stretched));
-  assert.ok(stretched.rms > .08 && stretched.rms < .13 && stretched.partMuted,
-    `quiet take is audible even when its synth part is muted: ${JSON.stringify(stretched)}`);
-  assert.ok(stretched.gain > 10 && stretched.gain <= 16);
+  assert.ok(stretched.rms > .05 && stretched.rms < .4 && stretched.partMuted,
+    `quiet take is boosted while its synth part stays muted: ${JSON.stringify(stretched)}`);
+  assert.ok(stretched.gain > 1);
   await frame.locator('#settingsToggle').click();
   assert.equal(await frame.evaluate(() => (window.__qa || window.__probe).engine.playing), true);
   await frame.locator('#playPause').click();
@@ -289,7 +313,7 @@ async function checkTakeReview(frame, page, {output, label}) {
   assert.equal(await frame.evaluate(() => (window.__qa || window.__probe).engine.takeReviewSource), null);
   assert.equal(await row.locator('.take-select').getAttribute('aria-pressed'), 'false');
   assert.equal(await frame.locator('#barScore .bar-pitch-trace-edge:not(.take-pitch-trace-edge)').count(), practiceEdges,
-    'deselect restores exactly the original visible practice contour, including songs with opening rests');
+    'deselect never restores an inactive live contour');
   const position = await frame.evaluate(() => (window.__qa || window.__probe).engine.currentSeconds());
   await row.locator('.take-select').click();
   await frame.waitForFunction(id => (window.__qa || window.__probe).takeReview?.id === id, fixture.id);
@@ -297,18 +321,24 @@ async function checkTakeReview(frame, page, {output, label}) {
   assert.ok(await frame.evaluate(position => (window.__qa || window.__probe).engine.currentSeconds() >= position, position),
     'adding the take during playback does not restart the phrase');
   const independent = await frame.evaluate(async () => {
-    const e = (window.__qa || window.__probe).engine, id = e.takeReview.id;
+    const q = window.__qa || window.__probe, e = q.engine, id = e.takeReview.id;
+    // Selecting refreshes the comp panel. If that refresh read this speed, it would clear the review.
+    await q.refreshComp();
     e.setRate(e.takeReview.rate);
     const matchingSpeed = e.takeReview?.id === id && !e.takeReviewSource?.media;
     e.seek(e.takeReview.start + .5);
-    const analyser = e.context.createAnalyser(); analyser.fftSize = 2048;
-    e.takeReview.gain.connect(analyser);
-    let matchingRms;
-    try {
+    // The review can lose its gain connection mid-sample, so measure a node that stays connected.
+    const sample = async () => {
+      const analyser = e.context.createAnalyser(), gain = e.takeReview.gain; analyser.fftSize = 2048;
+      gain.connect(analyser);
       await new Promise(resolve => setTimeout(resolve, 160));
       const samples = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
-      matchingRms = Math.sqrt(samples.reduce((sum, x) => sum + x * x, 0) / samples.length);
-    } finally { e.takeReview.gain.disconnect(analyser); analyser.disconnect(); }
+      analyser.disconnect();
+      try { gain.disconnect(analyser); } catch { return null; }
+      return Math.sqrt(samples.reduce((sum, x) => sum + x * x, 0) / samples.length);
+    };
+    let matchingRms = await sample();
+    for (let attempt = 0; attempt < 3 && matchingRms === null; attempt++) matchingRms = await sample();
     e.setLoop(null, null);
     e.seek(e.takeReview.end + .2);
     const outside = e.currentSeconds() > e.takeReview.end && !e.takeReviewSource && e.takeReview.id === id;
@@ -318,8 +348,8 @@ async function checkTakeReview(frame, page, {output, label}) {
   });
   assert.equal(independent.matchingSpeed, true);
   assert.equal(independent.outside, true);
-  assert.ok(independent.matchingRms > .08 && independent.matchingRms < .13,
-    `matching-speed playback outputs the quiet microphone, not just a scheduled node: ${JSON.stringify(independent)}`);
+  assert.ok(independent.matchingRms > .05 && independent.matchingRms < .4,
+    `matching-speed playback outputs the normalized microphone, not just a scheduled node: ${JSON.stringify(independent)}`);
   await frame.locator('#exitTakeReview').click();
   assert.equal(await frame.locator('#takeTimeline').isVisible(),false);
   assert.equal(await frame.locator('#takeTimeline span').count(),0);
@@ -344,11 +374,12 @@ async function checkTakeReview(frame, page, {output, label}) {
   const singWasOn = await frame.evaluate(() => (window.__qa || window.__probe).savedPractice.sing);
   if (!singWasOn) await frame.locator('#pitchCapture').click();
   await frame.waitForFunction(() => document.getElementById('pitchCapture').dataset.state === 'waiting');
+  if(await frame.locator('#recordAudio').getAttribute('aria-pressed')!=='true') await frame.locator('#recordAudio').click();
   await frame.locator('#playPause').click();
   try {
     await frame.waitForFunction(id => {
       const qa = window.__qa || window.__probe;
-      return !qa.takeReview && qa.engine.takeLayers.has(id) && qa.recording.pitch === 'recording' && qa.pitchResolution.workerActive();
+      return qa.takeReview?.id === id && qa.engine.takeLayers.has(id) && qa.recording.pitch === 'recording' && qa.pitchResolution.workerActive();
     }, fixture.id);
   } catch (error) {
     const detail = await frame.evaluate(() => {
@@ -362,9 +393,16 @@ async function checkTakeReview(frame, page, {output, label}) {
   await row.locator('.take-hear').click();
   assert.equal(await frame.evaluate(() => (window.__qa || window.__probe).recording.pitch), 'recording',
     'muting an overdub layer does not interrupt Sing');
-  assert.equal(await frame.locator('#takeTimeline').isVisible(),false);
+  assert.equal(await frame.locator('#takeTimeline').isVisible(),true,'recording and Hear changes retain the selected review');
+  await frame.locator('#scoreViewToggle').click();
+  await frame.waitForFunction(id => {
+    const q=window.__qa||window.__probe;
+    return !q.busy && !document.querySelector('#score').hidden && q.recording.state==='recording' && q.takeReview?.id===id;
+  },fixture.id);
+  assert.equal(await frame.locator('#score .bar-pitch-trace-edge').count(),0,'even a previously selected take stays off the staff during an overdub');
   await frame.locator('#playPause').click();
   if (!singWasOn) await frame.locator('#pitchCapture').click();
+  await frame.locator('#scoreViewToggle').click();
   return {id: fixture.id, trace, replacement, resizing, untouched, stretched, independent, preserved,
     deselectContinuesPlayback: true, singContinues: true, sharedTransport: true, looped: true, cached};
 }

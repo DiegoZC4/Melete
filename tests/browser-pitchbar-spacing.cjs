@@ -38,6 +38,7 @@ async function checkPitchbarSpacing(frame, page, {probe = '__qa', unit = 480, ou
       state.scoreView = 'bars'; state.flow = 'wrap'; state.lyrics = 'full';
       state.practicePart = state.visible.length - 1;
       state.visible = state.visible.map((_, i) => i === state.practicePart);
+      delete state.visibleChannels;
       p.applySettingsState(state);
     }, probe);
     for (const percent of [5, 100, 200, 300, 400]) {

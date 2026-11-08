@@ -13,10 +13,13 @@ const singPreferenceProbe = `singPreferences: {
 
 async function checkSingPreferences(frame, page, {reload, probe = '__qa'} = {}) {
   const snapshot = () => frame.evaluate(probe => window[probe].singPreferences.snapshot(), probe);
-  const armed = () => frame.waitForFunction(() => document.getElementById('pitchCapture').dataset.state === 'waiting');
+  const armed = () => frame.waitForFunction(probe => {
+    const state = window[probe].singPreferences.snapshot();
+    return state.state === 'armed' && state.takeState === 'off' && state.input && state.worker;
+  }, probe);
   if (await frame.locator('#partChooser').isVisible()) await frame.locator('#partChooserDismiss').click();
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await frame.locator('#settingsToggle').click();
-  if (await frame.evaluate(probe=>window[probe].savedPractice.practicePart,probe) === null) await frame.locator('#practicePart').press('ArrowDown');
+  await require('./browser-sing.cjs').choosePart(frame);
   await frame.waitForFunction(probe=>window[probe].compDescriptor,probe);
   if (await frame.locator('#pitchCapture').getAttribute('aria-pressed') === 'true') await frame.locator('#pitchCapture').click();
   await frame.locator('#loopStart').press('Delete');
@@ -36,8 +39,8 @@ async function checkSingPreferences(frame, page, {reload, probe = '__qa'} = {}) 
   assert.deepEqual(restored.preferences, before.preferences, 'all preferences survive actual pagehide and reload');
   assert.deepEqual(restored.saved, before.saved, 'startup writes cannot erase restored Sing');
   assert.equal(restored.help, true);
-  assert.equal(restored.input, false);
-  assert.equal(restored.worker, false);
+  assert.equal(restored.input, true);
+  assert.equal(restored.worker, true);
   assert.equal(restored.playing, false, 'restoring Sing never autoplays');
   assert.equal(restored.takeState, 'off', 'restoring Sing never starts an audio take');
 
@@ -46,6 +49,8 @@ async function checkSingPreferences(frame, page, {reload, probe = '__qa'} = {}) 
     const q = window[probe], ref = q.compDescriptor.reference;
     q.api.tickPosition = q.engine.tickAtSeconds(ref.notes[Math.floor(ref.notes.length / 3)][0] * ref.rate);
   }, probe);
+  await frame.locator('#recordAudio').click();
+  assert.equal((await snapshot()).playing,false,'arming audio is not Play');
   await frame.locator('#playPause').click();
   await frame.waitForFunction(probe => {
     const state = window[probe].singPreferences.snapshot();
@@ -61,8 +66,9 @@ async function checkSingPreferences(frame, page, {reload, probe = '__qa'} = {}) 
   catch (error) {
     console.error('Sing scoring state', await snapshot(), await frame.evaluate(probe=>window[probe].recording,probe)); throw error;
   }
-  assert.equal((await snapshot()).input, false, 'Pause releases hardware');
+  assert.equal((await snapshot()).input, true, 'Sing continues metering while paused');
   assert.equal((await snapshot()).saved.sing, true, 'Pause retains Sing intent');
+  assert.equal(await frame.locator('#recordAudio').getAttribute('aria-pressed'),'true','Pause keeps the same singer ready to overdub');
   assert.equal(await frame.evaluate(({probe,id})=>window[probe].recording.takes.find(t=>t.id===id)?.complete, {probe,id:savedId}), true);
   try { await frame.waitForFunction(({probe,id})=>window[probe].compState?.segments.some(s=>s.takeId===id), {probe,id:savedId}); }
   catch (error) {
@@ -126,6 +132,7 @@ async function checkSingPreferences(frame, page, {reload, probe = '__qa'} = {}) 
 
   await frame.evaluate(() => document.dispatchEvent(new CustomEvent('melete:deactivate')));
   const inactive = await snapshot();
+  assert.equal(await frame.locator('#recordAudio').getAttribute('aria-pressed'),'false','audio consent never transfers to the next song');
   assert.equal(inactive.state, 'off');
   assert.equal(inactive.input, false);
   assert.equal(inactive.worker, false);
@@ -133,7 +140,7 @@ async function checkSingPreferences(frame, page, {reload, probe = '__qa'} = {}) 
   assert.equal(inactive.saved.sing, true);
   await frame.evaluate(() => document.dispatchEvent(new CustomEvent('melete:activate')));
   await armed();
-  assert.equal((await snapshot()).input, false);
+  assert.equal((await snapshot()).input, true, 'returning to an active Sing session resumes input metering');
 
   await frame.locator('#pitchCapture').click();
   await frame.locator('#settingsHelp').click();

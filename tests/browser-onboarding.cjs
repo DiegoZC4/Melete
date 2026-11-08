@@ -14,7 +14,7 @@ function mixState(surface) {
   }));
 }
 
-const practicePart = surface => surface.evaluate(() => document.getElementById('practicePart').dataset.value);
+const practicePart = surface => surface.evaluate(() => String((window.__qa || window.__probe).savedPractice.practicePart ?? ''));
 const learnedTips = surface => surface.evaluate(key => JSON.parse(localStorage.getItem(key) || '[]'), TIP_STORE);
 const chooserAnswer = surface => surface.evaluate(() =>
   Object.entries(localStorage).find(([key]) => key.endsWith(':part-chooser'))?.[1] ?? null);
@@ -59,7 +59,8 @@ async function checkFirstVisit(surface, page, {mobile, names, choose = 1}) {
   if (mobile) await option.tap(); else await option.click();
   await chooser.waitFor({state: 'hidden'});
   assert.equal(await practicePart(surface), String(choose));
-  assert.deepEqual(await mixState(surface), before, 'choosing a part changes no See, Hear, Vol or Pan setting');
+  assert.deepEqual(await mixState(surface), {...before,see:before.see.map((_,i)=>String(i===choose))},
+    'choosing a part isolates See without changing Hear, Vol or Pan');
   assert.equal(await chooserAnswer(surface), 'chosen');
   assert.equal(await toastText(surface), `Practising ${names[choose]}`);
   let tip = null;
@@ -117,6 +118,7 @@ async function checkTouchVolumeTip(surface, page, name, index = 0) {
 
 // Standalone links: #part= or ?part=, consumed once, never touching the mix.
 async function checkPartLinks(page, origin, settled, {names}) {
+  await require('./browser-sing.cjs').choosePart(page,1);
   // Leave first, so a new hash is a fresh arrival rather than a hashchange.
   const go = async address => { await page.goto('about:blank'); await page.goto(address); await settled(); };
   const before = await mixState(page);
@@ -127,11 +129,11 @@ async function checkPartLinks(page, origin, settled, {names}) {
   assert.equal(page.url(), origin, 'the followed link leaves the address');
   assert.equal(await toastText(page), `Practising ${names[other]} from the link`);
   assert.equal(await page.locator('#partChooser').isVisible(), false);
-  assert.deepEqual(await mixState(page), before, 'a link changes the part, not the saved mix');
+  assert.deepEqual(await mixState(page), {...before,see:before.see.map((_,i)=>String(i===other))}, 'a link isolates See, not the audible mix');
   await page.locator('#toastUndo').click();
   assert.equal(await practicePart(page), String(current), 'Undo returns to the singer’s own part');
   await page.evaluate(name => { location.hash = `part=${name.slice(0, 3)}`; }, names[other]);
-  await page.waitForFunction(other => document.getElementById('practicePart').dataset.value === String(other), other);
+  await page.waitForFunction(other => (window.__qa || window.__probe).savedPractice.practicePart === other, other);
   assert.equal(page.url(), origin);
   await page.evaluate(() => { location.hash = 'part=Mezzo'; });
   await page.waitForFunction(() => document.getElementById('toastMessage').textContent.includes('Mezzo'));
@@ -151,20 +153,22 @@ async function checkTouchRows(surface, page, {mobile, landscape = true}) {
   await openSettings(surface);
   const measure = () => surface.evaluate(() => {
     const rect = node => { const r = node.getBoundingClientRect(); return {x: r.x, y: r.y, w: r.width, h: r.height}; };
-    const cells = [...document.querySelectorAll('#mixer > *')].map(rect);
+    const children = [...document.querySelectorAll('#mixer > *')], cells = children.map(rect);
+    // A reference recording's See caption ("Ref") is a label with no control; the grid centres it in its row.
+    const rowCells = cells.filter((_, i) => !children[i].matches('.reference-heading'));
     const overlaps = [];
     cells.forEach((a, i) => cells.slice(i + 1).forEach((b, j) => {
       if (a.x < b.x + b.w - .5 && b.x < a.x + a.w - .5 && a.y < b.y + b.h - .5 && b.y < a.y + a.h - .5) overlaps.push([i, i + j + 1]);
     }));
     const panel = document.getElementById('settingsPanel');
-    return {rows: [...new Set(cells.map(cell => Math.round(cell.h)))], overlaps,
-      pager: Math.round(document.getElementById('practicePart').getBoundingClientRect().height),
+    return {rows: [...new Set(rowCells.map(cell => Math.round(cell.h)))], overlaps,
+      control: Math.round(document.getElementById('tempo').getBoundingClientRect().height),
       panel: {scroll: panel.scrollHeight, client: panel.clientHeight}};
   });
   const portrait = await measure();
   assert.deepEqual(portrait.rows, [mobile ? 36 : 24], JSON.stringify(portrait));
   assert.deepEqual(portrait.overlaps, []);
-  assert.equal(portrait.pager, 22, 'the Practice group keeps its compact rows');
+  assert.equal(portrait.control, 24, 'the Practice group keeps its compact rows');
   const report = {rowHeight: portrait.rows[0], panel: portrait.panel};
   if (mobile && landscape) {
     const size = page.viewportSize();
@@ -176,7 +180,7 @@ async function checkTouchRows(surface, page, {mobile, landscape = true}) {
       assert.deepEqual(turned.rows, [36]);
       assert.deepEqual(turned.overlaps, []);
       // The drawer may scroll in landscape; each control must still come into view uncovered.
-      const controls = surface.locator('#mixer button, #mixer .mixer-row-label, #practicePart, #tempo, #pitchCapture');
+      const controls = surface.locator('#mixer button, #mixer .mixer-row-label, #tempo, #pitchCapture');
       for (const control of await controls.all()) {
         await control.scrollIntoViewIfNeeded();
         const hit = await control.evaluate(node => {

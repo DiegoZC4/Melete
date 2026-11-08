@@ -33,6 +33,18 @@ system libraries. On Windows set `PYTHON=python` if `python3` is not on PATH.
 Playwright Chromium download. `GUI_QA_NODE_MODULES` can optionally select an
 existing dependency directory; it is never required.
 `QA_OUTPUT_DIR` isolates reports/screenshots for a separate validation run.
+The standalone take-column and settings-cleanup browser checks use synthetic
+scores by default; set `QA_COLLECTION_PROJECT` to a restored rehearsal project
+to include the real Autumn and Seed players as well.
+
+`QA_HORIZONTAL_FOLLOW_ONLY=1` exercises horizontal Score playback on desktop
+and phone-sized windows. It measures the engraved beat line across one bar,
+then scrolls away and uses Return to Playback while the audio keeps running.
+
+`QA_ENSEMBLE_CONTOURS_ONLY=1` checks simultaneous pitchbar contours, exact
+part/divisi grading, independent See/Hear filtering, touch identification and
+single-part-only recording. It uses synthetic saved takes and microphone input
+in disposable browser storage, never personal recordings.
 
 `QA_COMP_ONLY=1` checks local comp persistence, source protection, Undo and
 full-song capture. Cloud-backend checks are explicitly skipped in this
@@ -65,6 +77,17 @@ denial, unplugging, late permission grants, and independent Sing ownership.
 loop endpoints. `QA_REFERENCE_ONLY=1` checks an optional embedded recording's
 independent mix, lazy decode and shared transport using synthetic audio.
 
+`QA_COLLECTION_ONLY=1` builds fresh two- and three-song collections through the
+same CLI, verifies one bundled runtime, and checks desktop/mobile song selection,
+separate settings, loop deep links, capture finalization on switch, stored PCM
+after reload, and downloaded collections opened offline through `file://`.
+It also rejects iframe microphone/device requests to reproduce Firefox Android's
+`srcdoc` restriction and verifies that the same-origin collection host handles
+permission and device discovery instead. Streams remain owned by each player.
+These checks also run in the full browser gate. Python tests cover asset
+deduplication, nested downloads, escaping, native-export cache reuse and
+transactional collection build failures.
+
 Keep latency-sensitive audio/browser checks serialized against
 other tests using the same audio device; do not relax their timing assertions to
 accommodate competing render jobs.
@@ -90,7 +113,7 @@ possible score engraving is correct; visually review representative passages.
 
 ## Repository Boundaries
 
-`build_trainer.py`, `extract_score.mjs`, `template/`, `vendor/` and `tests/`
+`build_trainer.py`, `collection.py`, `extract_score.mjs`, `template/`, `vendor/` and `tests/`
 are the conversion pipeline. The top-level `.gitignore` is an allowlist to avoid
 publishing personal score projects, generated HTML, recordings, deployment
 credentials or local QA artifacts. Review `git diff --cached --stat` and

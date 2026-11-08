@@ -1,6 +1,6 @@
 # Melete
 
-Convert a MuseScore score into **one self-contained HTML practice player**.
+Convert one or more MuseScore scores into **one self-contained HTML practice player**.
 Hear individual parts, loop passages, slow playback, switch between notation and
 pitchbars, hide lyrics for memorization, and record yourself with pitch feedback.
 Local recordings can be layered and played an octave up or down.
@@ -52,6 +52,96 @@ python3 build_trainer.py tests/fixtures/shared-regressions.musicxml --project-di
 Then open `../melete-demo/dist/index.html`. The fixture is a software test, not
 a complete song.
 
+### Develop Autumn and The Seed on Windows
+
+From the extracted or cloned Melete source folder, run:
+
+```powershell
+py -3 examples/autumn_seed.py ..\Melete-Rehearsal
+```
+
+This restores the editable MSCZ scores, song settings, PDFs and reference audio
+from the [released singer player](https://diegozc.com/autumn-seed/) on the first
+run. It never imports a singer's takes, roster, login or browser storage.
+For an offline first run, pass `--player path\to\solstice-practice.html` to
+use an already downloaded player. Add `--prepare-only` to restore the inputs
+without installing other tools yet. Use a new project folder, not the repo.
+With a private copy of the two matching MusicXML exports, add
+`--exports path\to\Melete-score-exports.zip` on the first run. The archive
+contains only `autumn.musicxml` and `the-seed.musicxml`; the builder verifies
+both against the player. This avoids even the initial MuseScore installation.
+The repository licenses the software, not the musical material.
+
+Edit the shared code in `template/` or the song configurations in
+`Melete-Rehearsal`, then repeat the command. It builds
+`Melete-Rehearsal/index.html` using local inputs; it does not fetch the songs again.
+Python and Node are required to build. Without matching exports, MuseScore
+Studio is also required on the first native-score build.
+Subsequent frontend builds reuse verified local exports without launching
+MuseScore unless a native score changes. Playing the released HTML needs none of these tools.
+For repeated recording tests, use the same browser profile and local origin;
+a different origin has separate takes.
+
+### Multiple Songs
+
+Pass all the scores to the same command:
+
+```sh
+python3 build_trainer.py "Autumn.mscz" "The Seed.mscz" \
+  --project-dir "solstice-web" --output "solstice.html"
+```
+
+The collection stores shared player code, libraries, fonts and identical downloads
+only once, compressing those assets before embedding. It is still one offline
+HTML file, with no CDN requests. Two songs use a compact toggle; larger collections
+use a song menu. Visited songs retain their position and settings; switching stops
+the previous song's audio/microphone and saves its recording. Song views remain
+isolated, rather than sharing mutable player state. Only two-song collections
+preload the other score; larger collections load songs when chosen.
+
+One input keeps the usual single-song player. `--config` supplies common defaults;
+for different song settings, repeat `--song-config` once per input, in the same order:
+
+```sh
+python3 build_trainer.py "Autumn.mscz" "The Seed.mscz" \
+  --song-config autumn.json --song-config seed.json \
+  --collection-title "Solstice Practice" --project-dir "solstice-web"
+```
+
+Each song needs a distinct `slug` (normally inferred from its score title). Keep
+those slugs stable to retain browser preferences and recordings across rebuilds.
+Links select a song with `?song=its-slug`. For a station drill, use
+`?song=the-seed&mode=station&part=B2&loop=19-24`. A shared part or loop
+stays in the address until you change it or switch songs. Old links such as
+`?station#the-seed` and `?loop=19-24#the-seed` still work.
+The default collection folder is `FIRST-FILENAME-collection-web`,
+with verified native-export caches under `players/`. Failed builds leave the last
+good collection in place. The download button saves the whole collection, not
+just the currently visible song. Recorded takes remain in browser storage, not
+in the downloaded HTML.
+
+### Manually Prepared Parts
+
+The converter does not engrave or combine parts PDFs. Prepare the page order,
+facing-page layout and bookmarks in MuseScore/your PDF tool, then attach the
+finished file:
+
+```sh
+python3 build_trainer.py "Autumn.mscz" "The Seed.mscz" \
+  --parts-pdf "Autumn and The Seed - Parts.pdf" --output "solstice.html"
+```
+
+Tools > PARTS opens those exact PDF bytes offline. In a collection, the shared
+attachment is stored once, not once per song. The option also works with one
+score and overrides configured `partsPdf`/`partsPdfUrl` values. Keep this source
+PDF outside the generated project directory.
+
+Ordinary singer builds omit `conductorScore`, including any inherited from an
+older config. `--with-conductor` explicitly opts into that separately installed
+private extension; it is not distributed with this repo. Use a separate output
+and project directory for conductor builds. The choir HTML should not carry
+reduction graphics, conductor PDFs/MSCs or timing-drill code.
+
 ## Pipeline Parameters
 
 **Only the score filename is required.** Title, composer, parts, written pitches,
@@ -60,10 +150,15 @@ is needed. Run `python3 build_trainer.py --help` for the full command reference.
 
 | Parameter | Purpose |
 | --- | --- |
-| `score` | Input `.mscz`, `.mscx`, `.musicxml` or `.xml`. |
+| `score [more scores ...]` | One or more `.mscz`, `.mscx`, `.musicxml` or `.xml` inputs. |
 | `--output FILE.html` | Where to write the single HTML file. Default: `PROJECT/dist/index.html`. |
 | `--project-dir DIR` | Generated development files and export cache. Default: a new `TITLE-practice-web` folder beside the input. |
 | `--config FILE.json` | Optional appearance and initial practice settings, described below. |
+| `--song-config FILE.json` | Per-song overrides; repeat once per input, in input order. |
+| `--collection-title TEXT` | Collection title and download filename (multiple inputs only). |
+| `--collection-icon TEXT` | Collection tab icon, an emoji or short text (multiple inputs only). |
+| `--parts-pdf FILE.pdf` | Embed an existing, manually laid-out parts PDF unchanged, once for the collection. |
+| `--with-conductor` | Private extension only: include configured conductor assets. Omitted by default. |
 | `--musescore PATH` | MuseScore executable/command if automatic detection fails. `MUSESCORE` environment variable is equivalent. |
 | `--refresh-score` | Force a fresh native export instead of reusing a verified export of the same source bytes. |
 
@@ -88,6 +183,9 @@ optional; leave the config out entirely for a normal conversion.
 | `slug` | Stable song identifier for filenames and saved browser state. Use a different slug for different songs; keep it stable when rebuilding the same song. |
 | `favicon` | One emoji or short text to use as the icon. |
 | `demoVideo` | Optional HTTPS recording link; adds a YouTube button. It does not download/embed that recording. |
+| `recordingCountInBeats` | Length of the permanent, seekable lead-in before measure 1, 1-16 beats (default 4). It does not automatically rewind playback or recording. |
+| `partsPdf` | Optional base64 PDF, embedded in the standalone HTML behind Tools > PARTS. |
+| `partsPdfUrl` | Optional PDF URL instead of embedding; requires access to that URL. |
 | `partColors` | Object mapping exact extracted part names to CSS colors. |
 | `parts` | Array of per-part `{ "name", "short", "color" } overrides, in score order. Does not alter music. |
 | `defaults.practicePart` | Initial part name, short name, source ID, or zero-based part index. Omit to let each singer choose. |
@@ -136,6 +234,140 @@ optional and is not installed or needed on other machines.
 - Takes and pitch contours stay in browser storage. They survive refreshes, but
   clearing site data, private browsing, browser eviction or switching origins
   can lose them. Download valuable recordings as WAVs.
+- Hold a part's **See** cell to isolate it as the recording target. Divided lines
+  have separate mixer channels even when notation shares a staff. All MIDI
+  **Hear** cells can be off while recordings remain audible.
+- The **Practice part** pager cycles through the voices. When faded, tap once
+  to isolate your last part; if you have never chosen, it asks. **Tools > Copy
+  practice link** shares the guide/backing mix and any active loop, not your
+  name, takes, mic state, or voice part. For example,
+  `?song=the-seed&myVol=150&otherVol=50&myPan=90&otherPan=-90` asks each
+  singer for their part. Add `&part=B2` to bypass the picker. A refresh
+  retains personal adjustments. Backing volume is per voice, not a bus gain.
+- For one-to-one practice, open the player with `?mode=station`. Pick a singer in
+  **Practice → Singer** by tap, click, or arrow keys and Enter. Search a name,
+  a part code such as A2, or the full part name. The first audio take is the baseline;
+  later passes go to the working track without a manual stage switch.
+  The chosen singer follows song changes in the same tab. Their assigned part
+  is isolated in **See**. The beginner guide starts at **150% / 50% right**;
+  each other MIDI voice stays audible at **35% / 35% left**. Volume is playback
+  gain, not headphone SPL or mic gain. Adjust during a sung phrase; the station
+  remembers each singer's mix separately for each song. An uncertain part is
+  chosen explicitly instead of silently recording against the last singer's notes.
+  Named recordings stay on the device. A roster is optional and is not embedded.
+- In station mode, the **link icon** opens **Practice mix**. **Guide split** puts
+  your guide and the other voices at two pan positions. **Choir layout** centers
+  your seat, with higher sections to your right and lower ones to your left;
+  **Stereo width** sets the distance between the outer seats. A soloist shares
+  the section's seat. Choose **Preview as** and press Play to hear eight seconds
+  of the score without moving the cursor or recording. During playback the mix
+  changes live. Closing discards uncommitted edits.
+  **Set station default** applies on this browser across songs to new and
+  uncustomized singer mixes. **Copy choir link** shares the current draft and
+  loop without changing that default or sharing station mode. Singers choose
+  their own part, e.g. `?song=the-seed&layout=choir&width=70&myVol=150&otherVol=35`.
+  An optional `choirShareUrl` in the song config points a local station's links
+  at its published player; without it the hosted station shares its own address.
+- Beside the takes table, use the chevrons to expand it down in place or choose which columns
+  to show. Station fits columns to the available width by default. Manual
+  choices persist across reloads. **CSV** exports every statistic, regardless
+  of visible columns; the adjacent download/speaker icon exports audible takes.
+  In station mode the empty **New** row comes first; completed tracks retain
+  their column sort. Double-click the singer's name (double-tap on touch, Enter
+  from the focused name button) to correct the credit. That cannot change the
+  recorded part, audio, pitch data or score. Record against the right part for
+  a wrong-part take. No final pass is required.
+- **Sing + Play** saves a scored, audio-free **Trace** for the isolated part
+  (and current station singer). Re-practising a passage updates that trace
+  without changing any audio take. Click Trace to review; it has no WAV or
+  cloud upload. **Rec** arms audio in addition to pitch; it never starts
+  playback. **Space** (or Play on a phone) starts the pass at the cursor;
+  Space again saves it. Rec stays armed for the next overdub. Arming it
+  mid-pass takes effect on the next Play; disarming during an audio pass stops
+  keeping audio immediately. Turning Sing off, changing singer, part or song,
+  leaving the tab, or reloading clears the audio arm.
+  **Score** stays clear while recording. Select a saved take to see its contour
+  on the staff; select it again to hide it. **Pitchbar** shows live pitch.
+  Switching views mid-phrase keeps recording and scoring the same take.
+  Changing the isolated part selects its most recently edited track. Column
+  sorting remains in control, without pinning the selected row or scrolling to
+  it. Recording audio updates the selected track; **Add track**
+  explicitly creates another layer. Each comp keeps the number of its first take.
+  Clicking a track isolates its exact part in See and mutes only that MIDI part.
+  **Segments** counts source runs; **Tracked (%)** uses the whole song's written
+  singing time for that part, excluding rests and preparation. Divided parts are
+  scored against their own notes, not whichever division is closest.
+- After a comp edit, small triangles show changes from that track's preceding
+  state: green for higher tracking/within-50-cents percentages or lower
+  mean/median error, red for the reverse. Hover a value for the delta in cents
+  or percentage points. Sorting and ordinary updates retain the comparison;
+  equal-scoring edits clear it. Opening existing tracks does not invent a trend.
+  Segment count is not graded. Undo/Redo compare with the state they replace.
+- **Today** shows rounded recording minutes across songs on this browser origin,
+  including repeated/overwritten passages and discarded short attempts. The
+  separate daily ledger survives take deletion and reloads; midnight uses the
+  device's local calendar. Mic monitoring and playback without recording do not
+  count. Recorded rests/preparation do count: this is practice time, not a
+  measure of vocal-fold activity or a safe daily dose. Surviving older recordings
+  are backfilled once; already-deleted performances cannot be recovered. Cloud
+  imports do not add practice time. Clearing site data also clears this ledger.
+- Recording **Hear** toggles select the layered mix. In Pitchbar, audible reference contours
+  are grey when one part is isolated in See; select a matching row for its
+  pitch-error colors. With multiple parts visible in pitchbar view, every
+  visible, Hear-enabled recording has its own graded contour, matched to its
+  exact part/divisi. Hover a contour (or tap on touchscreens) to identify it.
+  Hide a part or mute a recording to remove its contour. Recording requires
+  one isolated See part; multiple-part playback does not record, even with
+  Sing enabled. Bulk changes prepare the recordings first, then enable
+  them together with one mix-normalization pass. Hold Hear to isolate one
+  recording, or hold the only audible one to enable all recordings. Unselected,
+  muted takes have no contour.
+  There is no separate saved "last live contour" behind the take library.
+  Pausing retains the selected row and contour. New captures save the live
+  detector's timestamped estimates; a comp's visual replacement does not wait
+  for audio decoding, assembly or loudness analysis. Missing legacy contours
+  still require a first analysis.
+  Fixed integrated-loudness gains balance each recording and the audible mix
+  toward -14 LUFS, limited by -2 dBTP headroom. This preserves phrasing within
+  tracks; it is not live automatic gain control. **Vol**, **Reverb** and
+  **Download mix** affect those recordings, including their octave choices,
+  not the MIDI accompaniment. Stored source audio is not gain-normalized.
+- Listening and WAV exports mute likely breaths in new and
+  existing recordings, using unvoiced pitch observations, broadband energy and
+  distance from note boundaries. Ambiguous sounds are left alone. This cannot
+  perfectly distinguish a gasp from every consonant; stored originals and cloud
+  backups remain intact. A separate Stop cleanup fades an isolated terminal
+  click only after observed unvoiced silence, never by always removing a fixed
+  tail. Wrong but voiced notes and releases are protected; timing is unchanged.
+  The named tuning constants are in `template/take_cleanup.js` (`SETTINGS`).
+  Version 2 uses 40 ms voiced guards, 100/60 ms attack/release guards, a
+  60-1200 ms breath-duration range and an 8 ms fade. It accepts softer and more
+  colored inhalations, bridges 20 ms spectral gaps, and pads detected edges by
+  up to 30 ms without crossing protected singing. It remains a heuristic;
+  fricatives and untracked quiet vowels can still be ambiguous.
+- Record's **Undo/Redo** buttons and `Cmd+Z` / `Cmd+Shift+Z` (`Ctrl` on Windows)
+  share a maximum 20-edit history across the song's tracks. Extra source audio
+  held only for history is also capped at 128 MiB across all songs on this
+  browser origin. The first limit reached retires the oldest available history;
+  current tracks, favorites and recovery audio do not count toward that cap
+  and are never evicted to meet it. Recordings, track creation,
+  deletion and cloud restores are reversible across reloads. Text fields retain
+  native editing shortcuts. A new edit after Undo clears the Redo branch.
+  Replaced source audio is automatically deleted once no track or retained
+  history entry needs it, and so is the audio inside kept recordings that no
+  track or history entry plays; there is no normal unused-takes table. Failed saves,
+  processing failures and interrupted recordings retain a recovery surface.
+  The optional audition mode still exposes its individual-take workflow.
+- The pitchbar and top playbar include a permanent lead-in before measure 1.
+  Seek into it to record or replay early consonants; recording otherwise starts
+  wherever the playhead is. The ordinary metronome volume controls all clicks,
+  including the lead-in. Preparation is excluded from pitch-error statistics.
+  **Oct** is centered text in its table cell; click to cycle `-`, `8va`, `8vb`
+  without changing column width, with formant preservation in both playback and
+  Download Mix, without altering source audio or timing.
+- Part sorting uses SATB then division number, with solo variants beside their
+  main part. Dates omit a common year and repeat only the time when modification
+  and creation occurred on the same date; full timestamps remain in tooltips.
 - No Google login or cloud backend is configured by this converter. Other
   people's builds do not connect to the maintainer's website or accounts.
 - Share a loop with `song.html?loop=19-24`: measures 19 through 23, end exclusive.
@@ -170,7 +402,7 @@ also vary by device.
 
 ## Development And License
 
-The minimal runtime consists of `build_trainer.py`, `extract_score.mjs`,
+The minimal runtime consists of `build_trainer.py`, `collection.py`, `extract_score.mjs`,
 `practice_routes.py`, `template/`, `vendor/`, and the license notices. Tests and
 Git history are not needed for conversion. Keep the bundled vendor files: they
 make both the build and resulting player independent of CDNs.

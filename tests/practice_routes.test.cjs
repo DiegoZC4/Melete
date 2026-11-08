@@ -43,8 +43,8 @@ test('role traces and take references stay separate without invalidating other s
   const vm=require('node:vm');
   const app=require('node:fs').readFileSync(require('node:path').join(__dirname,'../template/app.js'),'utf8');
   const calls=[];
-  const c=vm.createContext({sequence:{practiceRoles:roles},practicePartIndex:0,
-    pitchTraceBaseKey:'trace',pitchTraceKey:'trace',config:{},
+  const c=vm.createContext({sequence:{practiceRoles:roles},practicePartIndex:0,recordAudio:false,preparingCapture:null,
+    pitchTraceBaseKey:'trace',pitchTraceKey:'trace',config:{},practiceDivisi:[],pitchTraceLanes:new Map(),pitchTraceDirty:new Map(),pitchCaptureWorker:null,takeState:'off',
     buildMetadata:{build:{sourcePlaybackSha256:'source',playbackSha256:'expanded',
       practiceReferenceFingerprints:{1:'chorus',2:'solo'}}},
     savePitchTraceNow(){calls.push(['save',c.practicePartIndex,c.pitchTraceKey]);},
@@ -58,7 +58,6 @@ test('role traces and take references stay separate without invalidating other s
   assert.equal(c.pitchTraceFingerprint(1),'chorus');
   assert.equal(c.pitchTraceFingerprint(2),'solo');
   for(const part of [1,2,2,0]) c.assignPracticePart(part);
-  assert.deepEqual(calls,[['save',0,'trace'],['load',1,'trace:part:1'],
-    ['save',1,'trace:part:1'],['load',2,'trace:part:2'],
-    ['save',2,'trace:part:2'],['load',0,'trace']]);
+  assert.deepEqual(calls,[['save',0,'trace'],['save',1,'trace:part:1:line:all'],['save',2,'trace:part:2:line:all']]);
+  assert.equal(c.pitchTraceLanes.size,0,'changing part clears the live overlay, not saved takes');
 });

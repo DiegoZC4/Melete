@@ -10,7 +10,7 @@ const source = app.slice(start, app.indexOf('\n  }', start) + 4);
 test('shared mobile defaults match Get It Right while explicit song scales still win', () => {
   for (const mobile of [false, true]) for (const vertical of [undefined, 85, 100]) {
     const context = vm.createContext({
-      window: {matchMedia: () => ({matches: mobile})}, config: {defaults: {vertical}}, parts: [],
+      window: {matchMedia: () => ({matches: mobile})}, config: {defaults: {vertical}}, parts: [], mixerParts: [],
       nearestAllowed: value => value, clamp: value => value,
       TEMPO_VALUES: [], METRONOME_VALUES: [], VERTICAL_VALUES: [], HORIZONTAL_VALUES: [],
     });
@@ -23,7 +23,7 @@ test('shared mobile defaults match Get It Right while explicit song scales still
 test('song volume defaults allow a 200 percent ceiling with 100 percent as normal', () => {
   const context = vm.createContext({
     window: {matchMedia: () => ({matches: false})}, config: {defaults: {volumes: [200, 175, 250, -5]}},
-    parts: Array(5).fill({}), nearestAllowed: value => value,
+    parts: Array(5).fill({}), mixerParts: Array.from({length:5},(_,source)=>({source})), nearestAllowed: value => value,
     clamp: (value, low, high) => Math.max(low, Math.min(high, value)),
     TEMPO_VALUES: [], METRONOME_VALUES: [], VERTICAL_VALUES: [], HORIZONTAL_VALUES: [], PAN_VALUES: [],
   });

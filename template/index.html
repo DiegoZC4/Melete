@@ -141,9 +141,7 @@
 
           <section class="control-group practice-group" data-settings-section="practice" aria-labelledby="practiceLabel">
             <span class="group-label" id="practiceLabel">Practice</span>
-            <div class="practice-mix" aria-label="Practice part">
-              <div class="part-picker"><div class="practice-part-pager" id="practicePart" role="spinbutton" tabindex="0" aria-label="Your practice part" data-help="Tap to advance; drag to browse."></div></div>
-            </div>
+            <div id="practicePart" class="practice-part-pager practice-guide-pager" role="spinbutton" aria-label="Practice part" tabindex="0" hidden></div>
             <div class="control-stack tempo-column" role="group" aria-label="Tempo controls">
               <label class="number-control practice-speed"><span>Speed</span><button class="drag-number" id="tempo" type="button" data-value="100" data-help="Drag vertically to change speed.">100%</button></label>
               <label class="number-control practice-metronome-volume">
@@ -154,15 +152,21 @@
               </span>
               <button class="drag-number" id="metronome" type="button" data-value="0" aria-label="Metronome volume" data-help="Drag vertically to set metronome volume.">0%</button></label>
             </div>
-            <button class="icon-button binary-icon-button sing-control" id="pitchCapture" type="button" aria-pressed="false" aria-label="Turn on Sing and recording" data-help="Record and trace locally. Hold: clear trace." disabled>
+            <button class="icon-button binary-icon-button sing-control" id="pitchCapture" type="button" aria-pressed="false" aria-label="Turn on Sing" data-help="Save pitch only. Rec adds audio." disabled>
               <!-- Lucide Microphone, ISC license: https://lucide.dev/icons/mic -->
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><path d="M12 19v3"></path></svg>
               <span>Sing</span>
             </button>
+            <button class="icon-button binary-icon-button audio-record-control" id="recordAudio" type="button" aria-label="Arm audio recording" aria-pressed="false" data-state="off" data-help="Arm audio for the next Play." disabled><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="currentColor" stroke="none"/></svg><span>Rec</span></button>
+            <div class="station-picker" id="stationPicker" hidden>
+              <label for="stationSinger">Singer</label>
+              <input id="stationSinger" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="stationSingerList" autocomplete="off" spellcheck="false" placeholder="Name or voice part">
+              <div class="station-list" id="stationSingerList" role="listbox" aria-label="Singers" hidden></div>
+            </div>
             <div class="loop-setting" id="loopControls" role="group" aria-label="Measure loop">
-              <button id="loopToggle" class="loop-toggle" type="button" aria-pressed="false" aria-label="Enable loop" data-help="Toggle looping without clearing its endpoints. Hold to clear."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m17 2 4 4-4 4M3 11V8a2 2 0 0 1 2-2h16M7 22l-4-4 4-4M21 13v3a2 2 0 0 1-2 2H3"></path></svg><span id="loopLabel">Loop</span></button>
               <div class="loop-pill">
                 <button class="loop-point" id="loopStart" type="button" aria-label="Set loop start to selected measure" aria-keyshortcuts="[" data-help="Set start here; hold to clear loop. Shortcut: [">Start</button>
+                <button id="loopToggle" class="loop-toggle" type="button" aria-pressed="false" aria-label="Enable loop" data-help="Toggle loop; defaults to the whole piece."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m17 2 4 4-4 4M3 11V8a2 2 0 0 1 2-2h16M7 22l-4-4 4-4M21 13v3a2 2 0 0 1-2 2H3"></path></svg></button>
                 <button class="loop-point" id="loopEnd" type="button" aria-label="Set loop end to selected measure" aria-keyshortcuts="]" data-help="Set end here; hold to clear loop. Shortcut: ]">End</button>
               </div>
             </div>
@@ -197,15 +201,8 @@
               <button class="icon-button display-utility display-fullscreen" id="fullscreen" type="button" aria-label="Enter full screen" data-help="Toggle full screen.">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"></path></svg>
               </button>
-              <div class="display-control-row display-feature-row display-annotation-row">
-                <button class="binary-feature-button display-lyrics-toggle" id="annotationLayout" type="button" aria-label="Compact Lyrics" aria-pressed="false" data-help="Share matching parts; show only syllable changes.">Compact</button>
-              </div>
               <div class="display-control-row display-lyric-edit-row">
-                <button class="binary-feature-button" id="lyricEditing" type="button" aria-label="Hide words" aria-pressed="false" data-help="Enable word hiding; off locks your existing choices.">Hide words</button>
-                <button class="icon-button" id="showAllLyrics" type="button" aria-label="Show all hidden lyrics" data-help="Show every word you have hidden in this song." disabled>
-                  <!-- Lucide RotateCcw, ISC license. -->
-                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
-                </button>
+                <button class="binary-feature-button" id="lyricEditing" type="button" aria-label="Hide Lyrics" aria-pressed="false" data-help="Edit hidden words. Hold or right-click: show/hide all.">Hide Lyrics</button>
               </div>
             </div>
           </section>
@@ -223,13 +220,15 @@
               <a class="icon-button practice-file" id="printScore" href="#" target="_blank" rel="noopener noreferrer" aria-label="Open printable PDF score" title="Preview PDF in a new tab" data-help="Open the print-layout score as a PDF." hidden>
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path><path d="M14 2v6h6M8 13h8M8 17h8"></path></svg><span>PDF</span>
               </a>
+              <a class="icon-button practice-file" id="printParts" href="#" target="_blank" rel="noopener noreferrer" aria-label="Open bookmarked individual parts PDF" title="Individual parts PDF" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path><path d="M14 2v6h6M8 13h8M8 17h8"></path></svg><span>PARTS</span></a>
               <button class="icon-button practice-file" id="downloadScore" type="button" aria-label="Download MuseScore (.mscz)" title="Download MuseScore (.mscz)" data-help="Save the editable MuseScore file. Preview it with PDF." hidden>
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg><span>MSCZ</span>
               </button>
             </div>
-            <a class="icon-button" id="download" href="#" download aria-label="Download standalone score with current settings and annotations" title="Save offline copy" data-help="Download offline copy with settings and annotations.">
+            <div class="share-file-tools"><a class="icon-button" id="download" href="#" download aria-label="Download standalone score with current settings and annotations" title="Save offline copy" data-help="Download offline copy with settings and annotations.">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>
             </a>
+            <button class="icon-button" type="button" id="copyPracticeMix" aria-label="Copy practice link" title="Copy practice link" data-help="Share a mix for any voice part."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></button></div>
             <button class="icon-button display-theme" id="themeToggle" type="button" aria-label="Switch to dark theme" data-help="Switch between the light and dark palette.">
               <svg class="theme-sun-moon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M 20 8.69 V 4 h -4.69 L 12 0.69 L 8.69 4 H 4 v 4.69 L 0.69 12 L 4 15.31 V 20 h 4.69 L 12 23.31 L 15.31 20 H 20 v -4.69 L 23.31 12 L 20 8.69 Z M 12 18 c -0.89 0 -1.74 -0.2 -2.5 -0.55 C 11.56 16.5 13 14.42 13 12 s -1.44 -4.5 -3.5 -5.45 C 10.26 6.2 11.11 6 12 6 c 3.31 0 6 2.69 6 6 s -2.69 6 -6 6 Z"></path></svg>
             </button>
@@ -238,86 +237,93 @@
             </button>
           </section>
           <section class="control-group take-panel" id="takePanel" data-settings-section="takes" aria-labelledby="takeTitle">
-            <span class="group-label" id="takeTitle">Takes</span>
+            <span class="group-label" id="takeTitle">Record</span>
             <div class="take-layout">
               <div class="take-controls">
                 <span id="singRecordingStatus" class="visually-hidden" role="status" aria-live="polite"></span>
-                <details class="take-actions" id="takeActions">
-                  <summary class="icon-button" aria-label="Take actions" title="Take actions">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg>
-                  </summary>
-                  <div class="take-actions-menu">
-                    <button type="button" id="undoComp" title="Undo the last recording or removal; available until the next recording"><svg viewBox="0 0 24 24"><path d="M3 7v6h6M3 13l4-4a7 7 0 1 1 0 10"></path></svg><span>Undo track change</span></button>
-                    <button type="button" id="downloadTakes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg><span>Download all (ZIP)</span></button>
-                  </div>
-                </details>
+                <div class="take-actions" id="takeActions">
+                  <button class="icon-button" type="button" id="undoComp" aria-label="Undo track change" aria-keyshortcuts="Meta+Z Control+Z" data-help="Undo track edits (Cmd/Ctrl+Z). Size-limited history persists."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7v6h6M3 13l4-4a7 7 0 1 1 0 10"></path></svg></button>
+                  <button class="icon-button" type="button" id="redoComp" aria-label="Redo track change" aria-keyshortcuts="Meta+Shift+Z Control+Shift+Z" data-help="Redo a track edit. Cmd/Ctrl+Shift+Z."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 7v6h-6M21 13l-4-4a7 7 0 1 0 0 10"></path></svg></button>
+                  <button class="icon-button comp-add" id="addTrack" type="button" aria-label="Add a track" title="Add a track"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+                  <button class="icon-button" type="button" id="downloadMix" aria-label="Download audible recording mix" title="Download the mix of recordings with Hear on" data-help="Download recordings with Hear on, including octave and reverb."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4V5ZM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"></path></svg></button>
+                  <button class="icon-button" id="stationExport" type="button" aria-label="Export take statistics as CSV" title="Export all track statistics, including hidden columns" hidden>CSV</button>
+                </div>
+                <label class="number-control take-volume"><span>Vol</span><button class="drag-number" id="takeVolume" type="button" data-value="100" aria-label="Recording mix volume" data-help="Recording mix volume. Automatic loudness balance; originals unchanged.">100%</button></label>
+                <label class="number-control take-reverb"><span>Reverb</span><button class="drag-number" id="takeReverb" type="button" data-value="0" aria-label="Recording mix reverb" data-help="Reverb for audible recordings and the mix download.">0%</button></label>
                 <div class="take-microphone">
                   <select id="takeMicrophone" aria-label="Microphone for Sing and recording"><option value="">System default</option></select>
                   <div id="microphoneCheck" class="mic-check-inline" data-state="idle">
                     <div class="mic-check-meter" role="meter" aria-label="Microphone input level" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60"><div class="mic-check-fill"></div></div>
-                    <button id="checkMicrophone" type="button" aria-label="Test microphone input" aria-pressed="false" title="Test microphone input" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"></path></svg><span role="status" aria-live="polite">Test input</span><output></output></button>
+                    <div id="checkMicrophone" aria-label="Microphone input" title="Input level while Sing is on"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"></path></svg><span role="status" aria-live="polite">Mic off</span><output></output></div>
+                    <div class="mic-check-stats">
+                      <div id="recordingToday" title="Practice time today across songs: pitch-only and audio, including repeats and rests."><output aria-label="Minutes recorded today across songs">-- min</output> today</div>
+                      <div id="takeStorage"><output aria-label="Recordings stored across songs">-- MB</output></div>
+                    </div>
                   </div>
-                </div>
-                <div id="compAccount" class="comp-account" hidden>
-                  <iframe id="compGoogleInline" title="Sign in with Google for private backup" hidden></iframe>
-                  <button class="icon-button cloud-account" id="compCloud" title="Private backup account" aria-label="Private backup account" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="5"></circle><path d="M20 21a8 8 0 0 0-16 0"></path></svg><span>Account</span></button>
                 </div>
                 <span id="takeStatus" role="status" aria-live="polite">Set a loop to record</span>
-                <div class="take-scope" id="takeStorage"></div>
               </div>
               <div class="take-review-pane">
-                <div class="take-review" tabindex="0" role="region" aria-label="Saved takes">
-                  <div class="take-storage-warning" id="takeStorageWarning" hidden>
-                    <span id="takeStorageWarningMessage" role="status"></span>
-                    <div><button class="take-command" id="takeStorageCleanup" type="button">Review cleanup</button>
-                    <button class="take-command" id="takeStorageKeep" type="button">Keep takes</button></div>
-                  </div>
+                <div class="take-table-workspace">
+                <div class="take-review" id="takeReviewTable" tabindex="0" role="region" aria-label="Saved takes"><div class="take-review-content">
                   <button class="take-command" id="retryTakeSave" type="button" hidden>Retry save</button>
                   <div class="take-undo" id="takeUndo" hidden>
                     <span id="takeUndoMessage" role="status"></span>
                     <button class="take-command" id="undoTakeDelete" type="button">Undo</button>
                   </div>
-                  <div class="take-delete-prompt" id="takeDeletePrompt" hidden>
-                    <span id="takeDeleteMessage"></span>
-                    <button class="take-command" id="cancelTakeDelete" type="button">Cancel</button>
-                    <button class="take-command" id="confirmTakeDelete" type="button">Delete all takes</button>
-                  </div>
                   <div id="compView">
                     <div class="take-columns comp-columns">
-                      <span>Take</span><span>Part</span><span title="Recording start, measure.beat.fraction">Start</span><span title="Recording end, exclusive, measure.beat.fraction">End</span><span>Tracked (%)</span><span>Mean (&cent;)</span><span>Median (&cent;)</span>
-                      <span title="Percentage of tracked singing within 50 cents">&le;50&cent; (%)</span>
+                      <span><button type="button" data-take-sort="number">Take</button></span><span class="take-singer-heading"><button type="button" data-take-sort="singer">Singer</button></span><span><button type="button" data-take-sort="part">Part</button></span><span title="Number of source passages in this track"><button type="button" data-take-sort="segments">Segments</button></span><span title="Tracked singing divided by all written singing in the song; rests excluded"><button type="button" data-take-sort="tracked">Tracked (%)</button></span><span><button type="button" data-take-sort="mean">Mean (&cent;)</button></span><span><button type="button" data-take-sort="median">Median (&cent;)</button></span>
+                      <span title="Percentage of tracked singing within 50 cents"><button type="button" data-take-sort="within">&le;50&cent; (%)</button></span>
+                      <span><button type="button" data-take-sort="created">Created</button></span><span><button type="button" data-take-sort="modified">Modified</button></span>
                       <span class="take-octave-heading" title="Playback octave">Oct</span><span class="take-hear-heading">Hear</span>
                     </div>
                     <div id="compRows"></div>
-                    <button class="take-command comp-add" id="addTrack" type="button">+ <span>Add track</span></button>
+                    <div id="practiceTraceRows"></div>
                     <template id="compRowTemplate">
                     <div class="take-row comp-row">
                       <div class="take-summary">
                       <button class="take-select comp-review" type="button" aria-pressed="false">
-                        <span class="take-number">&mdash;</span><span class="take-part"></span>
-                        <span class="take-start"></span><span class="take-end"></span>
+                        <span class="take-number">&mdash;</span><span class="take-singer"></span><span class="take-part"></span>
+                        <span class="take-segments"></span>
                         <span class="take-detail"><span><strong class="comp-tracked">&mdash;</strong></span><span><strong class="comp-mean">&mdash;</strong></span><span><strong class="comp-median">&mdash;</strong></span><span><strong class="comp-within">&mdash;</strong></span></span>
+                        <span class="take-created"></span><span class="take-modified"></span>
                       </button>
-                      <div class="practice-part-pager take-octave" role="spinbutton" tabindex="0"></div>
-                      <button class="icon-button take-hear" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4V5ZM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"></path></svg></button>
+                      <button class="edit-take-singer" type="button" hidden></button>
+                      <button class="take-octave" type="button">-</button>
+                      <span class="take-hear-cell"><button class="icon-button take-hear" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4V5ZM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"></path></svg></button></span>
+                      <span class="take-row-actions">
                       <button class="icon-button take-download" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg></button>
+                      <button class="icon-button take-upload" type="button" aria-label="Upload track for review" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 13v8m-4-4 4-4 4 4M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"></path></svg></button>
                       <button class="icon-button take-delete" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M19 6v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6M8 6V3h8v3M10 10v7M14 10v7"></path></svg></button>
+                      </span>
                       </div>
                     </div>
                     </template>
                   </div>
                   <div class="take-loose-section" id="takeLoose" hidden>
-                  <div class="take-loose"><span id="takeLooseMessage"></span><button class="take-command" id="deleteLooseTakes" type="button">Delete&hellip;</button></div>
+                  <div class="take-loose"><span id="takeLooseMessage"></span><button class="icon-button take-delete" id="deleteLooseTakes" type="button" aria-label="Delete recovered recordings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M19 6v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6M8 6V3h8v3M10 10v7M14 10v7"></path></svg></button></div>
                   <div class="take-columns" id="takeColumns">
-                    <span><button type="button" data-take-sort="number">Take</button></span><span><button type="button" data-take-sort="part">Part</button></span><span title="Recording start, measure.beat.fraction"><button type="button" data-take-sort="start">Start</button></span><span title="Recording end, exclusive, measure.beat.fraction"><button type="button" data-take-sort="end">End</button></span><span><button type="button" data-take-sort="tracked">Tracked (%)</button></span><span><button type="button" data-take-sort="mean">Mean (&cent;)</button></span><span><button type="button" data-take-sort="median">Median (&cent;)</button></span>
+                    <span><button type="button" data-take-sort="number">Take</button></span><span><button type="button" data-take-sort="part">Part</button></span><span><button type="button" data-take-sort="segments">Segments</button></span><span title="Tracked singing divided by all written singing in the song; rests excluded"><button type="button" data-take-sort="tracked">Tracked (%)</button></span><span><button type="button" data-take-sort="mean">Mean (&cent;)</button></span><span><button type="button" data-take-sort="median">Median (&cent;)</button></span>
                     <span aria-label="Within 50 cents, percent of tracked singing" title="Time within 50 cents of the intended pitch, as a percentage of tracked singing. Higher is better; compare tracking coverage too."><button type="button" data-take-sort="within">&le;50&cent; (%)</button></span>
-                    <svg class="take-sort-direction" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14m7-7-7 7-7-7"></path></svg>
+                    <span><button type="button" data-take-sort="created">Created</button></span><span><button type="button" data-take-sort="modified">Modified</button></span>
                     <span class="take-octave-heading" title="Playback octave">Oct</span><span class="take-hear-heading">Hear</span>
                   </div>
-                  <div class="take-list" id="takeList" aria-label="Takes not in a track"></div>
+                  <div class="take-list" id="takeList" aria-label="Recording recovery"></div>
                   <button class="take-command" id="takeMore" type="button" hidden>Show more</button>
                   </div>
+                </div></div>
+                <div class="take-table-tools">
+                  <button class="icon-button" id="expandTakes" type="button" aria-label="Expand takes table" title="Expand takes table" aria-controls="takeReviewTable" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 6 5 5 5-5m-10 7 5 5 5-5"></path></svg></button>
+                  <button class="icon-button" id="takeFields" type="button" aria-label="Choose visible columns" title="Choose visible columns" popovertarget="takeFieldMenu"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M9 3v18m6-18v18"></path></svg></button>
+                  <div id="takeFieldMenu" popover="auto" role="group" aria-label="Visible columns"><strong>Columns</strong><div class="take-field-options"></div><div class="take-field-actions"><button type="button" id="fitTakeFields">Fit to width</button><button type="button" id="allTakeFields">Show all</button></div></div>
                 </div>
+                </div>
+                <dialog id="takeSingerDialog" aria-labelledby="takeSingerTitle"><form>
+                  <strong id="takeSingerTitle">Change singer</strong><output id="takeSingerPart"></output>
+                  <label>Singer <input id="takeSingerName" list="takeSingerOptions" required autocomplete="off"></label><datalist id="takeSingerOptions"></datalist>
+                  <div><button class="take-command" type="button" id="takeSingerCancel">Cancel</button> <button class="take-command" type="submit">Save</button></div>
+                </form></dialog>
               </div>
             </div>
           </section>
@@ -336,15 +342,16 @@
     </main>
 
     <dialog id="compCloudDialog" class="comp-cloud-dialog" aria-labelledby="compCloudTitle">
-      <form method="dialog"><strong id="compCloudTitle">Private backup</strong><button class="icon-button" aria-label="Close cloud backup"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"></path></svg></button></form>
-      <p>The selected part's track, including its source audio. Other takes stay on this device.</p>
+      <form method="dialog"><strong id="compCloudTitle">Cloud takes</strong><button class="icon-button" aria-label="Close cloud backup"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"></path></svg></button></form>
       <div id="compGoogleButton"></div>
       <p id="compCloudStatus" role="status"></p>
+      <div class="pill-toggle" id="cloudScope" role="tablist" aria-label="Cloud take scope" hidden><span class="pill-thumb" aria-hidden="true"></span><button class="pill-option is-active" type="button" role="tab" aria-selected="true">Mine</button><button class="pill-option" type="button" role="tab" aria-selected="false" tabindex="-1">Review</button></div>
+      <div class="cloud-take-scroll"><table id="cloudTakeTable"><thead><tr><th><button data-cloud-sort="name">Singer</button></th><th><button data-cloud-sort="label">Part</button></th><th><button data-cloud-sort="createdAt">Created</button></th><th><button data-cloud-sort="updatedAt">Modified</button></th><th><button data-cloud-sort="mean">Mean (&cent;)</button></th><th></th></tr></thead><tbody id="cloudTakeRows"></tbody></table></div>
       <label><input type="checkbox" id="compCloudAuto"> Automatically back up improvements</label>
       <div class="comp-cloud-actions">
         <button class="take-command" id="compCloudSave">Back up</button>
         <button class="take-command" id="compCloudRestore">Restore cloud copy</button>
-        <button class="take-command" id="compCloudDelete">Delete cloud copy</button>
+        <button class="icon-button take-delete" id="compCloudDelete" aria-label="Delete cloud copy"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M19 6v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6M8 6V3h8v3M10 10v7M14 10v7"></path></svg></button>
         <button class="take-command" id="compCloudLogout">Sign out</button>
       </div>
     </dialog>
@@ -364,6 +371,34 @@
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6 6 18M6 6l12 12"></path></svg>
       </button>
     </aside>
+    <dialog id="shareMixDialog" class="comp-cloud-dialog" aria-labelledby="shareMixTitle"><form>
+      <strong id="shareMixTitle">Practice link</strong>
+      <fieldset id="shareBacking"><legend>Different backing levels. Share each other part at:</legend>
+        <label>Vol (%) <input name="volume" type="number" min="0" max="200" step="5" required></label>
+        <label>Pan <input name="pan" type="number" min="-100" max="100" step="5" required></label>
+      </fieldset>
+      <input id="shareMixUrl" type="url" aria-label="Practice link" readonly hidden>
+      <div><button type="button" id="closeShareMix">Close</button> <button type="submit">Copy link</button></div>
+    </form></dialog>
+    <dialog id="stationMixDialog" class="comp-cloud-dialog" aria-labelledby="stationMixTitle">
+      <header><h2 id="stationMixTitle">Practice mix</h2>
+        <button class="icon-button" id="closeStationMix" type="button" aria-label="Close practice mix" title="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 6-12 12M6 6l12 12"/></svg></button></header>
+      <div class="pill-toggle" id="stationMixMode" role="tablist" aria-label="Stereo layout"><span class="pill-thumb" aria-hidden="true"></span><button class="pill-option is-active" type="button" role="tab" aria-selected="true" data-layout="split">Guide split</button><button class="pill-option" type="button" role="tab" aria-selected="false" tabindex="-1" data-layout="choir">Choir layout</button></div>
+      <div class="mix-parameters">
+        <label>My volume <button type="button" class="drag-number" data-param="myVol" aria-label="My volume"></button></label>
+        <label>Other volume <button type="button" class="drag-number" data-param="otherVol" aria-label="Other volume"></button></label>
+        <label>My pan <span class="mix-pan"><button type="button" class="pan-ring" data-param="myPan" aria-label="My pan"></button><span></span></span></label>
+        <label>Other pan <span class="mix-pan"><button type="button" class="pan-ring" data-param="otherPan" aria-label="Other pan"></button><span></span></span></label>
+        <label hidden>Stereo width <button type="button" class="drag-number" data-param="width" aria-label="Stereo width"></button></label>
+      </div>
+      <div class="mix-audition"><label for="stationMixGuide">Preview as</label><select id="stationMixGuide"></select>
+        <button class="icon-button" type="button" id="stationMixListen" aria-label="Play preview" aria-pressed="false" title="Play eight seconds from the cursor"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="mix-play" d="m7 4 13 8-13 8Z"/><path class="mix-stop" d="M6 6h12v12H6z"/></svg></button></div>
+      <div class="mix-stage" role="img" aria-label="Stereo positions and levels"><div class="mix-axis" aria-hidden="true"><span>Left</span><span>Center</span><span>Right</span></div><div id="stationMixSeats"></div></div>
+      <footer><button type="button" class="take-command" id="setStationMix" title="Use for singers on this device who have not customized their mix">Set station default</button>
+        <button type="button" class="take-command" id="copyChoirMix">Copy choir link</button></footer>
+      <input id="stationMixUrl" type="url" aria-label="Choir practice link" readonly hidden>
+      <output id="stationMixStatus" role="status"></output>
+    </dialog>
     <aside class="part-chooser" id="partChooser" role="dialog" aria-modal="false" aria-labelledby="partChooserTitle" aria-describedby="partChooserNote" hidden>
       <div class="part-chooser-head">
         <span class="part-chooser-title" id="partChooserTitle">Which part do you sing?</span>

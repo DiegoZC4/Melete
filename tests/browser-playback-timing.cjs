@@ -22,6 +22,7 @@ async function checkPlaybackTiming(frame,page,{probe='__qa',output,label}={}) {
           const state=qa.pitchbar.captureSettingsState(), sequence=qa.pitchbar.sequence;
           state.practicePart=state.visible.length-1;
           state.visible=state.visible.map((_,i)=>i===state.practicePart);
+          delete state.visibleChannels;
           state.audible=state.visible.map((_,i)=>i!==state.practicePart);
           state.volumes=state.visible.map(()=>200);state.horizontal=200;state.vertical=120;
           const first=sequence.measures.length>24?18:0;
@@ -153,28 +154,35 @@ async function checkMotionTransport(frame,page,probe) {
       const tick=row?Number(row.dataset.startTick)+(x-Number(plot.getAttribute('x')))
         /Number(plot.getAttribute('width'))*(Number(row.dataset.endTick)-Number(row.dataset.startTick)):NaN;
       return {count:cursors.length,error:(engine.secondsAtTick(tick)-engine.presentationSeconds())/engine.rate*1000,
-        seconds:engine.currentSeconds(),animations:document.getAnimations().filter(a=>a.effect?.target?.classList.contains('bar-playhead')).length};
+        seconds:engine.currentSeconds(),playing:engine.playing,loopArmed:engine.loopArmed,
+        loopStart:engine.loopStartSeconds,loopEnd:engine.loopEndSeconds,timer:engine.timer,
+        animations:document.getAnimations().filter(a=>a.effect?.target?.classList.contains('bar-playhead')).length};
     },probe);
     assert.equal(result.count,1,`${label}: exactly one cursor`);
+    assert.equal(result.playing,label!=='pause',`${label}: expected transport state`);
     assert.ok(Math.abs(result.error)<35,`${label}: ${JSON.stringify(result)}`);
+    if (process.env.QA_TIMING_TRACE) console.log('Transport sample', label, result);
     samples.push({label,...result});return result;
   };
-  await frame.evaluate(name=>{
+  const boundarySetup = await frame.evaluate(name=>{
     const qa=window[name];qa.engine.setLoop(null,null);
     const boundary=qa.pitchbar.systems.length>1 ? qa.pitchbar.systems[0].endTick : qa.pitchbar.sequence.measures[1][0];
     qa.engine.seek(qa.engine.secondsAtTick(boundary)-.15);
     // Reproduce missing JS presentation callbacks without freezing the audio.
     cancelAnimationFrame(qa.engine.presentationFrame);qa.engine.presentationFrame=0;
+    return {boundary, duration:qa.engine.duration, position:qa.engine.currentSeconds(),playing:qa.engine.playing};
   },probe);
+  if (process.env.QA_TIMING_TRACE) console.log('Transport boundary', boundarySetup);
   await page.waitForTimeout(300);await sample('boundary crossing without presentation callbacks');
   await frame.evaluate(name=>window[name].engine.startPresentation(),probe);
   for(const rate of [.5,1.5]) {
-    await frame.evaluate(({name,rate})=>window[name].engine.setRate(rate),{name:probe,rate});
+    // The UI changes AlphaTab's speed, which synchronizes the external engine.
+    await frame.evaluate(({name,rate})=>{window[name].api.playbackSpeed=rate;},{name:probe,rate});
     await page.waitForTimeout(200);await sample(`speed ${rate}`);
   }
   await frame.evaluate(name=>{
     const qa=window[name],sequence=qa.pitchbar.sequence;
-    qa.engine.setRate(1);qa.engine.setLoop(sequence.measures[0][0],sequence.measures[1][0]);
+    qa.api.playbackSpeed=1;qa.engine.setLoop(sequence.measures[0][0],sequence.measures[1][0]);
     qa.engine.seek(qa.engine.loopEndSeconds-.12);
   },probe);
   await page.waitForTimeout(320);
@@ -223,6 +231,7 @@ async function checkPlayingNoteEdges(frame,probe) {
     qa.timingSettings=structuredClone(state);
     qa.engine.pauseTransport(); qa.pitchResolution.disablePitchCapture(false);
     state.scoreView='standard';state.visible=state.visible.map((_,i)=>i===state.visible.length-1);
+    delete state.visibleChannels;
     state.practicePart=state.visible.length-1;state.horizontal=200;
     qa.pitchbar.applySettingsState(state);
   },probe);

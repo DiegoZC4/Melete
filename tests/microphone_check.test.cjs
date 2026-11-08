@@ -1,6 +1,23 @@
 const assert = require('node:assert/strict');
 const {test} = require('node:test');
-const {Level, Check} = require('../template/microphone_check.js');
+const {Level, Check, mediaDevicesFor} = require('../template/microphone_check.js');
+
+test('only marked same-origin collection players use the host microphone API', () => {
+  const local = {}, host = {};
+  const view = {origin:'https://practice.test', navigator:{mediaDevices:local}};
+  view.parent = view;
+  assert.equal(mediaDevicesFor(view), local);
+  view.parent = {origin:view.origin, navigator:{mediaDevices:host}};
+  view.frameElement = {hasAttribute:name=>name==='data-melete-collection-player'};
+  assert.equal(mediaDevicesFor(view), host);
+  view.parent.origin = 'https://other.test';
+  assert.equal(mediaDevicesFor(view), local);
+  view.parent.origin = view.origin;
+  view.frameElement = {hasAttribute:()=>false};
+  assert.equal(mediaDevicesFor(view), local);
+  Object.defineProperty(view, 'frameElement', {get(){throw new Error('Cross-origin access');}});
+  assert.equal(mediaDevicesFor(view), local);
+});
 
 const tone = amplitude => Float32Array.from({length:2048}, (_,i) => amplitude * Math.sin(2*Math.PI*i/64));
 test('microphone meter measures raw input independently of expected score pitch', () => {

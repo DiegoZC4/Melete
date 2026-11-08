@@ -71,7 +71,10 @@ async function checkUiImports(frame,page,{mobile,output,label}) {
   const toggle=await frame.locator('#loopToggle').boundingBox();
   await page.mouse.move(toggle.x+toggle.width/2,toggle.y+toggle.height/2);await page.mouse.down();
   await page.waitForTimeout(850); await page.mouse.up();
-  assert.equal(await frame.locator('#loopToggle').isDisabled(),true,'hold still clears endpoints');
+  assert.equal(await frame.locator('#loopToggle').isDisabled(),false,'empty loop can be enabled for the whole song');
+  await frame.locator('#loopToggle').click();
+  assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).engine.loopStartSeconds),0);
+  await frame.locator('#loopToggle').click();
   assert.equal(await frame.locator('#scaleLabel').innerText(),'Scale');
   assert.equal(await frame.locator('#score').isVisible(),true);
   assert.equal(await frame.locator('#barScore').isVisible(),false);

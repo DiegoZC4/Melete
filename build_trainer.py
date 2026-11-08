@@ -25,6 +25,7 @@ import unicodedata
 import urllib.parse
 import xml.etree.ElementTree as ET
 import zipfile
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -65,6 +66,7 @@ APP_MARKER = '<script src="./app.js" data-inline></script>'
 LICENSE_MARKER = "<!-- THIRD_PARTY_NOTICES -->"
 REPEATED_LYRIC_ATTRIBUTE = "data-choir-repeated-lyric"
 REPEATED_LYRIC_MINIMUM = 2
+LYRIC_BREATH = json.loads((TEMPLATE_DIR / "lyric_breath.json").read_text(encoding="utf-8"))
 
 REQUIRED_TEMPLATE_MARKERS = (
     STYLE_MARKER,
@@ -96,6 +98,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="input .mscz, .mscx, .musicxml, or .xml score",
     )
+    parser.add_argument("additional_scores", type=Path, nargs="*",
+                        help="more scores to include in the same self-contained HTML")
     parser.add_argument(
         "--output",
         type=Path,
@@ -109,8 +113,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        help="optional JSON object merged over inferred trainer defaults",
+        help="optional JSON defaults (shared across songs in a collection)",
     )
+    parser.add_argument("--song-config", type=Path, action="append", default=[],
+                        help="per-song JSON; repeat once per input, in input order")
+    parser.add_argument("--collection-title", default="Melete Collection",
+                        help="multi-song collection title and download filename")
+    parser.add_argument("--collection-icon", default="M",
+                        help="multi-song tab icon, an emoji or short text")
+    parser.add_argument("--parts-pdf", type=Path,
+                        help="embed a manually prepared parts PDF unchanged (shared across songs)")
+    parser.add_argument("--with-conductor", action="store_true",
+                        help="opt into the separately installed conductor extension and configured assets")
     parser.add_argument(
         "--musescore",
         help=(
@@ -555,10 +569,9 @@ def hyphenate_lyric_syllables(xml_text: str) -> tuple[str, int]:
 def annotate_repeated_lyrics(xml_text: str) -> tuple[str, int]:
     """Mark unchanged syllables without rewriting MusicXML.
 
-    Runs are tracked independently for each score part and lyric verse. Notes
-    without lyrics do not interrupt a run, while a different lyric does, so a
-    later return to the same syllable remains a useful visible transition.
-    Only the first syllable in each run stays visible in Compact Lyrics mode.
+    Runs are tracked independently per staff, voice and verse. A short breath
+    does not repeat a backing syllable; words and longer absences cue re-entry.
+    Compact Lyrics mode keeps only the first syllable of a run.
     The lexical edit preserves the score's declaration, doctype, comments,
     whitespace, and unrelated source spelling.
     """
@@ -598,9 +611,29 @@ def annotate_repeated_lyrics(xml_text: str) -> tuple[str, int]:
             duplicate_ordinals.update(run[1:])
 
     for part in (element for element in root.iter() if local_name(element.tag) == "part"):
-        previous_by_verse: dict[tuple[str, str], str] = {}
-        runs: dict[tuple[str, str], list[int]] = {}
-        for note in (element for element in part.iter() if local_name(element.tag) == "note"):
+        previous_by_verse: dict[tuple[str, ...], str] = {}
+        runs: dict[tuple[str, ...], list[int]] = {}
+        rest_lengths: dict[tuple[str, str], Fraction | float] = {}
+        divisions = Fraction(0)
+        backing = set(LYRIC_BREATH["backingSyllables"])
+        for note in part.iter():
+            tag = local_name(note.tag)
+            if tag == "divisions":
+                divisions = Fraction(note.text or "0")
+            if tag != "note":
+                continue
+            fields = {local_name(child.tag): child.text for child in note}
+            lane = (fields.get("staff") or "1", fields.get("voice") or "1")
+            if "rest" in fields:
+                duration = Fraction(fields["duration"]) / divisions if divisions > 0 and fields.get("duration") else float("inf")
+                rest_lengths[lane] = rest_lengths.get(lane, 0) + duration
+                for key in list(runs):
+                    if key[:2] == lane and (rest_lengths[lane] > LYRIC_BREATH["maxRestQuarters"]
+                                            or previous_by_verse[key].lower() not in backing):
+                        finish_run(runs.pop(key))
+                        del previous_by_verse[key]
+            elif "grace" not in fields:
+                rest_lengths.pop(lane, None)
             for lyric in (child for child in note if local_name(child.tag) == "lyric"):
                 text = normalized_words(
                     "".join(
@@ -610,7 +643,7 @@ def annotate_repeated_lyrics(xml_text: str) -> tuple[str, int]:
                     )
                 )
                 if text:
-                    verse = (
+                    verse = lane + (
                         lyric.attrib.get("number", "1").strip(),
                         lyric.attrib.get("name", "").strip(),
                     )
@@ -843,6 +876,22 @@ def load_config(path: Path | None) -> dict[str, Any]:
             value['referenceAudio'] = {**metadata, 'label': reference.get('label', 'Aligned reference recording'),
                 'mime':'audio/mpeg', 'data':base64.b64encode(audio.read_bytes()).decode('ascii')}
     return value
+
+
+def build_config(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    result = dict(config)
+    if not getattr(args, "with_conductor", False):
+        result.pop("conductorScore", None)
+    elif not result.get("conductorScore"):
+        raise BuildError("--with-conductor requires conductorScore in each song's config")
+    pdf = getattr(args, "parts_pdf", None)
+    if pdf:
+        data = read_required(pdf.expanduser().resolve(), binary=True)
+        if not data.startswith(b"%PDF-"):
+            raise BuildError("--parts-pdf must be a PDF document")
+        result["partsPdf"] = base64.b64encode(data).decode("ascii")
+        result.pop("partsPdfUrl", None)
+    return result
 
 
 def effective_config(
@@ -1155,7 +1204,7 @@ def pitchy_browser_runtime(fft_source: str, pitchy_source: str) -> str:
     return (
         '(() => {\n  "use strict";\n'
         f"{fft_runtime}\n{pitchy_runtime}\n"
-        "  window.Pitchy = Object.freeze({ Autocorrelator, PitchDetector });\n"
+        "  window.Pitchy = Object.freeze({ Autocorrelator, PitchDetector, FFT });\n"
         "})();"
     )
 
@@ -1286,11 +1335,12 @@ def install_compact_lyrics(app: str, template: str, styles: str) -> tuple[str, s
     """One display preference for shared annotations and syllable changes."""
     app = replace_once(app, "  function createSvgElement(name, attributes = {}) {",
                        (TEMPLATE_DIR / "selective_lyrics.js").read_text() + "\n"
-                       + (TEMPLATE_DIR / "shared_notation.js").read_text()
+                       + replace_once((TEMPLATE_DIR / "shared_notation.js").read_text(),
+                                      'require("./lyric_breath.json")', json.dumps(LYRIC_BREATH))
                        + "\n  function createSvgElement(name, attributes = {}) {")
     for old, new in [
         ('      lyrics: defaults.lyrics === "changes" ? "changes" : "full",',
-         '      lyrics: "full",\n      annotationLayouts: sharedNotationTools.annotationPreferences(defaults),'),
+         '      lyrics: "changes",\n      annotationLayouts: sharedNotationTools.annotationPreferences(defaults),'),
         ('    const previousLyrics = lyricsMode;',
          '    const previousLyrics = lyricsMode;\n    const previousAnnotationLayout = annotationLayout;'),
         ('    setLyricsMode(state.lyrics, { reload: false, persist: false });',
@@ -1531,7 +1581,7 @@ def is_inline_reference(target: str) -> bool:
     return not target or target.startswith(("#", "data:"))
 
 
-def verify_standalone(document: str) -> None:
+def verify_standalone(document: str, *, require_font: bool = True) -> None:
     inspector = StandaloneHTMLInspector()
     try:
         inspector.feed(document)
@@ -1551,7 +1601,7 @@ def verify_standalone(document: str) -> None:
             "Standalone HTML contains external or unresolved asset references: "
             + details
         )
-    if "data:font/woff2;base64," not in document:
+    if require_font and "data:font/woff2;base64," not in document:
         raise BuildError("Standalone HTML does not contain the inline notation font.")
 
 
@@ -1566,7 +1616,97 @@ def content_fingerprint(items: Iterable[tuple[str, bytes]]) -> str:
     return digest.hexdigest()[:16]
 
 
+def build_collection(args: argparse.Namespace) -> dict[str, Any]:
+    from collection import render_collection
+
+    sources = [path.expanduser().resolve() for path in [args.score, *args.additional_scores]]
+    if len(set(sources)) != len(sources):
+        raise BuildError("Each input score must be listed only once")
+    paths = args.song_config or [None] * len(sources)
+    if len(paths) != len(sources):
+        raise BuildError("Repeat --song-config once per input score, in input order")
+    common_path = args.config.expanduser().resolve() if args.config else None
+    config_paths = [path.expanduser().resolve() if path else None for path in paths]
+    common = load_config(common_path)
+    configs = [build_config(deep_merge(common, load_config(path)), args) for path in config_paths]
+    project = (args.project_dir.expanduser().resolve() if args.project_dir else
+               sources[0].parent / f"{slugify(sources[0].stem)}-collection-web")
+    validate_project_ownership(project)
+    output = args.output.expanduser().resolve() if args.output else project / "dist/index.html"
+    pdf = args.parts_pdf.expanduser().resolve() if args.parts_pdf else None
+    inputs = sources + [path for path in [common_path, *config_paths, pdf] if path]
+    for path in inputs:
+        if path_is_within(path, project):
+            raise BuildError(f"Collection project may not contain an input file: {path}")
+        if not path.is_file():
+            raise BuildError(f"Input file does not exist: {path}")
+        validate_output_path(output, project_dir=project, source=path, config_path=None)
+    for source in sources:
+        if source.suffix.lower() not in SUPPORTED_SUFFIXES:
+            raise BuildError(f"Unsupported score type: {source}")
+    snapshots = {path: sha256(path.read_bytes()) for path in inputs}
+    title = normalized_words(args.collection_title)
+    if not title or not args.collection_icon.strip():
+        raise BuildError("Collection title and icon may not be empty")
+    project.parent.mkdir(parents=True, exist_ok=True)
+    staged = Path(tempfile.mkdtemp(prefix=f".{project.name}.stage-", dir=project.parent))
+    staged_external = None
+    try:
+        songs, results = [], []
+        for index, (source, config) in enumerate(zip(sources, configs)):
+            name = f"{index + 1:03d}-{slugify(source.stem)}"
+            child = staged / "players" / name
+            old = project / "players" / name
+            if not args.refresh_score and load_cached_musicxml(old, snapshots[source]):
+                for relative in (PROJECT_MARKER_NAME, "assets/score.musicxml", "assets/build-metadata.json"):
+                    atomic_write(child / relative, (old / relative).read_bytes())
+            config_path = staged / f"{name}.config.json"
+            atomic_write(config_path, stable_json(config))
+            options = argparse.Namespace(score=source, config=config_path, project_dir=child,
+                                         output=None, musescore=args.musescore, refresh_score=args.refresh_score,
+                                         with_conductor=args.with_conductor)
+            result = build(options)
+            result["projectDir"] = str(project / "players" / name)
+            result["output"] = str(project / "players" / name / "dist/index.html")
+            results.append(result)
+            songs.append({"id": result["slug"], "title": result["title"],
+                          "html": (child / "dist/index.html").read_text(encoding="utf-8")})
+        try:
+            document = render_collection(songs, title=title, favicon=args.collection_icon,
+                                         download_name=slugify(title) + ".html", conductor=args.with_conductor)
+        except ValueError as exc:
+            raise BuildError(str(exc)) from exc
+        if any(sha256(path.read_bytes()) != digest for path, digest in snapshots.items()):
+            raise BuildError("An input changed during the build; collection was not replaced")
+        fingerprint = sha256(document.encode("utf-8"))
+        atomic_write(staged / PROJECT_MARKER_NAME, project_marker(fingerprint))
+        atomic_write(staged / "dist/index.html", document)
+        atomic_write(staged / "assets/collection-metadata.json", stable_json({"title": title, "songs": results}, pretty=True))
+        shutil.copy2(ROOT / "LICENSE", staged / "LICENSE")
+        if path_is_within(output, project):
+            atomic_write(staged / output.relative_to(project), document)
+            external = None
+        else:
+            staged_external = stage_external_output(output, document)
+            external = output
+        commit_generated_outputs(staged_project=staged, project_dir=project,
+                                 staged_external=staged_external, external_output=external)
+    finally:
+        if staged_external is not None:
+            staged_external.unlink(missing_ok=True)
+        if staged.exists():
+            shutil.rmtree(staged)
+    return {"title": title, "songs": results, "projectDir": str(project), "output": str(output),
+            "bytes": output.stat().st_size, "fingerprint": fingerprint}
+
+
 def build(args: argparse.Namespace) -> dict[str, Any]:
+    if getattr(args, "additional_scores", None):
+        return build_collection(args)
+    if getattr(args, "song_config", None):
+        if len(args.song_config) != 1 or args.config:
+            raise BuildError("For one score use --config, or one --song-config, not both")
+        args.config = args.song_config[0]
     source = args.score.expanduser().resolve()
     if not source.is_file():
         raise BuildError(f"Input score does not exist: {source}")
@@ -1582,7 +1722,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     source_sha256 = sha256(source_bytes)
 
     config_input = args.config.expanduser().resolve() if args.config else None
-    override = load_config(config_input)
+    override = build_config(load_config(config_input), args)
+    pdf_input = getattr(args, "parts_pdf", None)
+    pdf_input = pdf_input.expanduser().resolve() if pdf_input else None
 
     # For naming an as-yet-unexported MuseScore project, the filename is a
     # stable preliminary fallback.  The final default slug is based on the
@@ -1664,6 +1806,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         source=source,
         config_path=config_input,
     )
+    if pdf_input:
+        if path_is_within(pdf_input, project_dir):
+            raise BuildError(f"Generated project may not contain the parts PDF input: {pdf_input}")
+        validate_output_path(output, project_dir=project_dir, source=pdf_input, config_path=None)
 
     project_dir.parent.mkdir(parents=True, exist_ok=True)
     staged_project = Path(
@@ -1754,13 +1900,28 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         app = read_required(TEMPLATE_DIR / "practice_routes.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "microphone_check.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "comp_panel.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "station.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "station_mix_editor.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "take_controls.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "divisi_mixer.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "voice_palette.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "practice_mix.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "practice_trace.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "comp_cloud.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "practice_comp.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "comp_audio.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "take_mix.js") + "\n" + app
+        loudness_source = ("globalThis.MeleteLoudnessMeter = (() => {const module = {exports:{}};\n"
+                           + read_required(VENDOR_DIR / "bravoh-loudness/dist/index.cjs")
+                           + "\nreturn module.exports;})();")
+        app = ("window.MeleteLoudnessSource = " + json.dumps(loudness_source) + ";\n"
+               + "/* " + read_required(VENDOR_DIR / "bravoh-loudness/LICENSE") + " */\n"
+               + read_required(TEMPLATE_DIR / "take_loudness.js") + "\n" + app)
         app = ("window.MeleteStretchSource = "
                + json.dumps(read_required(VENDOR_DIR / "signalsmith-stretch/SignalsmithStretch.js")) + ";\n"
                + read_required(TEMPLATE_DIR / "take_stretch.js") + "\n" + app)
         app = read_required(TEMPLATE_DIR / "take_render.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "take_cleanup.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "take_pitch.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "live_pitch.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "vocal_pitch.js") + "\n" + app

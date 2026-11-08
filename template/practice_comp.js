@@ -4,19 +4,23 @@
   const api = factory(typeof module === "object" && module.exports ? require("./take_pitch.js") : root.MeleteTakePitch);
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.MeleteComp = api;
-})(globalThis, pitch => {
+})(globalThis, function compTools(pitch) {
   "use strict";
-  const EPS = 1e-6;
+  const EPS = pitch.TIME_EPSILON;
   const key = d => JSON.stringify([1, d.song, d.reference.fingerprint, d.reference.part,
-    d.reference.line ?? null, d.reference.rate, d.reference.notes, d.reference.seconds]);
+    d.reference.line ?? null, d.reference.rate, d.reference.notes, d.reference.seconds, ...(d.slot ? [d.slot] : [])]);
   const OFFER_VERSION = 2;
   const TRACK_VERSION = 1;
+  // Breath cleanup weighs noise over runs of up to 1.2 s, so a shorter margin
+  // could change how the audio that stays is cleaned.
+  const AUDIO_MARGIN_SECONDS = 1.3;
   const empty = descriptor => ({key: key(descriptor), song: descriptor.song, descriptor, offerVersion: OFFER_VERSION,
     trackVersion: TRACK_VERSION, revision: 0, segments: [], undo: null, processed: [], adopted: [], freshAt: 0});
   function adoptRevision(saved, descriptor, takes, current) {
     if (current && (current.segments.length || current.processed.length || current.freshAt
       || current.track || current.undo || current.revisionOf)) return current;
     const previous = saved.filter(s => s.key !== key(descriptor) && s.song === descriptor.song
+      && (s.descriptor.slot || null) === (descriptor.slot || null)
       && pitch.sameTimeline(s.descriptor.reference, descriptor.reference)
       && protectedIds(s).every(id => takes.has(id) && eligible(takes.get(id), descriptor)))
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
@@ -48,28 +52,30 @@
     ]), segment]);
   }
   function clipNotes(notes, ranges) {
-    return notes.flatMap(([from, to, pitches]) => ranges.map(s => [Math.max(from, s.from),
-      Math.min(to, s.to), pitches]).filter(n => n[1] - n[0] > EPS)).sort((a, b) => a[0] - b[0]);
+    return notes.flatMap(([from, to, pitches]) => pitch.nonzeroNotes(ranges.map(s => [Math.max(from, s.from),
+      Math.min(to, s.to), pitches]))).sort((a, b) => a[0] - b[0]);
   }
   // A complete recording of this track's passage, scored or not.
   function matches(take, descriptor) {
     const r = take.pitchReference, target = descriptor.reference;
+    if ((take.trackSlot || null) !== (descriptor.slot || null)) return false;
     if (!take.complete || !take.finalized || take.active || take.unsaved || take.gap || take.deleteAfter
       || !pitch.validReference(r) || !Number.isFinite(take.origin) || r.fingerprint !== target.fingerprint
       || r.part !== target.part || (r.line ?? null) !== (target.line ?? null) || r.rate !== target.rate) return false;
     const from = take.origin + (r.leadInSeconds || 0), to = take.origin + r.seconds;
     if (from < -EPS || to > target.seconds + EPS || to <= from) return false;
     const expected = clipNotes(target.notes, [{from, to}]);
-    return expected.length === r.notes.length && expected.every((n, i) =>
-      Math.abs(n[0] - r.notes[i][0] - take.origin) < EPS
-      && Math.abs(n[1] - r.notes[i][1] - take.origin) < EPS
-      && JSON.stringify(n[2]) === JSON.stringify(r.notes[i][2]));
+    const actual = pitch.nonzeroNotes(r.notes);
+    return expected.length === actual.length && expected.every((n, i) =>
+      Math.abs(n[0] - actual[i][0] - take.origin) < EPS
+      && Math.abs(n[1] - actual[i][1] - take.origin) < EPS
+      && JSON.stringify(n[2]) === JSON.stringify(actual[i][2]));
   }
   function eligible(take, descriptor) {
     return pitch.hasPitchBand(take.pitchScore) && matches(take, descriptor);
   }
   function segment(take) {
-    return {takeId: take.id, from: take.origin + (take.pitchReference.leadInSeconds || 0),
+    return {takeId: take.id, from: take.origin,
       to: take.origin + take.pitchReference.seconds};
   }
   function framesFor(segments, takes) {
@@ -82,7 +88,7 @@
       if (!frames) throw new Error("A comp contour is missing or outdated");
       return frames.flatMap(f => {
         const start = Math.max(s.from, take.origin + f.start), end = Math.min(s.to, take.origin + f.end);
-        return end - start > EPS ? [{start, end, cents: f.cents, takeId: s.takeId}] : [];
+        return end - start > EPS ? [{start, end, cents: f.cents, takeId: s.takeId, ...(f.live ? {live:true} : {})}] : [];
       });
     }).sort((a, b) => a.start - b.start);
   }
@@ -91,10 +97,62 @@
     const covered = normalize(ranges);
     const notes = clipNotes(ref.notes, covered);
     const frames = framesFor(covered, takes);
-    const score = pitch.scoreFrames(frames, {...ref, notes}, ref.seconds);
+    const score = pitch.scoreFrames(frames, ref, ref.seconds);
     const total = ref.notes.reduce((sum, n) => sum + n[1] - n[0], 0);
-    return {...score, completion: total ? score.expectedSeconds / total : 0,
-      segmentCount: covered.length, totalExpectedSeconds: total};
+    const filled = notes.reduce((sum, n) => sum + n[1] - n[0], 0);
+    return {...score, completion: total ? filled / total : 0,
+      segmentCount: segmentCount(covered, ref.notes), totalExpectedSeconds: total};
+  }
+  function segmentCount(segments, notes) {
+    let previous, count = 0;
+    for (const s of segments) {
+      if (!previous || previous.takeId !== s.takeId
+        || notes.some(([a,b]) => Math.min(b,s.from) - Math.max(a,previous.to) > EPS)) count++;
+      previous = s;
+    }
+    return count;
+  }
+  function reconcile(descriptor, saved, takes) {
+    // Decode/clean each contour once for the entire reconciliation, not once
+    // for every candidate phrase and every statistics pass.
+    takes = new Map([...takes].map(([id, t]) => [id, {...t, analysisFrames: t.analysisFrames || pitch.readContour(t)}]));
+    let state = migrate(adoptRevision(saved, descriptor, takes, saved.find(s => s.key === key(descriptor))));
+    state = repairMargins({...state, descriptor}, takes);
+    const backfill = (state.offerVersion || 1) < OFFER_VERSION, replaced = [], silent = [], edits = [];
+    // Migration fills gaps from the newest recording first. Older audio kept
+    // only for Undo must not outrank a more recent performance.
+    for (const take of [...takes.values()].sort((a, b) => (backfill ? -1 : 1) * (a.createdAt - b.createdAt))) {
+      const next = offer(state, take, takes, {backfill});
+      if (next !== state && take.replaces && !backfill) (next.segments === state.segments ? silent : replaced).push(take.id);
+      if (next.segments !== state.segments && !backfill) edits.push({segments: next.segments,
+        track: Boolean(next.track), firstTakeNumber: next.firstTakeNumber ?? null});
+      state = next;
+    }
+    if (replaced.length) state = {...state, editedAt: Date.now()};
+    if (state.firstTakeNumber == null && state.segments.length) {
+      const numbers = state.segments.map(s => takes.get(s.takeId)?.number).filter(Number.isFinite);
+      if (numbers.length) state = {...state, firstTakeNumber: Math.min(...numbers)};
+    }
+    state = {...state, offerVersion: OFFER_VERSION};
+    return {state, replaced, silent, edits, score: stats(state, takes), frames: framesFor(state.segments, takes)};
+  }
+  function workerSource() {
+    return `${pitch.source()}\nconst model = (${compTools.toString()})(MeleteTakePitch);
+      onmessage = ({data}) => { try { postMessage({result:model.reconcile(data.descriptor, data.saved, data.takes)}); }
+        catch (e) { postMessage({error:e.message}); } };`;
+  }
+  async function reconcileAsync(descriptor, saved, takes) {
+    const url = URL.createObjectURL(new Blob([workerSource()], {type:"text/javascript"}));
+    const worker = new Worker(url);
+    let timer;
+    try {
+      return await new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Track processing timed out; original recordings kept")), 60000);
+        worker.onmessage = ({data}) => data.error ? reject(new Error(data.error)) : resolve(data.result);
+        worker.onerror = () => reject(new Error("Track processing failed; original recordings kept"));
+        worker.postMessage({descriptor, saved, takes});
+      });
+    } finally { clearTimeout(timer); worker.terminate(); URL.revokeObjectURL(url); }
   }
   // End of the last written note in which this recording detected singing.
   function lastSung(range, takes, notes) {
@@ -113,7 +171,7 @@
       const source = segment(takes.get(s.takeId));
       let from = s.from, to = s.to;
       if (!notes.some(([a, b]) => a < from - EPS && b > from + EPS)) {
-        from = notes.findLast(n => n[1] <= s.from + EPS)?.[1] ?? 0;
+        from = notes.findLast(n => n[1] <= s.from + EPS)?.[1] ?? Math.min(0, source.from);
       }
       if (!notes.some(([a, b]) => a < to - EPS && b > to + EPS)) {
         to = notes.find(n => n[0] >= s.to - EPS)?.[0] ?? ref.seconds;
@@ -138,6 +196,8 @@
       undo: state.undo ? bindMargins(state.undo, state.descriptor, takes) : null};
   }
   function offer(state, take, takes, {backfill = false} = {}) {
+    // A trimmed source no longer holds the passages a new offer could choose.
+    if (take.storedFrames !== undefined) return state;
     if (!eligible(take, state.descriptor) || !pitch.readContour(take)) return state;
     if ((!backfill && state.processed.includes(take.id)) || take.createdAt <= state.freshAt) return state;
     // Phrase comparisons revisit sources; decode each contour once per offer.
@@ -147,7 +207,9 @@
     const windows = pitch.restPolicyValid(ref) ? ref.restPolicy.keep : [[captured.from, captured.to]];
     const additions = [];
     for (const [from, to] of windows) {
-      const incoming = {...captured, from: Math.max(from, captured.from), to: Math.min(to, captured.to)};
+      // Count-in is retained as the phrase's entrance margin, not offered as
+      // a replacement for written singing before the requested entrance.
+      const incoming = {...captured, from: Math.max(from, captured.from + (take.pitchReference.leadInSeconds || 0)), to: Math.min(to, captured.to)};
       if (incoming.to - incoming.from <= EPS || !clipNotes(ref.notes, [incoming]).length) continue;
       // Silence never erases earlier singing, and a recording stopped
       // mid-phrase ends at its last sung note rather than at the Stop press.
@@ -166,6 +228,7 @@
       additions.push(...gaps.filter(s => lastSung(s, takes, ref.notes) !== null));
     }
     if (additions.length) {
+      if (next.firstTakeNumber == null && Number.isFinite(take.number)) next.firstTakeNumber = take.number;
       next.undo = state.segments.map(s => ({...s}));
       next.segments = bindMargins(additions.reduce(replace, state.segments), state.descriptor, takes);
       // A track recording that filled the track goes once it is replaced.
@@ -183,14 +246,42 @@
   function protectedIds(state) {
     return [...new Set([...state.segments, ...(state.undo || [])].map(s => s.takeId))];
   }
-  // Recordings a track adopted that no track or Undo uses any more. Older
-  // takes that were never part of a track, recordings with no detected
-  // singing, and favorites are left for the singer.
-  function discardable(comps, takes) {
-    const used = new Set(comps.flatMap(protectedIds));
+  // Replaced track captures no longer referenced by a track or its history.
+  // Never delete a recording that was not successfully adopted into a track.
+  function discardable(comps, takes, historyIds = []) {
+    const used = new Set([...comps.flatMap(protectedIds), ...historyIds]);
     const adopted = new Set(comps.flatMap(s => s.adopted || []));
-    return takes.filter(t => !used.has(t.id) && adopted.has(t.id)
+    return takes.filter(t => !used.has(t.id) && adopted.has(t.id) && t.complete && t.finalized
       && !t.favorite && !t.active && !t.unsaved && !t.deleteAfter).map(t => t.id);
+  }
+  // Frames of each source that a track or its Undo/Redo history can still play.
+  // A source is left out, and so kept whole, when any use of it cannot be mapped
+  // to its recording: a score that changed, a missing track, or a starred take.
+  function usedAudio(comps, takes, edits = []) {
+    const records = new Map(takes.map(t => [t.id, t])), states = new Map(comps.map(s => [s.key, s]));
+    const kept = new Map(), whole = new Set(), checked = new Map();
+    const trusted = (t, stateKey) => {
+      const id = JSON.stringify([stateKey, t.id]);
+      if (!checked.has(id)) checked.set(id, states.has(stateKey) && !t.favorite && eligible(t, states.get(stateKey).descriptor));
+      return checked.get(id);
+    };
+    const use = (segments, stateKey) => {
+      for (const s of segments || []) {
+        const t = records.get(s.takeId);
+        if (!t) continue;
+        const source = trusted(t, stateKey) ? segment(t) : null;
+        const start = s.from - t.origin + t.pitchReference?.latency, end = start + s.to - s.from;
+        const first = Math.max(0, Math.floor((start - AUDIO_MARGIN_SECONDS) * t.sampleRate));
+        const last = Math.min(t.frames, Math.ceil((end + AUDIO_MARGIN_SECONDS) * t.sampleRate));
+        if (source && s.from >= source.from - EPS && s.to <= source.to + EPS && last > first) {
+          if (!kept.has(t.id)) kept.set(t.id, []);
+          kept.get(t.id).push([first, last]);
+        } else whole.add(t.id);
+      }
+    };
+    for (const state of comps) use([...state.segments, ...(state.undo || [])], state.key);
+    for (const edit of edits) for (const side of [edit.before, edit.after]) use(side?.segments, edit.key);
+    return new Map([...kept].filter(([id]) => !whole.has(id)).map(([id, ranges]) => [id, pitch.mergeRanges(ranges)]));
   }
   function validate(state, takes) {
     if (state?.key !== key(state.descriptor) || state.song !== state.descriptor.song
@@ -203,6 +294,6 @@
     normalize(state.segments);
     return true;
   }
-  return {OFFER_VERSION, TRACK_VERSION, key, empty, adoptRevision, migrate, normalize, replace, clipNotes, matches, eligible,
-    segment, framesFor, stats, lastSung, bindMargins, repairMargins, offer, remove, undo, protectedIds, discardable, validate};
+  return {OFFER_VERSION, TRACK_VERSION, AUDIO_MARGIN_SECONDS, key, empty, adoptRevision, migrate, normalize, replace, clipNotes, matches, eligible, reconcile, reconcileAsync, workerSource, segmentCount,
+    segment, framesFor, stats, lastSung, bindMargins, repairMargins, offer, remove, undo, protectedIds, discardable, usedAudio, validate};
 });

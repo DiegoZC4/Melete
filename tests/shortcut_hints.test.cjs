@@ -140,6 +140,7 @@ test('hold tips describe the existing cycles in the wording of the input used', 
   const start = app.indexOf('  function shortcutTipContent(');
   const content = vm.runInNewContext(`${app.slice(start, app.indexOf('\n  }', start) + 4)}\nshortcutTipContent`, {
     parts: [{ name:'Soprano', short:'S' }, { name:'Alto', short:'A' }],
+    mixerParts: [{ name:'Soprano', short:'S' }, { name:'Alto', short:'A' }],
     elements: { mixer: { querySelector: (selector) => ({ selector }) } },
   });
   const vol = content({ id:'vol-hold', row:'vol', part:1, input:'touch' });

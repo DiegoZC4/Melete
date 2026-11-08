@@ -1,11 +1,10 @@
 const assert = require('node:assert/strict');
 const {test} = require('node:test');
-const {takeBytes, takeFilename, takeArchive, DELETE_UNDO_MS, STORAGE_WARNING_BYTES, wavBytes} = require('../template/loop_recorder.js');
+const {takeBytes, takeFilename, takeArchive, DELETE_UNDO_MS, wavBytes} = require('../template/loop_recorder.js');
 const zip = require('../vendor/fflate/fflate.js');
 
-test('take storage warning counts PCM and cached contour bytes without loading audio', () => {
+test('take size counts PCM and cached contour bytes without loading audio', () => {
   assert.equal(DELETE_UNDO_MS, 10000);
-  assert.equal(STORAGE_WARNING_BYTES, 250 * 1024 * 1024);
   assert.equal(takeBytes([{frames: 48000}, {length: 16000, frames: 8000}]), 128000);
   assert.equal(takeBytes([{frames: 48000, pitchContour: {pitches: new Float64Array(100)}}]), 96800);
 });

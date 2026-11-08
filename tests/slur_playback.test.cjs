@@ -43,8 +43,8 @@ const data = {
   notes:[[0,0,960,60,60],[0,960,1920,62,85],[0,1920,2880,64,80],[0,2880,3840,65,80]],
   legato:[[0,1,2]],
 };
-function engine(sequence = data) {
-  const c = vm.createContext({config:{}, parts:sequence.parts, clamp:(v,lo,hi)=>Math.max(lo,Math.min(hi,v)),
+function engine(sequence = data, config = {}) {
+  const c = vm.createContext({config, parts:sequence.parts, clamp:(v,lo,hi)=>Math.max(lo,Math.min(hi,v)),
     window: {clearInterval() {}, setInterval() { return 1; }, MeleteRecording: require('../template/loop_recorder.js')},
     requestAnimationFrame: () => 1, cancelAnimationFrame() {}, performance: {now: () => 1000},
     SCHEDULER_INTERVAL_MS:40, SCHEDULER_LEAD_SECONDS:.028, SCHEDULER_HORIZON_SECONDS:.34,
@@ -54,6 +54,39 @@ function engine(sequence = data) {
   e.context = new Audio(); e.master = new Node(); e.wave = {};
   return e;
 }
+
+test('lead-in is seekable without a count-in mode and metronome clicks never sweep in pitch', () => {
+  for(const beats of [3,4]) {
+    const e=engine(data,{recordingCountInBeats:beats});
+    assert.equal(e.leadInTicks,-beats*960);
+    assert.deepEqual(plain(e.clicks.filter(c=>c.time<0).map(c=>c.time)),Array.from({length:beats},(_,i)=>i-beats));
+    e.seek(-beats-.5);
+    assert.equal(e.currentSeconds(),-beats);
+    e.metronomeVolume=1;
+    for(const downbeat of [false,true]) {
+      e.scheduleClick({time:-beats,downbeat},-beats,.028);
+      const oscillator=e.context.nodes.at(-2),envelope=e.context.nodes.at(-1);
+      assert.equal(oscillator.type,'triangle');
+      assert.equal(oscillator.frequency.value,downbeat?1320:880);
+      assert.deepEqual(oscillator.frequency.events,[],'fixed pitch, not a chirp');
+      near(oscillator.stops[0]-oscillator.starts[0],.05);
+      assert.equal(envelope.gain.events[1][1],.16);
+    }
+  }
+});
+
+test('configured grouping sounds a high click on each group without changing quarter timing',()=>{
+  const e=engine({...data,measures:[[0,6720,7,4],[6720,5760,6,4],[12480,8640,9,4],[21120,2880,3,4]]},
+    {beatGroups:{"7/4":[3,4],"6/4":[3,3],"9/4":[3,3,3]}});
+  e.metronomeVolume=1;
+  const clicks=e.clicks.filter(c=>c.tick>=0);
+  assert.deepEqual(plain(clicks.map(c=>c.tick/960)),Array.from({length:25},(_,i)=>i));
+  for(const c of clicks) e.scheduleClick(c,c.time,.028);
+  assert.deepEqual(e.context.nodes.filter(n=>n.kind==='oscillator').map(n=>n.frequency.value),
+    [...'HllHlllHllHllHllHllHllHll'].map(k=>k==='H'?1320:880));
+  const truncated=e.buildMetronomeEvents([[0,1920,7,4]]).filter(c=>c.tick>=0);
+  assert.deepEqual(plain(truncated.map(c=>c.tick)),[0,960]);
+});
 
 test('MusicXML slurs survive MIDI extraction, including ties and independent divisi', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'melete-slurs-'));

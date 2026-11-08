@@ -49,12 +49,14 @@
   const PITCH_TRACE_RENDER_JUMP_CENTS = 400;
   const PITCH_TRACE_GREEN_TOLERANCE_CENTS = 10;
   const PITCH_TRACE_RED_CENTS = 50;
-  const STAFF_TRACE_CENTS_PER_STEP = 25;
+  const STAFF_TRACE_CENTS_PER_STEP = 50;
   const LYRIC_FONT_SIZE = 14;
   const PORTABLE_STATE_VERSION = 1;
   const NOTATION_RENDER_TIMEOUT_MS = 6000;
   const FOLLOW_CHECK_INTERVAL_MS = 60;
   const FOLLOW_SCROLL_LEAD_BUFFER_MS = 80;
+  const HORIZONTAL_READING_FRACTION = 0.4;
+  const reducedFollowMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
 
   let api = null;
   let engine = null;
@@ -90,6 +92,8 @@
   let toastTimer = 0;
   let toastAction = null;
   let lastFollow = 0;
+  let followedScoreLeft = null;
+  let horizontalGestureUntil = 0;
   let followScrollFrame = 0;
   let cursorTrimFrame = 0;
   let cursorTrimBurstGeneration = 0;
@@ -121,9 +125,16 @@
   let loopStartTick = null;
   let loopEndTick = null;
   let pendingLoopLink;
+  let linkedPracticeState = null;
   let practicePartIndex = null;
   let partDivisi = [];
+  let mixerParts = [];
+  const practiceMixerIndex = () => {
+    if (!Number.isInteger(practicePartIndex)) return null;
+    return mixerParts.findIndex(p => p.source === practicePartIndex && p.line === (practiceDivisi[practicePartIndex] ?? null));
+  };
   let practicePartPager = null;
+  let lastGuideChannel = null, relativeMix = null, relativeGuide = null;
   let practiceDivisi = [];
   let practiceDivisiPager = null;
   let activePracticeMix = null;
@@ -171,7 +182,12 @@
   let takeRequestGeneration = 0;
   let takeCapture = null;
   let takeJournal = null;
+  // Audio consent is session-local; each Play latches it for that pass.
+  let recordAudio=false, captureIsAudio=false, practiceWriter=null, preparingCapture=null;
+  let practiceTraceIdentity="", practiceTraceRecord=null, practiceTraceRow=null, practiceTraceRef=null, practiceTraceTicket=0;
   const takeStore = new window.MeleteRecording.TakeStore();
+  let recordingTimeRequest = null;
+  let recordingDayTimer = 0;
   let takeLibrary = new Map();
   let takeLibraryRequest = null;
   let takeLibraryReady = false;
@@ -182,15 +198,17 @@
   let takeSort = window.MeleteTakePitch.takeSort();
   try { takeSort = window.MeleteTakePitch.takeSort(JSON.parse(localStorage.getItem("melete:take-sort"))); } catch {}
   let takeActionBusy = false;
-  let takeDeleteIds = [];
   let takeDeleteTimer = 0;
   let takeOtherBytes = 0;
-  let takeStorageWarningAt = window.MeleteRecording.STORAGE_WARNING_BYTES;
   let takePreviewId = null;
   let takePreviewGeneration = 0;
   let takeRefreshTimer = 0;
   let takeReview = null;
+  let inspectedTakeId = null; // An explicit review, independent of the track armed for overdub.
+  let pendingCaptureTrace = null;
+  const takeVisualReviews = new Map();
   const takeLayerLoads = new Map();
+  let takeHearBatch = null;
   let takeOctaves = null;
   const takeOctavePagers = new WeakMap();
   let takeTimelineReview = null, takeTimeline = null;
@@ -201,7 +219,8 @@
   let takeScoring = null;
   const takeScoreFailures = new Map();
   let wantsPitchCapture = false;
-  let pitchCapturePageActive = true;
+  // A collection's hidden song stays inactive until melete:activate.
+  let pitchCapturePageActive = !window.frameElement?.inert;
   let pitchCaptureNotice = "";
   let pitchCaptureStream = null;
   let pitchCaptureContext = null;
@@ -230,6 +249,7 @@
   let scoreKeyPitchClasses = { tonic: 7, dominant: 2, third: 11 };
 
   const visibleTracks = new Set();
+  const visibleChannels = new Set();
   const audibleTracks = new Set();
   const annotations = new Map();
   let trackVolumes = [];
@@ -242,6 +262,7 @@
   let partChooserKey = "";
   let partChooserThen = null;
   let pendingPartLink = null;
+  let explicitPracticeChoice = false;
 
   const elements = {
     transport: document.querySelector(".transport"),
@@ -309,14 +330,9 @@
     takeDeletePrompt: document.getElementById("takeDeletePrompt"),
     takeDeleteMessage: document.getElementById("takeDeleteMessage"),
     takeActions: document.getElementById("takeActions"),
-    downloadTakes: document.getElementById("downloadTakes"),
     takeLoose: document.getElementById("takeLoose"),
     takeLooseMessage: document.getElementById("takeLooseMessage"),
     deleteLooseTakes: document.getElementById("deleteLooseTakes"),
-    takeStorageWarning: document.getElementById("takeStorageWarning"),
-    takeStorageWarningMessage: document.getElementById("takeStorageWarningMessage"),
-    takeStorageCleanup: document.getElementById("takeStorageCleanup"),
-    takeStorageKeep: document.getElementById("takeStorageKeep"),
     takeUndo: document.getElementById("takeUndo"),
     takeUndoMessage: document.getElementById("takeUndoMessage"),
     undoTakeDelete: document.getElementById("undoTakeDelete"),
@@ -583,7 +599,7 @@
   function shortcutTipContent(hint) {
     if (hint.id === "vol-hold" || hint.id === "pan-hold") {
       const volumes = hint.id === "vol-hold";
-      const part = parts[hint.part];
+      const part = mixerParts[hint.part];
       const target = elements.mixer.querySelector(`[data-${volumes ? "volume" : "pan"}-index="${hint.part}"]`);
       if (!part || !target) return null;
       const keyboard = hint.input === "keyboard";
@@ -600,7 +616,7 @@
       const target = elements.mixer.querySelector(`[${selector}="${hint.part}"]`);
       const selected = hint.row === "see" ? visibleTracks : audibleTracks;
       if (selected.size !== 1 || !selected.has(hint.part)) return null;
-      const part = parts[hint.part];
+      const part = (hint.row === "see" ? parts : mixerParts)[hint.part];
       const gesture = hint.input === "keyboard" ? `Shift+Enter on ${part.short}` : `Press and hold ${part.short}`;
       return { target, message: `${gesture} in ${hint.row === "see" ? "See" : "Hear"} to ${hint.row === "see" ? "show" : "hear"} only ${part.name}.` };
     }
@@ -687,8 +703,8 @@
   document.addEventListener("visibilitychange", hideShortcutTip);
 
   function formatTime(milliseconds) {
-    const seconds = Math.max(0, Math.round(milliseconds / 1000));
-    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+    const seconds = Math.round(Math.abs(milliseconds) / 1000);
+    return `${milliseconds < 0 ? "-" : ""}${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   }
 
   function parseEmbeddedJson(id, fallback = {}) {
@@ -725,7 +741,7 @@
 
   function syncScoreLoadingVisibility() {
     const shouldShow = scoreView === "standard"
-      && (loadFailed || (!notationHasRendered && !notationRenderFailed));
+      && (loadFailed || (visibleTracks.size > 0 && !notationHasRendered && !notationRenderFailed));
     elements.scoreLoading.classList.toggle("is-hidden", !shouldShow);
   }
 
@@ -771,6 +787,23 @@
         short: String(override.short || source.short || sensibleShortName(name, index)),
         color: String(override.color || config.partColors?.[name] || source.color || partPaint(index)),
       };
+    });
+  }
+
+  function prepareVoicePalette() {
+    const lanes=window.MeleteVoicePalette.lanes(mixerParts,partDivisi,sequence.practiceRoles);
+    const written=parts.map(()=>[]);
+    for (const note of sequence.notes) if(note[2]>note[1]) written[note[0]].push(note);
+    mixerParts.forEach((channel,i)=>{
+      const {source}=channel, part=parts[source], lane=lanes[i];
+      channel.barNotes=window.MeleteVoicePalette.barNotes(channel,lane,written[source]);
+      const override=config.parts?.[source]?.color || config.partColors?.[part.name] || sequence.parts[source]?.color;
+      if (!lane.paint || override) return;
+      // Staff-level labels use the upper line on a condensed divisi staff.
+      const variable=channel.line===null || channel.line===0 ? `--part-${source+1}` : `--channel-${i+1}`;
+      document.documentElement.style.setProperty(variable,lane.paint);
+      channel.color=`var(${variable})`;
+      if (channel.line===null || channel.line===0) part.color=channel.color;
     });
   }
 
@@ -1052,13 +1085,14 @@
   }
 
   class InfinitePager {
-    constructor(element, { options, value, placeholder = "" }) {
+    constructor(element, { options, value, placeholder = "", onTap = null }) {
       if (!element || !Array.isArray(options) || options.length < 2) {
         throw new TypeError("InfinitePager requires an element and at least two options");
       }
       this.element = element;
       this.element.title = "Tap to advance; drag to browse.";
       this.options = options;
+      this.onTap = onTap;
       this.placeholder = placeholder;
       const initialIndex = this.indexForValue(value);
       this.unset = initialIndex === null;
@@ -1270,7 +1304,7 @@
       this.element.addEventListener("click", (event) => {
         // Pointer taps are handled on release; only synthetic/assistive clicks
         // belong here, otherwise a drag's trailing click would advance again.
-        if (event.detail === 0 && !event.pointerType && !this.drag) this.step(1);
+        if (event.detail === 0 && !event.pointerType && !this.drag && !this.onTap?.()) this.step(1);
       }, listenerOptions);
       window.addEventListener("blur", () => this.cancel(this.drag?.pointerId), listenerOptions);
       this.element.addEventListener("wheel", (event) => {
@@ -1281,6 +1315,7 @@
       this.element.addEventListener("keydown", (event) => {
         if (!["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) return;
         event.preventDefault();
+        if (event.key==="Enter" && this.onTap?.()) return;
         this.step(event.key === "ArrowUp" ? -1 : 1);
       }, listenerOptions);
     }
@@ -1296,7 +1331,7 @@
         this.drag = null;
         this.element.classList.remove("is-dragging");
         if (this.element.hasPointerCapture(event.pointerId)) this.element.releasePointerCapture(event.pointerId);
-        this.step(1);
+        if (!this.onTap?.()) this.step(1);
         event.preventDefault();
         return;
       }
@@ -1356,6 +1391,20 @@
     defaultValue: () => preferenceDefaults().metronome,
     format: (value) => `${value}%`,
     aria: (value) => `metronome volume ${value} percent`,
+  });
+  const takeReverbControl = createDragNumber(document.getElementById("takeReverb"), {
+    values: Array.from({length:101}, (_, i) => i), clickStep: 10,
+    defaultValue: () => 0, format: value => `${value}%`, aria: value => `Recording reverb ${value} percent`,
+  });
+  document.getElementById("takeReverb").addEventListener("input", () => {
+    engine?.takeBus?.set(takeReverbControl.value()); engine?.balanceTakeLayers(); savePreferences();
+  });
+  const takeVolumeControl = createDragNumber(document.getElementById("takeVolume"), {
+    values: VOLUME_VALUES, clickStep: 10, defaultValue: () => 100,
+    format: value => `${value}%`, aria: value => `Recording mix volume ${value} percent`,
+  });
+  document.getElementById("takeVolume").addEventListener("input", () => {
+    engine?.takeBus?.setVolume(takeVolumeControl.value()); savePreferences();
   });
   const verticalControl = createDragNumber(elements.verticalScale, {
     values: VERTICAL_VALUES,
@@ -1426,8 +1475,12 @@
       button.tabIndex = selected ? 0 : -1;
     });
     requestAnimationFrame(() => syncPillThumb(elements.scoreViewToggle));
-    elements.score.hidden = scoreView !== "standard";
+    elements.score.hidden = scoreView !== "standard" || !visibleTracks.size;
     elements.barScore.hidden = scoreView !== "bars";
+    if (previous !== scoreView) {
+      if (scoreView === "standard" && staffTraceSystems.length) renderPitchTrace(staffTraceSystems);
+      compPanel?.selected();
+    }
     updateMixerAppearance();
     syncScoreLoadingVisibility();
     updateNoteActionLabel();
@@ -1587,7 +1640,7 @@
 
   function setLyricsMode(next, { reload = true, persist = true } = {}) {
     const previous = lyricsMode;
-    lyricsMode = next === "changes" ? "changes" : "full";
+    lyricsMode = "changes";
     if (reload && lyricsMode !== previous) {
       if (!reloadNotationForDisplay()) {
         lyricsMode = previous;
@@ -2139,8 +2192,8 @@
       hiddenLyrics: [],
       lyricEditing: false,
       practicePart,
-      volumes: parts.map((_, index) => nearestAllowed(clamp(Number(defaults.volumes?.[index] ?? 100), 0, VOLUME_VALUES.at(-1)), VOLUME_VALUES)),
-      pans: parts.map((_, index) => nearestAllowed(clamp(Number(defaults.pans?.[index] ?? 0), -100, 100), PAN_VALUES)),
+      volumes: mixerParts.map(({source}) => nearestAllowed(clamp(Number(defaults.volumes?.[source] ?? 100), 0, VOLUME_VALUES.at(-1)), VOLUME_VALUES)),
+      pans: mixerParts.map(({source}) => nearestAllowed(clamp(Number(defaults.pans?.[source] ?? 0), -100, 100), PAN_VALUES)),
     };
   }
 
@@ -2148,6 +2201,8 @@
     return {
       tempo: tempoControl.value(),
       metronome: metronomeControl.value(),
+      takeReverb: takeReverbControl.value(),
+      takeVolume: takeVolumeControl.value(),
       vertical: verticalControl.value(),
       horizontal: horizontalControl.value(),
       flow,
@@ -2158,7 +2213,8 @@
       practicePart: practicePartIndex,
       practiceDivisi: [...practiceDivisi],
       visible: parts.map((_, index) => visibleTracks.has(index)),
-      audible: parts.map((_, index) => audibleTracks.has(index)),
+      visibleChannels: mixerParts.map((_, index) => visibleChannels.has(index)),
+      audible: mixerParts.map((_, index) => audibleTracks.has(index)),
       volumes: [...trackVolumes],
       pans: [...trackPans],
       practiceMixMode: activePracticeMix,
@@ -2181,6 +2237,7 @@
       ...state,
       hiddenLyrics: [...(state.hiddenLyrics || [])],
       visible: [...state.visible],
+      visibleChannels: state.visibleChannels && [...state.visibleChannels],
       practiceDivisi: [...(state.practiceDivisi || [])],
       audible: [...state.audible],
       volumes: [...state.volumes],
@@ -2215,19 +2272,23 @@
     const previousHorizontal = horizontalControl.value();
     visibleTracks.clear();
     state.visible.forEach((visible, index) => { if (visible) visibleTracks.add(index); });
-    if (!visibleTracks.size && parts.length) visibleTracks.add(0);
+    restoreVisibleChannels(state);
     audibleTracks.clear();
     state.audible.forEach((audible, index) => { if (audible) audibleTracks.add(index); });
     trackVolumes = state.volumes.map((value) => nearestAllowed(clamp(Number(value), 0, VOLUME_VALUES.at(-1)), VOLUME_VALUES));
     trackPans = state.pans.map((value) => nearestAllowed(clamp(Number(value), -100, 100), PAN_VALUES));
-    assignPracticePart(Number.isInteger(state.practicePart) ? state.practicePart : null);
     practiceDivisi = normalizePracticeDivisi(state.practiceDivisi);
+    syncPracticeFromSee();
     activePracticeMix = ["learn", "check"].includes(state.practiceMixMode) ? state.practiceMixMode : null;
     practiceMixPartIndex = activePracticeMix ? state.practiceMixPart ?? practicePartIndex : null;
     practiceMixUndo = normalizePracticeMixUndo(state.practiceMixUndo);
     restoreLoopState(state);
     tempoControl.setValue(state.tempo, false);
     metronomeControl.setValue(state.metronome, false);
+    takeReverbControl.setValue(state.takeReverb || 0, false);
+    takeVolumeControl.setValue(state.takeVolume ?? 100, false);
+    engine?.takeBus?.setVolume(takeVolumeControl.value());
+    engine?.takeBus?.set(takeReverbControl.value());
     verticalControl.setValue(state.vertical, false);
     setFlow(state.flow, { render: false, persist: false });
     setScoreView(state.scoreView, { render: false, persist: false });
@@ -2237,7 +2298,7 @@
     setLyricEditing(state.lyricEditing, { persist: false });
     volumeControls.forEach((control, index) => control.setValue(trackVolumes[index], false));
     panControls.forEach((control, index) => control.setValue(trackPans[index], false));
-    practicePartPager?.setValue(practicePartIndex);
+    practicePartPager?.setValue(practiceMixerIndex());
     updateMixerAppearance();
     updateLoopState();
     engine?.setMetronome(metronomeControl.value());
@@ -2259,6 +2320,61 @@
       else renderPitchTrace();
     }
   }
+
+  // An intonation-station singer's own mix: what they see and hear, speed and
+  // metronome. Loop, display and recording settings stay shared.
+  const SINGER_PLAYBACK = ["tempo", "metronome", "visible", "visibleChannels", "audible", "volumes", "pans",
+    "practiceDivisi", "practiceMixMode", "practiceMixPart", "practiceMixUndo", "reference"];
+  const singerPlayback = {
+    ready: () => ready && parts.length > 0,
+    capture() {
+      const state = cloneSettingsState(captureSettingsState());
+      return Object.fromEntries(SINGER_PLAYBACK.map(key => [key, state[key]]));
+    },
+    apply(saved, {startup = false, singer = null, personal = null} = {}) {
+      const current = captureSettingsState();
+      // A mix saved before the score's parts changed no longer lines up.
+      if (["visible", "audible", "volumes", "pans"].some(key => saved?.[key]?.length !== current[key].length)) {
+        if (!singer) return false;
+        saved=current; personal=null;
+      }
+      const next = {...current, ...saved};
+      const linked = startup && explicitPracticeChoice;
+      let ask = false;
+      if (singer) {
+        const previous = personal?.guideVersion >= 1 ? personal.visibleChannels?.flatMap((on,i)=>on ? [i] : []) : [];
+        const prior = previous?.length === 1 ? previous[0] : -1;
+        const index = linked ? practiceMixerIndex() : window.MeleteStation.guideChannel(singer, mixerParts, prior);
+        const preset = window.MeletePracticeMix.stationDefault(), roles=sequence.practiceRoles;
+        if (index < 0) { next.visibleChannels=mixerParts.map(()=>false); ask=true; }
+        else if (index !== prior || window.MeleteStation.untouchedFirstPreset(personal,mixerParts,index)) Object.assign(next, window.MeleteStation.guideMix(mixerParts,index,preset,roles),
+          {reference:next.reference && {...next.reference, enabled:false}});
+        else {
+          next.visibleChannels=mixerParts.map((_,i)=>i===index);
+          if(window.MeleteStation.followsOldDefault(personal,mixerParts,index,preset,roles))
+            Object.assign(next,window.MeletePracticeMix.project(mixerParts,index,preset,roles));
+        }
+      }
+      // Arrival links and first-visit choices can run before the player is
+      // ready to restore a station mix. They must still win over its See row.
+      if (startup && explicitPracticeChoice) {
+        next.visible = current.visible;
+        next.visibleChannels = current.visibleChannels;
+        next.practiceDivisi = current.practiceDivisi;
+      }
+      applySettingsState(next);
+      if (scoreView === "bars" && current.visibleChannels.some((v,i)=>v!==next.visibleChannels[i])) scheduleBarRender();
+      if (singer && !linked) {
+        hidePartChooser();
+        if (ask && pitchCapturePageActive) {
+          showPartChooser({title:`Which part is ${singer.name} recording?`});
+          partChooserThen=()=>{const state=captureSettingsState(); applySettingsState({...state,...window.MeleteStation.guideMix(mixerParts,practiceMixerIndex(),window.MeletePracticeMix.stationDefault(),sequence.practiceRoles),
+            reference:state.reference && {...state.reference,enabled:false}});};
+        }
+      }
+      return true;
+    },
+  };
 
   function performScopedReset(label, mutate, beforeOverride = null) {
     const before = beforeOverride ? cloneSettingsState(beforeOverride) : captureSettingsState();
@@ -2360,13 +2476,14 @@
     }, true);
   }
 
-  function attachHoldReset(button, activate, reset, label) {
+  function attachHoldReset(button, activate, reset, label, {contextReset = false, isolate = false} = {}) {
     let gesture = null;
     let timer = 0;
     let feedback = 0;
     let suppressClick = false;
     button.classList.add("hold-reset");
-    button.setAttribute("aria-description", `Hold or press Delete to clear ${label}`);
+    let suppressTouchContextUntil = 0;
+    button.setAttribute("aria-description", isolate ? "Hold or Shift+Enter to isolate; repeat to hear everyone" : `Hold or press Delete to clear ${label}`);
     const clearTimers = () => {
       window.clearTimeout(timer);
       window.clearTimeout(feedback);
@@ -2384,11 +2501,13 @@
       if (event.button !== 0 || button.disabled) return;
       if (gesture) { cancel(); return; }
       suppressClick = false;
-      gesture = { id: event.pointerId, x: event.clientX, y: event.clientY };
+      gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, pointerType: event.pointerType };
       button.setPointerCapture(event.pointerId);
       feedback = window.setTimeout(() => button.classList.add("is-holding"), 250);
       timer = window.setTimeout(() => {
         suppressClick = true;
+        if (gesture) gesture.didReset = true;
+        if (gesture?.pointerType === "touch") suppressTouchContextUntil = Date.now() + 1500;
         clearTimers();
         reset();
       }, 600);
@@ -2404,7 +2523,14 @@
     });
     button.addEventListener("pointercancel", cancel);
     button.addEventListener("lostpointercapture", cancel);
-    button.addEventListener("contextmenu", (event) => { event.preventDefault(); cancel(); });
+    button.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      if (contextReset && Date.now() < suppressTouchContextUntil) return;
+      const resetAlready = gesture?.didReset;
+      if (gesture?.pointerType === "touch" || event.pointerType === "touch") suppressTouchContextUntil = Date.now() + 1500;
+      cancel();
+      if (contextReset && !resetAlready) reset();
+    });
     window.addEventListener("blur", cancel);
     button.addEventListener("click", (event) => {
       if (suppressClick) { suppressClick = false; event.preventDefault(); return; }
@@ -2412,7 +2538,7 @@
     });
     button.addEventListener("keydown", (event) => {
       if (event.key === "Enter") suppressClick = false;
-      if (!["Backspace", "Delete"].includes(event.key)) return;
+      if (isolate ? !(event.key === "Enter" && event.shiftKey) : !["Backspace", "Delete"].includes(event.key)) return;
       event.preventDefault();
       event.stopPropagation();
       cancel();
@@ -2424,7 +2550,9 @@
     const resetAllParts = (state, defaults) => {
       state.practiceDivisi = parts.map(() => null);
       state.visible = parts.map(() => true);
-      state.audible = parts.map(() => true);
+      // See restores per channel; visibleChannels wins over visible on apply.
+      state.visibleChannels = mixerParts.map(() => true);
+      state.audible = mixerParts.map(() => true);
       state.volumes = [...defaults.volumes];
       state.pans = [...defaults.pans];
       state.practiceMixMode = null;
@@ -2487,11 +2615,15 @@
     const defaults = preferenceDefaults();
     visibleTracks.clear();
     audibleTracks.clear();
-    parts.forEach((_, index) => { visibleTracks.add(index); audibleTracks.add(index); });
+    parts.forEach((_, index) => visibleTracks.add(index));
+    visibleChannels.clear();
+    mixerParts.forEach((_, index) => visibleChannels.add(index));
+    mixerParts.forEach((_, index) => audibleTracks.add(index));
     trackVolumes = [...defaults.volumes];
     trackPans = [...defaults.pans];
-    practicePartIndex = defaults.practicePart;
-    practiceDivisi = parts.map(() => null);
+    practicePartIndex = null;
+    practiceDivisi = normalizePracticeDivisi([]);
+    syncPracticeFromSee();
     activePracticeMix = null;
     practiceMixPartIndex = null;
     practiceMixUndo = null;
@@ -2501,6 +2633,9 @@
     loopEndTick = null;
     tempoControl.setValue(defaults.tempo, false);
     metronomeControl.setValue(defaults.metronome, false);
+    takeReverbControl.setValue(0, false);
+    takeVolumeControl.setValue(100, false);
+    engine?.takeBus?.set(0);
     verticalControl.setValue(defaults.vertical, false);
     setFlow(defaults.flow, { render: false, persist: false });
     setScoreView(defaults.scoreView, { render: false, persist: false });
@@ -2522,8 +2657,12 @@
 
   function currentPreferenceState() {
     const state = {
+      mixerChannels: 1,
+      lastGuideChannel,
       tempo: tempoControl.value(),
       metronome: metronomeControl.value(),
+      takeReverb: takeReverbControl.value(),
+      takeVolume: takeVolumeControl.value(),
       vertical: verticalControl.value(),
       horizontal: horizontalControl.value(),
       flow,
@@ -2534,7 +2673,8 @@
       practicePart: practicePartIndex,
       practiceDivisi: [...practiceDivisi],
       visible: parts.map((_, index) => visibleTracks.has(index)),
-      audible: parts.map((_, index) => audibleTracks.has(index)),
+      visibleChannels: mixerParts.map((_, index) => visibleChannels.has(index)),
+      audible: mixerParts.map((_, index) => audibleTracks.has(index)),
       volumes: [...trackVolumes],
       pans: [...trackPans],
       practiceMixMode: activePracticeMix,
@@ -2561,8 +2701,11 @@
     restoreHiddenLyrics(stored.hiddenLyrics);
     setLyricEditing(stored.lyricEditing, { persist: false });
     if (sequence.practiceRoles?.length) stored = window.MeletePracticeRoutes.extendPreferences(stored, sequence.practiceRoles, parts.length);
+    stored = window.MeleteDivisiMixer.preferences(stored, mixerParts, parts.length);
     if (TEMPO_VALUES.includes(stored.tempo)) tempoControl.setValue(stored.tempo, false);
     if (METRONOME_VALUES.includes(stored.metronome)) metronomeControl.setValue(stored.metronome, false);
+    if (Number.isFinite(stored.takeReverb)) takeReverbControl.setValue(clamp(stored.takeReverb, 0, 100), false);
+    if (Number.isFinite(stored.takeVolume)) takeVolumeControl.setValue(clamp(stored.takeVolume, 0, 200), false);
     if (VERTICAL_VALUES.includes(stored.vertical)) verticalControl.setValue(stored.vertical, false);
     if (["wrap", "continuous"].includes(stored.flow)) setFlow(stored.flow, { render: false, persist: false });
     if (["standard", "bars"].includes(stored.scoreView)) setScoreView(stored.scoreView, { render: false, persist: false });
@@ -2575,15 +2718,17 @@
       visibleTracks.clear();
       stored.visible.forEach((value, index) => { if (value) visibleTracks.add(index); });
     }
-    ensurePracticePartVisible();
-    if (Array.isArray(stored.audible) && stored.audible.length === parts.length) {
+    restoreVisibleChannels(stored);
+    if (Number.isInteger(stored.lastGuideChannel) && mixerParts[stored.lastGuideChannel]) lastGuideChannel=stored.lastGuideChannel;
+    syncPracticeFromSee();
+    if (Array.isArray(stored.audible) && stored.audible.length === mixerParts.length) {
       audibleTracks.clear();
       stored.audible.forEach((value, index) => { if (value) audibleTracks.add(index); });
     }
-    if (Array.isArray(stored.volumes) && stored.volumes.length === parts.length) {
+    if (Array.isArray(stored.volumes) && stored.volumes.length === mixerParts.length) {
       trackVolumes = stored.volumes.map((value) => nearestAllowed(clamp(Number(value) || 0, 0, VOLUME_VALUES.at(-1)), VOLUME_VALUES));
     }
-    if (Array.isArray(stored.pans) && stored.pans.length === parts.length) {
+    if (Array.isArray(stored.pans) && stored.pans.length === mixerParts.length) {
       trackPans = stored.pans.map((value) => nearestAllowed(clamp(Number(value) || 0, -100, 100), PAN_VALUES));
     }
     restoreLoopState(stored);
@@ -2670,6 +2815,8 @@
     } catch {
       // Device-local preferences are optional.
     }
+    compPanel?.playbackChanged?.();
+    if (linkedPracticeState) clearEditedLinkFields();
   }
 
   function isMobileSettingsDevice() {
@@ -2794,15 +2941,18 @@
 
   function buildPracticePartPicker() {
     practicePartPager?.destroy();
-    practicePartPager = new InfinitePager(elements.practicePart, {
-      options: parts.map((part, index) => ({
-        value: index, label: part.name, color: part.color,
-        detail: () => practiceDivisiOptions(index).find(
-          (option) => option.value === (practiceDivisi[index] ?? null))?.label,
-      })),
-      value: practicePartIndex,
-      placeholder: "Choose part",
-    });
+    practicePartPager = null;
+    elements.practicePart.hidden = conductorMode || mixerParts.length<2;
+    if (!elements.practicePart.hidden) {
+      const options=mixerParts.map((p,i)=>({label:p.short,value:i,color:p.color}))
+        .sort((a,b)=>window.MeleteTakePitch.compareParts(a.label,b.label));
+      practicePartPager=new InfinitePager(elements.practicePart,{options,value:lastGuideChannel,placeholder:"Part",onTap:()=>{
+        if (visibleChannels.size===1) return false;
+        if (lastGuideChannel===null) showPartChooser();
+        else choosePracticePart(mixerParts[lastGuideChannel].source,mixerParts[lastGuideChannel].line);
+        return true;
+      }});
+    }
     updatePracticeMixAppearance();
   }
 
@@ -2810,7 +2960,7 @@
     return parts.map((_, index) => {
       const count = partDivisi[index]?.maxLines || 1;
       const value = values?.[index];
-      return count > 1 && Number.isInteger(value) && value >= 0 && value < count ? value : null;
+      return count > 1 ? Number.isInteger(value) && value >= 0 && value < count ? value : 0 : null;
     });
   }
 
@@ -2822,57 +2972,19 @@
   }
 
   function updatePracticeDivisi() {
-    const options = practiceDivisiOptions(practicePartIndex);
-    let control = document.getElementById("practiceDivisi");
-    if (!control && partDivisi.some((part) => part.maxLines > 1)) {
-      control = document.createElement("div");
-      control.id = "practiceDivisi";
-      control.className = "practice-part-pager practice-divisi-pager";
-      control.setAttribute("role", "spinbutton");
-      control.tabIndex = 0;
-      document.querySelector(".practice-mix").append(control);
-      control.addEventListener("input", () => {
-        const part = practicePartIndex, line = practiceDivisiPager.value();
-        practicePartIndex = part;
-        practiceDivisi[part] = line;
-        updatePracticeDivisi();
-        savePreferences();
-        renderTakePanel();
-      });
-      registerResetTarget(control, "divisi playback", (state) => {
-        if (Number.isInteger(state.practicePart)) state.practiceDivisi[state.practicePart] = null;
-      }, { cancelActive: (pointerId) => practiceDivisiPager?.cancel(pointerId) });
-    }
-    if (control) {
-      const hidden = options.length === 0;
-      if (hidden && document.activeElement === control) elements.practicePart.focus();
-      control.hidden = hidden;
-      if (hidden) {
-        practiceDivisiPager?.destroy();
-        practiceDivisiPager = null;
-      } else {
-        const part = parts[practicePartIndex];
-        const selected = practiceDivisi[practicePartIndex] ?? null;
-        if (control.dataset.part !== String(practicePartIndex) || !practiceDivisiPager) {
-          practiceDivisiPager?.destroy();
-          control.dataset.part = String(practicePartIndex);
-          practiceDivisiPager = new InfinitePager(control, { options, value: selected });
-        } else practiceDivisiPager.setValue(selected);
-        control.style.setProperty("--part-color", part.color);
-        control.classList.add("has-part");
-        control.setAttribute("aria-label", `${part.name} divisi playback`);
-        control.dataset.help = `Hear all divisions or one numbered from highest to lowest in ${part.name}. Other voices and notation stay unchanged.`;
-        control.title = "Tap to advance; drag to browse.";
-      }
-    }
-    practicePartPager?.refreshLabels();
+    // Choosing a practice line never mutes its independent mixer siblings.
+    document.getElementById("practiceDivisi")?.remove();
+    practicePartPager?.setValue(practiceMixerIndex() ?? lastGuideChannel);
+    elements.practicePart.classList.toggle("is-mixed",visibleChannels.size!==1);
+    elements.practicePart.title=visibleChannels.size===1 ? "Tap to advance; drag to browse."
+      : lastGuideChannel===null ? "Choose your practice part" : "Show only "+mixerParts[lastGuideChannel].name;
     engine?.setPracticeDivisi(practicePartIndex, practiceDivisi[practicePartIndex] ?? null);
   }
 
   function practiceMixMatches(mode, partIndex = practiceMixPartIndex, { volumesOnly = false } = {}) {
     if (!["learn", "check"].includes(mode) || !Number.isInteger(partIndex) || partIndex < 0
-      || partIndex >= parts.length || (!volumesOnly && audibleTracks.size !== parts.length)) return false;
-    return parts.every((_, index) => {
+      || partIndex >= mixerParts.length || (!volumesOnly && audibleTracks.size !== mixerParts.length)) return false;
+    return mixerParts.every((_, index) => {
       const expected = mode === "check"
         ? index === partIndex ? 20 : 100
         : index === partIndex ? 100 : 20;
@@ -2882,9 +2994,9 @@
 
   function normalizePracticeMixUndo(value) {
     if (!value || typeof value !== "object"
-      || !Array.isArray(value.audible) || value.audible.length !== parts.length
+      || !Array.isArray(value.audible) || value.audible.length !== mixerParts.length
       || !value.audible.every((item) => typeof item === "boolean")
-      || !Array.isArray(value.volumes) || value.volumes.length !== parts.length
+      || !Array.isArray(value.volumes) || value.volumes.length !== mixerParts.length
       || !value.volumes.every((item) => Number.isFinite(Number(item)))) return null;
     return {
       audible: [...value.audible],
@@ -2900,7 +3012,7 @@
 
   function snapshotPracticeMix() {
     return {
-      audible: parts.map((_, index) => audibleTracks.has(index)),
+      audible: mixerParts.map((_, index) => audibleTracks.has(index)),
       volumes: [...trackVolumes],
     };
   }
@@ -2925,7 +3037,7 @@
   function updatePracticeMixAppearance() {
     updatePracticeDivisi();
     const mode = currentPracticeMix();
-    const selectedPart = Number.isInteger(practicePartIndex) ? parts[practicePartIndex] : null;
+    const selectedPart = Number.isInteger(practicePartIndex) ? mixerParts[practiceMixerIndex()] || parts[practicePartIndex] : null;
     elements.practicePart.classList.toggle("has-part", Boolean(selectedPart));
     if (selectedPart) {
       elements.practicePart.style.setProperty("--part-color", selectedPart.color);
@@ -2942,7 +3054,7 @@
       button.dataset.practiceMix = active || "normal";
       button.classList.toggle("is-mix-target", Boolean(active));
       button.dataset.help = `Drag vertically to adjust volume. Hold to ${next}. Shift+Enter does the same.`;
-      button.title = `${parts[index].name} volume. ${button.dataset.help} Right-click to reset.`;
+      button.title = `${mixerParts[index].name} volume. ${button.dataset.help} Right-click to reset.`;
     });
   }
 
@@ -2955,7 +3067,7 @@
   }
 
   function cyclePartVolumeMix(partIndex) {
-    if (!Number.isInteger(partIndex) || partIndex < 0 || partIndex >= parts.length) return;
+    if (!Number.isInteger(partIndex) || partIndex < 0 || partIndex >= mixerParts.length) return;
     const next = nextPartVolumeMix(partIndex);
     if (next !== "normal") {
       applyPracticeMix(next, { toggle: false, partIndex });
@@ -2963,7 +3075,7 @@
     }
     cancelPracticeMixSession();
     audibleTracks.clear();
-    trackVolumes = parts.map((_, index) => {
+    trackVolumes = mixerParts.map((_, index) => {
       audibleTracks.add(index);
       volumeControls[index]?.setValue(100, false);
       return 100;
@@ -2974,8 +3086,8 @@
   }
 
   function partPanIsSeparated(partIndex) {
-    return Number.isInteger(partIndex) && partIndex >= 0 && partIndex < parts.length
-      && parts.every((_, index) => trackPans[index] === (index === partIndex ? 100 : -100));
+    return Number.isInteger(partIndex) && partIndex >= 0 && partIndex < mixerParts.length
+      && mixerParts.every((_, index) => trackPans[index] === (index === partIndex ? 100 : -100));
   }
 
   function updatePanHoldAppearance() {
@@ -2983,23 +3095,23 @@
       const index = Number(button.dataset.panIndex);
       const next = partPanIsSeparated(index) ? "center all parts" : "pan this part right and all others left";
       button.dataset.help = `Drag horizontally to adjust pan. Hold to ${next}. Shift+Enter does the same.`;
-      button.title = `${parts[index].name} pan. ${button.dataset.help} Right-click to reset this part.`;
+      button.title = `${mixerParts[index].name} pan. ${button.dataset.help} Right-click to reset this part.`;
     });
   }
 
   function togglePartPanSeparation(partIndex) {
-    if (!Number.isInteger(partIndex) || partIndex < 0 || partIndex >= parts.length) return;
+    if (!Number.isInteger(partIndex) || partIndex < 0 || partIndex >= mixerParts.length) return;
     const center = partPanIsSeparated(partIndex);
-    trackPans = parts.map((_, index) => center ? 0 : index === partIndex ? 100 : -100);
+    trackPans = mixerParts.map((_, index) => center ? 0 : index === partIndex ? 100 : -100);
     panControls.forEach((control, index) => control.setValue(trackPans[index], false));
     engine?.updateMix(audibleTracks, trackVolumes, trackPans);
     updatePanHoldAppearance();
     savePreferences();
-    showToast(center ? "All parts centered" : `${parts[partIndex].name} right; other parts left`);
+    showToast(center ? "All parts centered" : `${mixerParts[partIndex].name} right; other parts left`);
   }
 
-  function applyPracticeMix(mode, { toggle = true, partIndex = practicePartIndex } = {}) {
-    if (!Number.isInteger(partIndex) || partIndex < 0 || partIndex >= parts.length) {
+  function applyPracticeMix(mode, { toggle = true, partIndex = practiceMixerIndex() } = {}) {
+    if (!Number.isInteger(partIndex) || partIndex < 0 || partIndex >= mixerParts.length) {
       (settingsSectionCollapsed("practice") ? settingsSections.get("practice").toggle : elements.practicePart).focus();
       showToast("Choose your part first");
       return;
@@ -3014,8 +3126,8 @@
     activePracticeMix = mode;
     practiceMixPartIndex = partIndex;
     audibleTracks.clear();
-    parts.forEach((_, index) => audibleTracks.add(index));
-    trackVolumes = parts.map((_, index) => {
+    mixerParts.forEach((_, index) => audibleTracks.add(index));
+    trackVolumes = mixerParts.map((_, index) => {
       const value = mode === "check"
         ? index === partIndex ? 20 : 100
         : index === partIndex ? 100 : 20;
@@ -3024,7 +3136,7 @@
     });
     updateMixerAppearance();
     savePreferences();
-    const partName = parts[partIndex].name;
+    const partName = mixerParts[partIndex].name;
     showToast(mode === "check" ? `${partName} reduced to 20%` : `${partName} emphasized; others at 20%`);
   }
 
@@ -3032,7 +3144,11 @@
     pitchCaptureWorker?.invalidate();
     pitchOctaveHistory = [];
     const mode = currentPracticeMix();
-    assignPracticePart(Number.isInteger(selected) && selected >= 0 && selected < parts.length ? selected : null);
+    const channel = mixerParts[selected];
+    if (channel) practiceDivisi[channel.source] = channel.line;
+    visibleChannels.clear();
+    if (channel) visibleChannels.add(selected);
+    syncPracticeFromSee();
     selectedScorePartIndex = null;
     if (mode && practicePartIndex !== null) {
       // Follow the new singer without replacing the pre-preset mix snapshot.
@@ -3047,36 +3163,36 @@
     renderTakePanel();
   }
 
-  // Arriving with a part, from the first-visit chooser or from a link such as
-  // #part=Alto or #part=S1&div=2, only says who is singing. Unlike the pager
-  // it never retargets a hold preset or touches See, Hear, Vol or Pan, so a
-  // returning singer's saved mix stays exactly as it was. Pitchbar view still
-  // keeps the practice part visible, and the caller says so when that shows it.
+  // A chooser or part link isolates See to identify the singer, but leaves
+  // Hear, Volume and Pan untouched, including an existing hold preset.
   function choosePracticePart(index, divisi) {
     if (!Number.isInteger(index) || index < 0 || index >= parts.length) return null;
+    explicitPracticeChoice = true;
     const revealed = scoreView === "bars" && !visibleTracks.has(index);
-    assignPracticePart(index);
     selectedScorePartIndex = null;
     if (divisi !== undefined) practiceDivisi[index] = divisi;
-    practicePartPager?.setValue(index);
+    visibleChannels.clear();
+    const channel = mixerParts.findIndex(p => p.source === index && p.line === (practiceDivisi[index] ?? null));
+    if (channel >= 0) visibleChannels.add(channel);
+    else mixerParts.forEach((p, i) => { if (p.source === index) visibleChannels.add(i); });
+    syncPracticeFromSee();
+    practicePartPager?.setValue(practiceMixerIndex());
     updateMixerAppearance();
     updateNoteActionLabel();
     savePreferences();
     renderPitchTrace();
     renderTakePanel();
-    if (scoreView === "bars") scheduleBarRender();
+    scheduleRender();
     return { revealed };
   }
 
   function practicePartLabel(index) {
     const line = practiceDivisi[index] ?? null;
-    const option = practiceDivisiOptions(index).find((candidate) => candidate.value === line);
-    return option && line !== null ? `${parts[index].name} ${option.label}` : parts[index].name;
+    return mixerParts.find(channel => channel.source === index && channel.line === line)?.name || parts[index].name;
   }
 
   function roleTraceKey(part) {
-    const role = sequence.practiceRoles?.some(role => role.part === part || role.soloist === part);
-    return pitchTraceBaseKey + (role ? `:part:${part}` : "");
+    return `${pitchTraceBaseKey}:part:${part}:line:${practiceDivisi[part] ?? "all"}`;
   }
 
   function assignPracticePart(index) {
@@ -3086,7 +3202,14 @@
     practicePartIndex = index;
     if (changed) {
       pitchTraceKey = nextKey;
-      loadPitchTrace();
+      // A new practice part starts with a clean live trace. Saved takes remain
+      // independently available through their Hear controls.
+      pitchCaptureWorker?.invalidate();
+      pitchOctaveHistory = [];
+      pitchTraceLanes.clear();
+      pitchTraceCount = 0;
+      pitchTraceDirty.clear();
+      if (takeState !== "off" || recordAudio || preparingCapture) void stopTakeRecording("", true, {discardShortTail: true});
     }
   }
 
@@ -3106,20 +3229,22 @@
     }
   }
 
-  function showPartChooser({ only = null, note = "", title = "Which part do you sing?" } = {}) {
-    if (parts.length < 2) return;
+  function showPartChooser({ only = null, channels = null, note = "", title = "Which part do you sing?" } = {}) {
+    if (mixerParts.length<2) return;
     elements.partChooserTitle.textContent = title;
-    const choices = (only || parts.map((part) => part.index)).map((index) => parts[index]);
+    const choices = [...(channels || mixerParts.filter(part => !only || only.includes(part.source)))]
+      .sort((a, b) => window.MeleteTakePitch.compareParts(a.short, b.short));
     elements.partChooserOptions.replaceChildren(...choices.map((part) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "part-chooser-option";
-      button.dataset.partIndex = String(part.index);
+      button.dataset.partIndex = String(part.source);
+      button.dataset.line = part.line === null ? "" : String(part.line);
       button.style.setProperty("--part-color", part.color);
       button.textContent = part.name;
       return button;
     }));
-    elements.partChooserNote.textContent = note || "You can change it later in settings, under Practice.";
+    elements.partChooserNote.textContent = note || "Hold a part in See to practise it.";
     elements.partChooser.hidden = false;
   }
 
@@ -3129,15 +3254,123 @@
     const hadFocus = elements.partChooser.contains(document.activeElement);
     elements.partChooser.hidden = true;
     if (hadFocus) {
-      const next = elements.settingsPanel.classList.contains("is-open") ? elements.practicePart : elements.settingsToggle;
+      const next = elements.mixer.querySelector("[data-visible-index]") || elements.settingsToggle;
       next.focus({ preventScroll: true });
     }
   }
 
   function dismissPartChooser() {
+    if (pendingMixReceipt) finishMixReceipt(false);
     rememberPartChooser("dismissed");
     hidePartChooser();
   }
+
+  let pendingMixReceipt=null;
+  const mixHost=()=>window.frameElement?.hasAttribute("data-melete-collection-player") ? window.parent : window;
+  function finishMixReceipt(applied) {
+    if (!pendingMixReceipt) return;
+    const h=mixHost().history;
+    try {h.replaceState({...h.state,meleteMix:{signature:pendingMixReceipt,applied,guide:relativeGuide}}, "");} catch {}
+    if(!applied){relativeMix=null;relativeGuide=null;}
+    pendingMixReceipt=null;
+  }
+  function applyRelativeGuide(index,{enable=false}={}) {
+    if (!relativeMix || !Number.isInteger(index) || index<0 || (!enable && relativeGuide===index)) return;
+    if(!enable && currentPracticeMix()){relativeGuide=index;return;}
+    cancelPracticeMixSession();
+    const follow=!enable && Number.isInteger(relativeGuide),old=relativeGuide,vol=[...trackVolumes],pan=[...trackPans];
+    const seats=relativeMix.layout==="choir" && window.MeletePracticeMix.project(mixerParts,index,relativeMix,sequence.practiceRoles).pans;
+    mixerParts.forEach((_,i)=>{
+      const other=i===old?index:i===index?old:i;
+      const v=follow ? ("myVol" in relativeMix || "otherVol" in relativeMix ? vol[other] : undefined) : relativeMix[i===index?"myVol":"otherVol"];
+      const p=seats ? seats[i] : follow ? ("myPan" in relativeMix || "otherPan" in relativeMix ? pan[other] : undefined) : relativeMix[i===index?"myPan":"otherPan"];
+      if(v!==undefined) {trackVolumes[i]=v;volumeControls[i]?.setValue(v,false);}
+      if(p!==undefined) {trackPans[i]=p;panControls[i]?.setValue(p,false);}
+      if(enable) audibleTracks.add(i);
+    });
+    relativeGuide=index;
+    if(follow){try{const h=mixHost().history;if(h.state?.meleteMix)h.replaceState({...h.state,meleteMix:{...h.state.meleteMix,guide:index}},"");}catch{}}
+    updateMixerAppearance();savePreferences();
+  }
+  function openMixLink(detail) {
+    const mix=window.MeletePracticeMix.read(detail);
+    if (!mix || conductorMode) return false;
+    const signature=JSON.stringify([takeSongKey(),mix]);
+    const receipt=mixHost().history.state?.meleteMix;
+    if(receipt?.signature===signature) {
+      relativeMix=receipt.applied ? mix : null; relativeGuide=receipt.guide ?? lastGuideChannel;
+      return true;
+    }
+    relativeMix=mix;relativeGuide=null;pendingMixReceipt=signature;
+    const accept=()=>{applyRelativeGuide(practiceMixerIndex(),{enable:true});finishMixReceipt(true);};
+    const named=detail.part!==undefined && (partsForLink(detail.part).length===1 || mixerParts.some(p=>partLinkKey(p.short)===partLinkKey(detail.part)));
+    if(named && applyPartLink(detail) && elements.partChooser.hidden && practiceMixerIndex()!==null) accept();
+    else if(mixerParts.length===1) {choosePracticePart(mixerParts[0].source,mixerParts[0].line);accept();}
+    else {
+      if(detail.part===undefined || !applyPartLink(detail) || elements.partChooser.hidden) showPartChooser();
+      partChooserThen=accept;
+    }
+    return true;
+  }
+  const shareDialog=document.getElementById("shareMixDialog"), shareForm=shareDialog.querySelector("form");
+  let sharingMix=null;
+  function currentShareAddress(mix=sharingMix, publishedBase) {
+    const range=engine?.hasLoop() ? loopTickRange() : null;
+    return window.MeletePracticeMix.address(mixHost().location.href,mix,
+      range && range.end!==null ? takeBoundaryLabel(range.start)+"-"+takeBoundaryLabel(range.end) : null,publishedBase);
+  }
+  async function copyRelativeLink() {
+    const address=currentShareAddress();
+    try {await navigator.clipboard.writeText(address);if(shareDialog.open)shareDialog.close();showToast("Practice link copied");}
+    catch {const field=document.getElementById("shareMixUrl");field.value=address;field.hidden=false;
+      if(!shareDialog.open)shareDialog.showModal();field.select();}
+  }
+  function sharePracticeMix() {
+    if(!/^https?:$/.test(mixHost().location.protocol)){showToast("Open the hosted player to share a practice link.");return;}
+    if(mixerParts.length===1 && lastGuideChannel===null)lastGuideChannel=0;
+    const selected=practiceMixerIndex() ?? lastGuideChannel;
+    if(selected===null || selected<0){showPartChooser({title:"Which part is your guide?"});partChooserThen=sharePracticeMix;return;}
+    const capture=window.MeletePracticeMix.fromMixer(selected,trackVolumes,trackPans);
+    if(relativeMix?.layout==="choir" && window.MeletePracticeMix.project(mixerParts,selected,relativeMix,sequence.practiceRoles).pans.every((v,i)=>v===trackPans[i])
+        && trackVolumes.every((v,i)=>i===selected || v===capture.mix.otherVol)){
+      sharingMix={layout:"choir",width:relativeMix.width,myVol:capture.mix.myVol,otherVol:capture.mix.otherVol};
+      const fieldset=document.getElementById("shareBacking");fieldset.hidden=true;fieldset.disabled=true;
+      void copyRelativeLink();return;
+    }
+    sharingMix=capture.mix;
+    const fieldset=document.getElementById("shareBacking");fieldset.hidden=capture.uniform;fieldset.disabled=capture.uniform;
+    document.getElementById("shareMixUrl").hidden=true;
+    shareForm.elements.volume.value=sharingMix.otherVol;shareForm.elements.pan.value=sharingMix.otherPan;
+    if(capture.uniform) void copyRelativeLink();else shareDialog.showModal();
+  }
+  const stationMixDialog=document.getElementById("stationMixDialog"), mixButton=document.getElementById("copyPracticeMix");
+  let stationMixEditor;
+  function setupMixLink() {
+    if (!window.MeleteStation.requested() || conductorMode || config.audition?.enabled) return;
+    mixButton.setAttribute("aria-label","Practice mix");mixButton.title="Practice mix";
+    mixButton.dataset.help="Preview a station default or copy a choir link.";
+    mixButton.setAttribute("aria-haspopup","dialog");mixButton.setAttribute("aria-controls","stationMixDialog");
+  }
+  mixButton.addEventListener("click",()=>{
+    if (!mixButton.hasAttribute("aria-haspopup")) return sharePracticeMix();
+    if (!ready || !mixerParts.length) return;
+    if(takeState!=="off") {showToast("Stop recording to preview a mix.");return;}
+    stationMixEditor ||= window.MeleteStationMixEditor.create({dialog:stationMixDialog,channels:mixerParts,
+      roles:sequence.practiceRoles,compare:window.MeleteTakePitch.compareParts,drag:createDragNumber,pan:createPanRing,thumb:syncPillThumb,
+      engine, guide:()=>practiceMixerIndex() ?? lastGuideChannel ?? 0,
+      restore:saved=>{
+        if(saved) compPanel?.refreshStationMix();
+        engine.setPracticeDivisi(practicePartIndex,practiceDivisi[practicePartIndex]);engine.updateMix(audibleTracks,trackVolumes,trackPans);
+      },
+      address:mix=>currentShareAddress(mix,config.choirShareUrl)});
+    stationMixEditor.open();
+  });
+  document.getElementById("closeShareMix").onclick=()=>shareDialog.close();
+  shareForm.onsubmit=e=>{e.preventDefault();
+    if(!document.getElementById("shareBacking").disabled){
+      sharingMix.otherVol=shareForm.elements.volume.valueAsNumber;sharingMix.otherPan=shareForm.elements.pan.valueAsNumber;
+    }
+    void copyRelativeLink();};
 
   // Later fields win, so the hash overrides a ?part= query. Song names and
   // other fields are left for whoever owns them.
@@ -3191,6 +3424,9 @@
       pendingPartLink = link;
       return true;
     }
+    const exactChannel = mixerParts.find(p => p.line !== null
+      && [p.name, p.short].some(name => partLinkKey(name) === partLinkKey(link.part)));
+    if (exactChannel) link = {...link, part: parts[exactChannel.source].name, div: String(exactChannel.line + 1)};
     if (link.part === undefined && !Number.isInteger(practicePartIndex)) return false;
     const matches = link.part === undefined ? [practicePartIndex] : partsForLink(link.part);
     if (matches.length !== 1) {
@@ -3242,7 +3478,7 @@
     const button = event.target.closest("[data-part-index]");
     if (!button) return;
     const index = Number(button.dataset.partIndex);
-    const chosen = choosePracticePart(index);
+    const chosen = choosePracticePart(index, button.dataset.line === "" ? null : Number(button.dataset.line));
     if (!chosen) return;
     const then = partChooserThen;
     rememberPartChooser("chosen");
@@ -3251,11 +3487,11 @@
     showToast(`Practising ${practicePartLabel(index)}${chosen.revealed ? " (shown in pitchbar view)" : ""}`);
     // Choosing is the natural moment to learn that holding the part's number
     // brings it forward. The tip waits for the mixer to be on screen.
-    queueShortcutTip(shortcutHints.hold("vol", index, event.detail === 0 ? "keyboard" : "touch"));
+    queueShortcutTip(shortcutHints.hold("vol", practiceMixerIndex(), event.detail === 0 ? "keyboard" : "touch"));
   });
   elements.partChooserDismiss.addEventListener("click", dismissPartChooser);
   document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || elements.partChooser.hidden || event.defaultPrevented) return;
+    if (event.key !== "Escape" || stationMixDialog.open || elements.partChooser.hidden || event.defaultPrevented) return;
     if (isTextEntryTarget(event.target) && !elements.partChooser.contains(event.target)) return;
     // Settings stay open; a second Escape reaches them.
     event.preventDefault();
@@ -3263,11 +3499,33 @@
   });
   // A collection owns its own address and forwards the part fields it found
   // there, so the parts of this song decide what the name means.
+  const linkedLoopState = () => [loopEnabled, loopStartMeasure, loopEndMeasure, loopStartTick, loopEndTick].join(":");
+  function clearEditedLinkFields() {
+    const stale = [];
+    if ("part" in linkedPracticeState && linkedPracticeState.part !== practiceMixerIndex()) {
+      delete linkedPracticeState.part;
+      stale.push("part", "div");
+    }
+    if ("loop" in linkedPracticeState && linkedPracticeState.loop !== linkedLoopState()) {
+      delete linkedPracticeState.loop;
+      stale.push("loop");
+    }
+    if (!Object.keys(linkedPracticeState).length) linkedPracticeState = null;
+    if (stale.length) document.dispatchEvent(new CustomEvent("melete:link-edited", {detail: stale}));
+  }
   document.addEventListener("melete:deep-link", (event) => {
     const detail = event.detail || {};
     const field = (value) => typeof value === "string" ? value : undefined;
-    applyPartLink({ part: field(detail.part), div: field(detail.div) });
-    applyLoopLink(field(detail.loop));
+    linkedPracticeState = null;
+    const shared = openMixLink(detail);
+    const part = shared ? detail.part!==undefined : applyPartLink({ part: field(detail.part), div: field(detail.div) });
+    const loop = applyLoopLink(field(detail.loop));
+    // A shared passage remains copyable until edited. Clearing a loop or
+    // undoing a part choice must not resurrect it the next time the page loads.
+    if (part || loop) linkedPracticeState = {
+      ...(part ? {part: practiceMixerIndex()} : {}), ...(loop ? {loop: linkedLoopState()} : {}),
+    };
+    if (detail.loop !== undefined && !loop) document.dispatchEvent(new CustomEvent("melete:link-edited", {detail:["loop"]}));
   });
   window.addEventListener("hashchange", () => {
     const link = partLinkFields(window.location.hash);
@@ -3282,28 +3540,39 @@
     }
   });
 
-  function ensurePracticePartVisible() {
-    if (scoreView === "bars" && Number.isInteger(practicePartIndex)
-      && practicePartIndex >= 0 && practicePartIndex < parts.length) visibleTracks.add(practicePartIndex);
+  function restoreVisibleChannels(state) {
+    visibleChannels.clear();
+    if (Array.isArray(state.visibleChannels) && state.visibleChannels.length === mixerParts.length) {
+      state.visibleChannels.forEach((on, i) => { if (on) visibleChannels.add(i); });
+    } else mixerParts.forEach((p, i) => {
+      if (visibleTracks.has(p.source) && (visibleTracks.size !== 1 || p.source !== state.practicePart
+        || p.line === (state.practiceDivisi?.[p.source] ?? p.line))) visibleChannels.add(i);
+    });
+  }
+
+  function syncPracticeFromSee() {
+    visibleTracks.clear();
+    for (const i of visibleChannels) visibleTracks.add(mixerParts[i].source);
+    const channel = visibleChannels.size === 1 ? mixerParts[[...visibleChannels][0]] : null;
+    if (channel) lastGuideChannel=[...visibleChannels][0];
+    if (channel) practiceDivisi[channel.source] = channel.line;
+    assignPracticePart(channel?.source ?? null);
   }
 
   function updateMixerAppearance() {
-    ensurePracticePartVisible();
     elements.mixer.querySelectorAll("[data-visible-index]").forEach((button) => {
       const index = Number(button.dataset.visibleIndex);
-      const visible = visibleTracks.has(index);
+      const visible = visibleChannels.has(index);
       button.setAttribute("aria-pressed", String(visible));
-      button.setAttribute("aria-label", `${parts[index].name} notation ${visible ? "shown" : "hidden"}`);
-      button.dataset.help = scoreView === "bars" && index === practicePartIndex
-        ? "Your practice part stays visible; hold to hide the others."
-        : `${visible ? "Hide" : "Show"} ${parts[index].name} notation.`;
+      button.setAttribute("aria-label", `${mixerParts[index].name} notation ${visible ? "shown" : "hidden"}`);
+      button.dataset.help = `${visible ? "Hide" : "Show"} ${mixerParts[index].name}; hold to practise this part.`;
     });
     elements.mixer.querySelectorAll("[data-audio-index]").forEach((button) => {
       const index = Number(button.dataset.audioIndex);
       const audible = audibleTracks.has(index);
       button.setAttribute("aria-pressed", String(audible));
-      button.setAttribute("aria-label", `${parts[index].name} audio ${audible ? "on" : "off"}`);
-      button.dataset.help = audible ? `Silence ${parts[index].name}.` : `Hear ${parts[index].name}.`;
+      button.setAttribute("aria-label", `${mixerParts[index].name} audio ${audible ? "on" : "off"}`);
+      button.dataset.help = audible ? `Silence ${mixerParts[index].name}.` : `Hear ${mixerParts[index].name}.`;
     });
     engine?.updateMix(audibleTracks, trackVolumes, trackPans);
     updatePracticeMixAppearance();
@@ -3311,20 +3580,14 @@
   }
 
   function setTrackVisibility(index, visible) {
-    if (!visible && scoreView === "bars" && index === practicePartIndex) {
-      showToast("Your practice part stays visible in pitchbar view");
-      return;
-    }
-    if (!visible && visibleTracks.size <= 1 && visibleTracks.has(index)) {
-      showToast("At least one part must remain visible");
-      return;
-    }
-    if (visible) visibleTracks.add(index);
-    else visibleTracks.delete(index);
+    if (visible) visibleChannels.add(index);
+    else visibleChannels.delete(index);
+    syncPracticeFromSee();
     updateMixerAppearance();
     updateNoteActionLabel();
     savePreferences();
     scheduleRender();
+    renderTakePanel();
   }
 
   function setTrackAudible(index, audible) {
@@ -3353,34 +3616,31 @@
   }
 
   function pressRow(row, partCount) {
-    if (aloneOnItsRow(row, partCount)) turnOnEveryPart(row, partCount);
-    else row.set(row.index, !row.on(row.index));
+    row.set(row.index, !row.on(row.index));
   }
 
   // Press a part to toggle it, hold to leave only that part on — the gesture
   // Chordus uses on its clefs. The two rows are independent: soloing what you
   // can see never changes what you can hear. Holding the last part still
-  // standing puts the others back, and so does a plain press on it, since a
-  // row with nothing left on is never what anyone wants; that also gives the
-  // hold a one-press way out. Dragging across the Hear row still paints it.
+  // standing puts the others back. A plain press can turn the last part off.
+  // Dragging across the Hear row still paints it.
   function attachMixerGestures() {
     const rowAt = (cell) => {
       if (cell?.dataset.visibleIndex !== undefined) {
-        return { name: "see", index: Number(cell.dataset.visibleIndex), selector: "[data-visible-index]",
-          required: scoreView === "bars" ? practicePartIndex : null,
-          key: "visibleIndex", on: (part) => visibleTracks.has(part), set: setTrackVisibility, paints: false };
+        return { name: "see", count: mixerParts.length, index: Number(cell.dataset.visibleIndex), selector: "[data-visible-index]",
+          key: "visibleIndex", on: (part) => visibleChannels.has(part), set: setTrackVisibility, paints: false };
       }
       if (cell?.dataset.audioIndex !== undefined) {
-        return { name: "hear", index: Number(cell.dataset.audioIndex), selector: "[data-audio-index]",
+        return { name: "hear", count: mixerParts.length, index: Number(cell.dataset.audioIndex), selector: "[data-audio-index]",
           key: "audioIndex", on: (part) => audibleTracks.has(part), set: setTrackAudible, paints: true };
       }
       return null;
     };
     const press = (row, input) => {
-      const before = parts.map((_, index) => row.on(index));
-      pressRow(row, parts.length);
+      const before = Array.from({length: row.count}, (_, index) => row.on(index));
+      pressRow(row, row.count);
       queueShortcutTip(shortcutHints.toggle(row.name, row.index, before,
-        parts.map((_, index) => row.on(index)), input));
+        Array.from({length: row.count}, (_, index) => row.on(index)), input));
     };
     let gesture = null;
     const clear = () => {
@@ -3402,7 +3662,8 @@
         if (!gesture) return;
         gesture.held = true;
         learnShortcut("isolate");
-        soloRow(gesture.row, parts.length);
+        soloRow(gesture.row, gesture.row.count);
+        if(gesture.row.name==="see" && visibleChannels.size===1) applyRelativeGuide(practiceMixerIndex());
       }, MIXER_SOLO_HOLD_MS);
       event.preventDefault();
     });
@@ -3440,7 +3701,8 @@
       if (!row) return;
       if (event.shiftKey) {
         learnShortcut("isolate");
-        soloRow(row, parts.length);
+        soloRow(row, row.count);
+        if(row.name==="see" && visibleChannels.size===1) applyRelativeGuide(practiceMixerIndex());
       } else press(row, "keyboard");
     });
   }
@@ -3502,21 +3764,24 @@
   function buildMixer() {
     elements.mixer.innerHTML = "";
     elements.mixer.removeAttribute("aria-busy");
-    elements.mixer.style.setProperty("--part-count", String(parts.length + (referencePlayer ? 1 : 0)));
+    elements.mixer.style.setProperty("--part-count", String(mixerParts.length + (referencePlayer ? 1 : 0)));
     volumeControls.length = 0;
     panControls.length = 0;
+    const ordered = mixerParts.map((part, index) => ({part, index}))
+      .sort((a, b) => window.MeleteTakePitch.compareParts(a.part.short, b.part.short));
 
-    appendMixerLabel("See", (state) => { state.visible = parts.map(() => true); });
-    parts.forEach((part, index) => {
+    appendMixerLabel("See", (state) => { state.visibleChannels = mixerParts.map(() => true); });
+    ordered.forEach(({part, index}) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "part-heading";
+      button.classList.toggle("long-part-label",part.short.length>5);
       button.style.setProperty("--part-color", part.color);
       button.dataset.visibleIndex = String(index);
       button.textContent = part.short;
       button.setAttribute("aria-label", `${part.name} notation`);
       button.dataset.help = `Show ${part.name}; hold for only this part.`;
-      registerResetTarget(button, `${part.name} notation`, (state) => { state.visible[index] = true; },
+      registerResetTarget(button, `${part.name} notation`, (state) => { state.visibleChannels[index] = true; },
         { holdToReset: false });
       elements.mixer.append(button);
     });
@@ -3524,11 +3789,11 @@
     referencePlayer?.mount('See', elements.mixer);
 
     appendMixerLabel("Hear", (state) => {
-      state.audible = parts.map(() => true);
+      state.audible = mixerParts.map(() => true);
       state.practiceMixMode = null;
       state.practiceMixUndo = null;
     });
-    parts.forEach((part, index) => {
+    ordered.forEach(({part, index}) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "matrix-cell";
@@ -3554,7 +3819,7 @@
     volumeLabel.classList.add("is-group-drag");
     volumeLabel.dataset.help = "Drag vertically to change every part.";
     volumeLabel.setAttribute("aria-label", "All part volumes");
-    parts.forEach((part, index) => {
+    ordered.forEach(({part, index}) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "drag-number";
@@ -3592,7 +3857,7 @@
         state.practiceMixMode = null;
         state.practiceMixUndo = null;
       }, { holdToReset: false });
-      volumeControls.push(control);
+      volumeControls[index] = control;
     });
     attachGroupDrag(volumeLabel, volumeControls, VOLUME_VALUES, 4, { clampIndividually: true });
     referencePlayer?.mount('Vol', elements.mixer);
@@ -3601,7 +3866,7 @@
     panLabel.classList.add("is-group-drag", "is-horizontal");
     panLabel.dataset.help = "Drag horizontally to pan every part.";
     panLabel.setAttribute("aria-label", "All part pans");
-    parts.forEach((part, index) => {
+    ordered.forEach(({part, index}) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "pan-ring";
@@ -3639,7 +3904,7 @@
       });
       registerResetTarget(button, `${part.name} pan`, (state, defaults) => { state.pans[index] = defaults.pans[index]; },
         { holdToReset: false });
-      panControls.push(control);
+      panControls[index] = control;
     });
     // Same feel as a pan dial's own drag, which also steps every four pixels.
     attachGroupDrag(panLabel, panControls, PAN_VALUES, 4, { horizontal: true, clampIndividually: true });
@@ -4186,11 +4451,11 @@
   function applyScoreScrubTarget(target) {
     if (!target || !engine || !ready) return;
     cancelVerticalFollowAnimation(true);
-    const rawTick = clamp(Math.round(Number(target.tick) || 0), 0, latestSeekTick());
+    const rawTick = clamp(Math.round(Number(target.tick) || 0), pitchTraceOriginTick(), latestSeekTick());
     const requestedTick = target.exactTick ? rawTick : clamp(snapTickToEighth(
       rawTick,
       Number.isFinite(target.snapStartTick) ? target.snapStartTick : 0,
-    ), 0, latestSeekTick());
+    ), pitchTraceOriginTick(), latestSeekTick());
     if (Number.isInteger(target.partIndex) && visibleTracks.has(target.partIndex)) {
       selectedScorePartIndex = target.partIndex;
       elements.score.dataset.selectedPart = String(selectedScorePartIndex);
@@ -4198,7 +4463,7 @@
     }
     // An explicit seek cancels AlphaTab's old cursor transition. A raw audio
     // clock jump looks like continuous playback, especially into the next bar.
-    api.tickPosition = requestedTick;
+    seekPlaybackTick(requestedTick);
     selectedScoreTick = engine.tickAtSeconds(engine.currentSeconds());
     playbackDetached = false;
     hidePlaybackReturn();
@@ -4927,15 +5192,15 @@
     elements.loopControls.classList.toggle("has-partial-loop", hasStart && !hasEnd);
     elements.loopControls.classList.toggle("has-complete-loop", hasEnd);
     elements.loopControls.classList.toggle("is-loop-disabled", hasEnd && !loopEnabled);
-    elements.loopToggle.disabled = !hasEnd;
+    elements.loopToggle.disabled = !sequence?.measures?.length;
     elements.loopToggle.setAttribute("aria-pressed", String(hasEnd && loopEnabled));
     elements.loopToggle.setAttribute("aria-label", hasEnd && loopEnabled ? "Disable loop; keep endpoints" : "Enable loop");
 
-    if (hasEnd) {
+    if (hasEnd && engine) {
       const { start, end } = loopTickRange();
       engine?.setLoop(loopEnabled ? start : null, loopEnabled ? end : null);
-      const left = clamp((start / sequence.endTick) * 100, 0, 100);
-      const right = clamp((end / sequence.endTick) * 100, left, 100);
+      const left = timelineFraction(engine.secondsAtTick(start)) * 100;
+      const right = timelineFraction(engine.secondsAtTick(end)) * 100;
       elements.loopBand.style.left = `${left}%`;
       elements.loopBand.style.width = `${right - left}%`;
       elements.loopBand.classList.add("is-active");
@@ -4979,8 +5244,13 @@
   }
 
   function toggleLoop() {
-    if (!Number.isInteger(loopEndMeasure)) return;
-    loopEnabled = !loopEnabled;
+    if (!sequence?.measures?.length) return;
+    if (!Number.isInteger(loopEndMeasure)) {
+      loopStartMeasure = 0;
+      loopEndMeasure = sequence.measures.length - 1;
+      loopStartTick = loopEndTick = null;
+      loopEnabled = true;
+    } else loopEnabled = !loopEnabled;
     updateLoopState({ persist: true });
   }
 
@@ -5005,6 +5275,7 @@
       .filter((chapter) => Number.isFinite(chapter.tick) && chapter.tick >= 0 && chapter.tick < sequence.endTick)
       .filter((chapter, index, all) => index === 0 || chapter.tick > all[index - 1].tick);
     const chapters = listed[0]?.tick === 0 ? listed : [{ tick: 0, label: "Start" }, ...listed];
+    chapters.unshift({tick: pitchTraceOriginTick(), label: "Lead-in"});
     const chapterTimes = chapters.map((chapter) => engine.secondsAtTick(chapter.tick) * 1000);
     const durationMilliseconds = engine.duration * 1000;
     chapterSeekMilliseconds = [...new Set([
@@ -5025,7 +5296,8 @@
 
   function snapSeekMilliseconds(milliseconds) {
     const maximum = Number(elements.seek.max) || Math.round((engine?.duration || 0) * 1000) || 1;
-    const value = clamp(Number(milliseconds) || 0, 0, maximum);
+    const value = clamp(Number(milliseconds) || 0, Number(elements.seek.min) || 0, maximum);
+    if (value < 0) return value;
     // Every snap point attracts anything within a measure of it, so leaving the
     // end of the piece in would swallow the whole final bar and there would be
     // no way to place the playhead inside it. It is not a section to practise
@@ -5070,7 +5342,13 @@
   }
 
   function seekTickFor(milliseconds) {
-    return clamp(Math.round(engine.tickAtSeconds(Number(milliseconds) / 1000)), 0, latestSeekTick());
+    return clamp(Math.round(engine.tickAtSeconds(Number(milliseconds) / 1000)), pitchTraceOriginTick(), latestSeekTick());
+  }
+
+  function seekPlaybackTick(tick) {
+    // AlphaTab owns only the printed score; our audio clock also owns its lead-in.
+    api.tickPosition = Math.max(0, tick);
+    if (tick < 0) engine.seek(engine.secondsAtTick(tick));
   }
 
   function restorePlaybackPosition(milliseconds) {
@@ -5078,7 +5356,7 @@
     // Collection restoration is an exact location, not a chapter-scrubbing gesture.
     initialLoopRestored = true;
     pendingLoopRevealTick = null;
-    api.tickPosition = seekTickFor(milliseconds);
+    seekPlaybackTick(seekTickFor(milliseconds));
     return true;
   }
 
@@ -5109,7 +5387,7 @@
     elements.scrubLabel.hidden = false;
     const rail = elements.timelineRail.getBoundingClientRect();
     const thumb = parseFloat(getComputedStyle(elements.timelineRail).getPropertyValue("--seek-thumb-size")) || 16;
-    const fraction = clamp(milliseconds / (Number(elements.seek.max) || 1), 0, 1);
+    const fraction = timelineFraction(milliseconds / 1000);
     const x = rail.left + thumb / 2 + (rail.width - thumb) * fraction;
     const box = elements.scrubLabel.getBoundingClientRect();
     elements.scrubLabel.style.left = `${clamp(x - box.width / 2, 8, Math.max(8, window.innerWidth - box.width - 8))}px`;
@@ -5128,7 +5406,7 @@
     updateSeekAppearance(value);
     if (updateScore && ready && engine && api) {
       cancelVerticalFollowAnimation(true);
-      api.tickPosition = seekTickFor(value);
+      seekPlaybackTick(seekTickFor(value));
     }
     return value;
   }
@@ -5157,6 +5435,7 @@
       this.practiceRoles = data.practiceRoles || [];
       this.division = data.division;
       this.endTick = data.endTick;
+      this.leadInTicks = -clamp(Number(config.recordingCountInBeats) || 4, 1, 16) * this.division * 4 / (data.measures?.[0]?.[3] || 4);
       this.tempoSegments = this.buildTempoSegments(data.tempos || []);
       this.duration = this.secondsAtTick(this.endTick);
       const raw = data.notes.map(([track, startTick, endTick, key, velocity]) => ({
@@ -5252,18 +5531,33 @@
       return segment.tick + ((seconds - segment.seconds) * segment.bpm * this.division) / 60;
     }
 
+    static measurePulses([start,duration,n=4,d=4], division, groups) {
+      const group=groups?.[`${n}/${d}`];
+      const grouped=Array.isArray(group) && group.every(v=>Number.isInteger(v) && v>0) && group.reduce((a,b)=>a+b,0)===n;
+      const accents=new Set([0]);
+      if (grouped) { let at=0; for (const size of group) { accents.add(at); at+=size; } }
+      const stride=!grouped && d>=8 && n>3 && n%3===0 ? 3 : 1;
+      const pulses=[];
+      for (let beat=0;beat<n;beat+=stride) {
+        const offset=beat*division*4/d;
+        if (offset>=duration) break;
+        const downbeat=beat===0, accent=accents.has(beat);
+        const middle=grouped ? accent : n%2===0 && offset===duration/2;
+        pulses.push({tick:start+offset,downbeat,accent,level:downbeat ? 0 : middle ? 1 : 2});
+      }
+      return pulses;
+    }
+
     buildMetronomeEvents(measures) {
       const events = [];
-      measures.forEach(([startTick, duration, numerator, denominator]) => {
-        let count = Number(numerator) || 4;
-        let beatTicks = (this.division * 4) / (Number(denominator) || 4);
-        if (count > 3 && count % 3 === 0 && Number(denominator) === 8) {
-          count /= 3;
-          beatTicks *= 3;
-        }
-        for (let beat = 0; beat < count; beat += 1) {
-          const tick = Math.min(Number(startTick) + Number(duration), Number(startTick) + beat * beatTicks);
-          events.push({ tick, time: this.secondsAtTick(tick), downbeat: beat === 0 });
+      const beatTicks = this.division * 4 / (measures[0]?.[3] || 4);
+      for (let beat = Math.round(-this.leadInTicks / beatTicks); beat > 0; beat--) {
+        const tick = -beat * beatTicks;
+        events.push({tick, time: this.secondsAtTick(tick), downbeat: false});
+      }
+      measures.forEach(measure => {
+        for (const pulse of GuideEngine.measurePulses(measure,this.division,config.beatGroups)) {
+          events.push({...pulse,time:this.secondsAtTick(pulse.tick)});
         }
       });
       return events.sort((left, right) => left.time - right.time);
@@ -5318,9 +5612,11 @@
       limiter.ratio.value = 20;
       limiter.attack.value = 0.001;
       limiter.release.value = 0.08;
-      this.master.connect(this.transition).connect(compressor).connect(limiter).connect(this.context.destination);
+      // MIDI retains its mix compressor. Fixed-gain recordings bypass it so
+      // their phrasing is not flattened; the final limiter is a safety net.
+      this.master.connect(compressor).connect(this.transition).connect(limiter).connect(this.context.destination);
 
-      this.trackStrips = parts.map(() => {
+      this.trackStrips = mixerParts.map(() => {
         const gain = this.context.createGain();
         const panner = typeof this.context.createStereoPanner === "function" ? this.context.createStereoPanner() : null;
         if (panner) gain.connect(panner).connect(this.master);
@@ -5392,7 +5688,8 @@
         await this.prepareAudio();
         if (request === this.transportRequest) {
           this.allowLoopLeadIn = allowLoopLeadIn;
-          this.recordingLeadIn = recordingLeadIn;
+          this.recordingLeadIn = Number.isFinite(recordingLeadIn) ? recordingLeadIn
+            : this.basePosition < 0 ? this.basePosition : null;
           if (this.basePosition >= this.duration - 0.005) this.api.tickPosition = 0;
           this.api.play();
         }
@@ -5431,7 +5728,7 @@
         const leadIn = this.recordingLeadIn;
         this.recordingLeadIn = null;
         if (Number.isFinite(leadIn)) this.basePosition = leadIn;
-        else if (this.basePosition <= 0.002 || this.basePosition >= this.duration - 0.005) this.basePosition = 0;
+        else if (Math.abs(this.basePosition) <= 0.002 || this.basePosition >= this.duration - 0.005) this.basePosition = 0;
         // Ordinary loop playback parks inside the loop. An explicit recording
         // start preserves the singer's position, including manual preparation.
         if (this.hasLoop() && !this.withinLoop(this.basePosition)
@@ -5484,7 +5781,7 @@
       // out there is how the loop's end gets moved further out. Playback only
       // wraps once it has been inside the loop, so landing beyond it plays on
       // instead of snapping straight back.
-      const requested = clamp(seconds, 0, this.duration);
+      const requested = clamp(seconds, this.secondsAtTick(this.leadInTicks), this.duration);
       if (Math.abs(requested - this.currentSeconds()) > 0.02) this.onTransportChange?.("seek");
       this.basePosition = requested;
       this.loopArmed = this.withinLoop(requested);
@@ -5500,6 +5797,7 @@
       this.onTransportChange?.("rate");
       this.basePosition = this.currentSeconds();
       this.rate = next;
+      this.balanceTakeLayers();
       if (this.context) this.anchorTime = this.context.currentTime;
       if (this.playing && this.context && this.transition) {
         const now = this.context.currentTime;
@@ -5520,13 +5818,13 @@
     }
 
     setPracticeDivisi(track, line) {
-      const key = (Number.isInteger(track) && Number.isInteger(line) ? `${track}:${line}` : "all")
-        + (this.practiceRoles.length ? `:role:${track}` : "");
+      const key = this.practiceRoles.length ? `role:${track}` : "mixer";
       if (this.divisiPlaybackKey === key) return;
       this.divisiPlaybackKey = key;
       const routed = this.practiceRoles.length ? window.MeletePracticeRoutes.playbackNotes(this.notes, this.practiceRoles, track,
         tick => this.secondsAtTick(tick)) : this.notes;
-      this.playbackNotes = divisiPlaybackNotes(routed, track, line, (tick) => this.secondsAtTick(tick));
+      this.playbackNotes = window.MeleteDivisiMixer.route(routed, mixerParts,
+        (notes, part, selectedLine) => divisiPlaybackNotes(notes, part, selectedLine, tick => this.secondsAtTick(tick)));
       if (this.playing && this.context) {
         this.basePosition = this.currentSeconds();
         this.anchorTime = this.context.currentTime;
@@ -5628,8 +5926,7 @@
       }
     }
 
-    scheduleNote(note, position, minimumLead) {
-      const limit = this.playbackEndSeconds(position);
+    scheduleNote(note, position, minimumLead, limit = this.playbackEndSeconds(position), voices = this.scheduled) {
       if (!this.context || note.end <= position || note.start >= limit) return;
       const noteStart = Math.max(note.start, position);
       const noteEnd = Math.min(note.end, limit);
@@ -5673,11 +5970,17 @@
         this.sustainPhrase(envelope.gain, note, sustainAt, releaseStart, end, n => levelFor(n) * 0.88);
       } else envelope.gain.setValueAtTime(level * 0.88, releaseStart);
       envelope.gain.exponentialRampToValueAtTime(0.0001, end);
-      oscillator.connect(filter).connect(envelope).connect(this.trackStrips[note.track]?.gain || this.master);
+      oscillator.connect(filter).connect(envelope);
+      if (note.mixChannels?.length) {
+        const split = this.context.createGain();
+        split.gain.value = 1 / note.mixChannels.length;
+        envelope.connect(split);
+        note.mixChannels.forEach(index => split.connect(this.trackStrips[index]?.gain || this.master));
+      } else envelope.connect(this.trackStrips[note.track]?.gain || this.master);
 
       const voice = { oscillator, vibrato, envelope };
-      this.scheduled.add(voice);
-      oscillator.addEventListener("ended", () => this.scheduled.delete(voice), { once: true });
+      voices.add(voice);
+      oscillator.addEventListener("ended", () => voices.delete(voice), { once: true });
       vibrato.start(start);
       oscillator.start(start);
       vibrato.stop(end + 0.01);
@@ -5736,9 +6039,10 @@
       // down to silence would otherwise have nothing to listen to, so that one
       // goes straight to the master instead. Full chords bypass vocal levels
       // and mutes while retaining pan, without changing the saved practice mix.
-      const strip = this.trackStrips[track]?.gain;
+      const channel = mixerParts.findIndex(p => p.source === track && (track !== practicePartIndex || p.line === practiceDivisi[track]));
+      const strip = this.trackStrips[channel]?.gain;
       oscillator.connect(filter).connect(envelope)
-        .connect(fullChord ? this.trackStrips[track]?.panner || this.master
+        .connect(fullChord ? this.trackStrips[channel]?.panner || this.master
           : strip && strip.gain.value > 0.0005 ? strip : this.master);
 
       const voice = { oscillator, vibrato, envelope };
@@ -5781,23 +6085,18 @@
     scheduleClick(click, position, minimumLead) {
       if (!this.context || click.time < position - 0.002) return;
       const start = this.context.currentTime + Math.max(minimumLead, (click.time - position) / this.rate);
-      const duration = click.downbeat ? 0.052 : 0.036;
       const oscillator = this.context.createOscillator();
       oscillator.type = "triangle";
-      const pitch = click.downbeat ? 1550 : 940;
-      oscillator.frequency.setValueAtTime(pitch, start);
-      oscillator.frequency.exponentialRampToValueAtTime(pitch * 0.58, start + duration);
-      const band = this.context.createBiquadFilter();
-      band.type = "bandpass";
-      band.frequency.value = pitch;
-      band.Q.value = 1.1;
+      // Same short, fixed-pitch click as Solstice Auditions; no pitch sweep.
+      oscillator.frequency.value = click.downbeat || click.accent ? 1320 : 880;
       const envelope = this.context.createGain();
-      const level = this.metronomeVolume * (click.downbeat ? 0.20 : 0.13);
-      envelope.gain.setValueAtTime(Math.max(0.0001, level), start);
-      envelope.gain.exponentialRampToValueAtTime(0.0001, start + duration);
-      oscillator.connect(band).connect(envelope).connect(this.master);
+      envelope.gain.setValueAtTime(0.0001, start);
+      envelope.gain.exponentialRampToValueAtTime(Math.max(0.0001, this.metronomeVolume * 0.16), start + 0.003);
+      envelope.gain.exponentialRampToValueAtTime(0.0001, start + 0.045);
+      oscillator.connect(envelope).connect(this.master);
+      oscillator.onended = () => { oscillator.disconnect(); envelope.disconnect(); };
       oscillator.start(start);
-      oscillator.stop(start + duration + 0.005);
+      oscillator.stop(start + 0.05);
     }
 
     setTakeReview(review) {
@@ -5811,19 +6110,20 @@
 
     get takeReviewSource() { return this.takeReview && this.takeLayers.get(this.takeReview.id)?.source || null; }
 
-    addTakeLayer(review, pin = false) {
+    addTakeLayer(review, pin = false, deferMix = false) {
       if (pin) this.pinnedTakeIds.add(review.id);
       const layers = review.reference ? this.referenceLayers : this.takeLayers;
       if (layers.has(review.id)) return;
       review.gain = this.context.createGain();
-      review.playbackGain ??= window.MeleteRecording.takePlaybackGain(
-        review.buffer.getChannelData(0), review.buffer.sampleRate);
-      review.gain.gain.value = review.playbackGain;
+      review.gain.gain.value = review.reference ? (review.playbackGain || 1) : (review.loudness?.gain || 0);
       if (review.reference) {
         review.panner = this.context.createStereoPanner();
         review.panner.pan.value = review.pan || 0;
         review.gain.connect(review.panner).connect(this.master);
-      } else review.gain.connect(this.master);
+      } else {
+        this.takeBus ||= window.MeleteTakeMix.bus(this.context, this.transition, takeReverbControl.value(), takeVolumeControl.value());
+        review.gain.connect(this.takeBus.input);
+      }
       // Native media playback provides pitch-preserving stretch when the current
       // practice speed differs. Matching-speed takes retain the sample-clock path.
       review.audio = new Audio();
@@ -5836,7 +6136,10 @@
       layers.set(review.id, review);
       review.octave = review.reference ? 0 : takeOctave(review.id);
       if (review.octave || review.reference) this.prepareTakeStretch(review);
-      this.scheduleTakeReview(SCHEDULER_LEAD_SECONDS);
+      if (!deferMix) {
+        if (!review.reference) this.balanceTakeLayers();
+        this.scheduleTakeReview(SCHEDULER_LEAD_SECONDS);
+      }
     }
 
     setTakeOctave(id, octave) {
@@ -5846,6 +6149,7 @@
       review.octave = octave;
       review.stretchFailed = false;
       if (octave) this.prepareTakeStretch(review);
+      this.balanceTakeLayers();
       this.scheduleTakeReview(SCHEDULER_LEAD_SECONDS);
     }
 
@@ -5863,7 +6167,7 @@
       }).finally(() => { review.stretchPending = false; updateTakePreview(); });
     }
 
-    removeTakeLayer(id) {
+    removeTakeLayer(id, deferMix = false) {
       const review = this.takeLayers.get(id) || this.referenceLayers?.get(id);
       this.pinnedTakeIds.delete(id);
       if (!review) return;
@@ -5879,10 +6183,52 @@
       URL.revokeObjectURL(review.url);
       this.takeLayers.delete(id);
       this.referenceLayers?.delete(id);
+      if (!review.reference && !deferMix) this.balanceTakeLayers();
+    }
+
+    updateTakeLayers(add = [], remove = []) {
+      const changed = remove.some(id => this.takeLayers.has(id)) || add.some(review => !this.takeLayers.has(review.id));
+      for (const id of remove) this.removeTakeLayer(id, true);
+      for (const review of add) this.addTakeLayer(review, true, true);
+      if (changed) {
+        this.balanceTakeLayers();
+        this.scheduleTakeReview(SCHEDULER_LEAD_SECONDS);
+      }
+    }
+
+    balanceTakeLayers() {
+      this.takeBalanceRevision = (this.takeBalanceRevision || 0) + 1;
+      if (!this.takeBus) return;
+      // Safe while the complete, actually summed mix is measured. No live
+      // envelope follower or per-phrase gain is used.
+      this.takeBus.setNormalization(1 / Math.max(1, this.takeLayers.size));
+      if (this.takeBalanceJob) return;
+      this.takeBalanceJob = (async () => {
+        let revision;
+        do {
+          revision = this.takeBalanceRevision;
+          const layers = [...this.takeLayers.values()];
+          if (!layers.length) break;
+          for (const layer of layers) {
+            layer.loudness ||= await window.MeleteTakeLoudness.track(layer.buffer);
+            if (this.takeLayers.get(layer.id) === layer) layer.gain.gain.setTargetAtTime(layer.loudness.gain, this.context.currentTime, .03);
+          }
+          if (revision !== this.takeBalanceRevision) continue;
+          const result = await window.MeleteTakeMix.prepare(layers.map(layer => ({...layer})), {
+            duration:this.duration, rate:this.rate, reverb:takeReverbControl.value(), sampleRate:this.context.sampleRate});
+          if (revision === this.takeBalanceRevision) {
+            this.takeMixLoudness = result.normalization;
+            this.takeBus.setNormalization(result.normalization.gain);
+          }
+        } while (revision !== this.takeBalanceRevision);
+      })().catch(error => {
+        for (const layer of this.takeLayers.values()) if (!layer.loudness) layer.gain.gain.setTargetAtTime(1, this.context.currentTime, .03);
+        showToast(`${error.message}. Original recordings are unchanged.`, "error");
+      }).finally(() => { this.takeBalanceJob = null; });
     }
 
     clearTakeLayers() {
-      for (const id of this.takeLayers.keys()) this.removeTakeLayer(id);
+      this.updateTakeLayers([], [...this.takeLayers.keys()]);
     }
 
     stopTakeLayerAudio(review) {
@@ -5937,7 +6283,8 @@
         // Buffered stretch compensates its own look-ahead; all layers use the
         // transport's AudioContext clock, not wall-clock timers or playbackRate pitch.
         void node.start({active: true, output: start, input: window.from,
-          rate: window.ratio, semitones: review.octave * 12});
+          rate: window.ratio, semitones: review.octave * 12,
+          formantSemitones: 0, formantCompensation: !review.reference});
         review.source = {stretch: true, endTime, stop: () => { void node.stop(); },
           disconnect: () => { node.disconnect(gate); gate.disconnect(); }};
         return;
@@ -5978,10 +6325,14 @@
 
     stopVoices(release = 0.024) {
       this.stopTakeReviewAudio();
+      this.releaseVoices(this.scheduled,release);
+    }
+
+    releaseVoices(voices, release = 0.024) {
       if (!this.context) return;
       const now = this.context.currentTime;
       const stopAt = now + release + 0.006;
-      this.scheduled.forEach(({ oscillator, vibrato, envelope }) => {
+      voices.forEach(({ oscillator, vibrato, envelope }) => {
         const gain = envelope.gain;
         if (typeof gain.cancelAndHoldAtTime === "function") gain.cancelAndHoldAtTime(now);
         else {
@@ -5993,14 +6344,14 @@
         try { oscillator.stop(stopAt); } catch {}
         try { vibrato.stop(stopAt); } catch {}
       });
-      this.scheduled.clear();
+      voices.clear();
     }
 
     pushPosition(seconds = this.currentSeconds()) {
       // AlphaTab rewinds when handed the exact end. Keep its cursor on the
       // final chord while our own clock and elapsed-time display reach the end.
       const last = this.secondsAtTick(Math.max(0, this.endTick - Math.max(1, this.division / 16)));
-      this.visualSeconds = Math.max(0, seconds);
+      this.visualSeconds = seconds;
       this.onPresentation?.(seconds);
       this.output?.updatePosition((clamp(seconds, 0, last) / this.rate) * 1000);
       if (this.playing) this.api?.customCursorHandler?.sync?.(this.api.tickPosition);
@@ -6337,8 +6688,9 @@
   }
 
   function visiblePitchNotes() {
-    return (sequence?.notes || []).filter(([track, startTick, endTick]) =>
-      visibleTracks.has(track) && endTick > startTick);
+    return (sequence?.notes || []).filter(([track, startTick, endTick, midi]) =>
+      endTick > startTick && mixerParts.some((p, i) => visibleChannels.has(i) && p.source === track
+        && (p.line === null || expectedPitchAt(startTick, p.line, track).some(note => note[3] === midi))));
   }
 
   function buildPitchSegments(rawNotes) {
@@ -6383,7 +6735,7 @@
   function pitchBarLyrics() {
     if (!Number.isInteger(practicePartIndex) || practicePartIndex < 0 || practicePartIndex >= parts.length) return [];
     const track = practicePartIndex;
-    const hidden = lyricsMode === "changes" ? sharedNotationTools.repeatedLyrics(sequence.lyrics || []) : new Set();
+    const hidden = lyricsMode === "changes" ? sharedNotationTools.repeatedLyrics(sequence.lyrics || [], sequence.notes || [], sequence.division) : new Set();
     return (sequence.lyrics || []).flatMap((lyric) => {
       if (lyric[0] !== track || hidden.has(lyric)) return [];
       const text = String(lyric[3] || "").trim();
@@ -6406,14 +6758,11 @@
   function beatTicksWithin(fromTick, toTick) {
     const ticks = [];
     for (let index = measureIndexAtTick(fromTick); index < sequence.measures.length; index += 1) {
-      const [measureStart, measureDuration, beats, beatType] = sequence.measures[index];
-      if (measureStart >= toTick) break;
-      const unit = (sequence.division * 4) / (beatType || 4);
-      const step = beatType >= 8 && beats > 3 && beats % 3 === 0 ? unit * 3 : unit;
-      const middle = measureStart + measureDuration / 2;
-      for (let tick = measureStart; tick < measureStart + measureDuration; tick += step) {
+      const measure = sequence.measures[index];
+      if (measure[0] >= toTick) break;
+      for (const {tick,level} of GuideEngine.measurePulses(measure,sequence.division,config.beatGroups)) {
         if (tick <= fromTick || tick >= toTick) continue;
-        ticks.push({ tick, level: tick === measureStart ? 0 : (beats % 2 === 0 && tick === middle ? 1 : 2) });
+        ticks.push({ tick, level });
       }
     }
     return ticks;
@@ -6511,14 +6860,14 @@
   }
 
   function pitchStripe(defs, systemIndex, tracks, cache) {
-    if (tracks.length === 1) return parts[tracks[0]]?.color || partPaint(tracks[0]);
+    if (tracks.length === 1) return mixerParts[tracks[0]].color;
     const key = tracks.join("-");
     if (cache.has(key)) return cache.get(key);
     const id = `pitch-stripe-${systemIndex}-${key}`;
     const pattern = createSvgElement("pattern", { id, width: tracks.length * 6, height: 6, patternUnits: "userSpaceOnUse" });
     tracks.forEach((track, index) => {
       const stripe = createSvgElement("rect", { x: index * 6, y: 0, width: 6, height: 6 });
-      stripe.style.fill = parts[track]?.color || partPaint(track);
+      stripe.style.fill = mixerParts[track].color;
       pattern.append(stripe);
     });
     defs.append(pattern);
@@ -6535,18 +6884,21 @@
   let pitchNoteSource = null, pitchNoteCount = 0, pitchNotesByPart = new Map();
   let restTraceSource = null;
   const restTraceReferences = new Map();
-  function pitchRestState(tick, part = practicePartIndex) {
+  function pitchRestState(tick, part = practicePartIndex, line = practiceDivisi[part] ?? null) {
+    if (tick < 0 && tick >= pitchTraceOriginTick()) return "preparation";
     if (!Number.isInteger(part) || !partDivisi[part] || !engine) return "sing";
     if (restTraceSource !== sequence.notes) { restTraceSource = sequence.notes; restTraceReferences.clear(); }
-    if (!restTraceReferences.has(part)) restTraceReferences.set(part,
-      window.MeleteTakePitch.reference({spans: partDivisi[part].spans,
+    const key = `${part}:${line}`;
+    if (!restTraceReferences.has(key)) restTraceReferences.set(key,
+      window.MeleteTakePitch.reference({spans: partDivisi[part].spans.map(span => ({...span, pitches: Number.isInteger(line)
+        ? [span.pitches[divisiLineFor(line, partDivisi[part].maxLines, span.pitches.length)]] : span.pitches})),
         secondsAtTick: t => engine.secondsAtTick(t), start: 0, end: sequence.endTick, rate: 1,
-        fingerprint: "display", part, line: null, measures: sequence.measures, division: sequence.division}));
-    const ref = restTraceReferences.get(part), seconds = engine.secondsAtTick(tick);
+        fingerprint: "display", part, line, measures: sequence.measures, division: sequence.division}));
+    const ref = restTraceReferences.get(key), seconds = engine.secondsAtTick(tick);
     if (!window.MeleteTakePitch.containsTime(ref.restPolicy.keep, seconds)) return "discard";
     return window.MeleteTakePitch.containsTime(ref.restPolicy.guards, seconds) ? "rest" : "sing";
   }
-  function expectedPitchAt(tick, line = null, part = practicePartIndex) {
+  function expectedPitchAt(tick, line = practiceDivisi[practicePartIndex] ?? null, part = practicePartIndex) {
     const mine = Number.isInteger(part);
     if (pitchNoteSource !== sequence.notes || pitchNoteCount !== sequence.notes?.length) {
       pitchNoteSource = sequence.notes; pitchNoteCount = sequence.notes?.length; pitchNotesByPart = new Map();
@@ -6579,11 +6931,16 @@
         candidates = pool.filter(([, startTick]) => startTick === nextStart);
       }
     }
+    if (mine && Number.isInteger(line) && candidates.length > 1) {
+      const pitches = [...new Set(candidates.map(n => n[3]))].sort((a, b) => b - a);
+      const wanted = pitches[divisiLineFor(line, partDivisi[part]?.maxLines || 1, pitches.length)];
+      candidates = candidates.filter(n => n[3] === wanted);
+    }
     return candidates;
   }
 
-  function expectedPitchErrorCents(tick, pitchCents, line = null, part = practicePartIndex) {
-    if (pitchRestState(tick, part) !== "sing") return null;
+  function expectedPitchErrorCents(tick, pitchCents, line = practiceDivisi[practicePartIndex] ?? null, part = practicePartIndex) {
+    if (pitchRestState(tick, part, line) !== "sing") return null;
     const candidates = expectedPitchAt(tick, line, part);
     if (!candidates.length) return null;
     return candidates.reduce((best, note) => {
@@ -6593,6 +6950,7 @@
   }
 
   function pitchTraceColor(errorCents) {
+    if (errorCents === "preparation") return "var(--muted)";
     if (!Number.isFinite(errorCents)) return "rgb(255 0 0)";
     const distance = clamp(
       (Math.abs(window.MeleteTakePitch.octaveError(errorCents)) - PITCH_TRACE_GREEN_TOLERANCE_CENTS) /
@@ -6609,11 +6967,16 @@
   }
 
   function pitchTraceBinCount() {
-    return Math.max(1, Math.ceil((Number(sequence?.endTick) || 0) / pitchTraceBinTicks()) + 1);
+    return Math.max(1, Math.ceil(((Number(sequence?.endTick) || 0) - pitchTraceOriginTick()) / pitchTraceBinTicks()) + 1);
+  }
+
+  function countInBeats() { return Math.max(1, Math.min(16, Number(config.recordingCountInBeats) || 4)); }
+  function pitchTraceOriginTick() {
+    return -countInBeats() * (Number(sequence?.division) || 1) * 4 / (sequence?.measures?.[0]?.[3] || 4);
   }
 
   function pitchTraceBinAtTick(tick, stride = 1) {
-    const bin = Math.round((Number(tick) || 0) / (pitchTraceBinTicks() * stride)) * stride;
+    const bin = Math.round(((Number(tick) || 0) - pitchTraceOriginTick()) / (pitchTraceBinTicks() * stride)) * stride;
     return clamp(bin, 0, pitchTraceBinCount() - 1);
   }
 
@@ -6642,12 +7005,11 @@
 
   const pitchTraceLaneList = () => [...pitchTraceLanes.entries()].sort(([left], [right]) => left - right);
 
-  // Which line a sung sample belongs to, decided sample by sample. Both lines
-  // of a divisi are real music, so which one is being sung is the singer's to
-  // change whenever they like — mid-note included — and each line keeps its own
-  // contour rather than the first one claiming the passage.
+  // A practice target is a fixed division, never whichever line is nearest
+  // to the sung pitch. The fallback is only for an unassigned display.
   function pitchTraceLaneAt(tick, cents, part = practicePartIndex) {
     if (!Number.isInteger(part)) return 0;
+    if (Number.isInteger(practiceDivisi[part])) return practiceDivisi[part];
     const lines = partDivisi[part]?.maxLines || 1;
     if (lines < 2) return 0;
     const span = divisiSpanAt(part, tick);
@@ -6672,7 +7034,7 @@
   }
 
   function pitchTraceTickAtBin(bin) {
-    return clamp(bin * pitchTraceBinTicks(), 0, Number(sequence?.endTick) || 0);
+    return clamp(pitchTraceOriginTick() + bin * pitchTraceBinTicks(), pitchTraceOriginTick(), Number(sequence?.endTick) || 0);
   }
 
   function resetPitchTraceGrid() {
@@ -6756,7 +7118,7 @@
 
   function staffTracePoint(system, tick, cents, line, part = practicePartIndex) {
     if (tick < system.startTick || tick >= system.endTick) return null;
-    const rest = pitchRestState(tick, part);
+    const rest = pitchRestState(tick, part, line);
     if (rest === "discard") return null;
     const measure = system.measures.get(measureIndexAtTick(tick));
     const target = expectedPitchAt(tick, line, part).filter(([track]) => measure?.parts.has(track))
@@ -6792,8 +7154,7 @@
     if (scoreView !== "standard" || notationRenderInFlight) return;
     const lookup = api?.boundsLookup || api?.renderer?.boundsLookup;
     staffTraceSystems = buildStaffTraceSystems(lookup);
-    elements.score.querySelectorAll(":scope > .score-pitch-trace").forEach((layer) => layer.remove());
-    const fragment = document.createDocumentFragment();
+    elements.score.querySelectorAll(".score-pitch-trace").forEach((layer) => layer.remove());
     staffTraceSystems.forEach((system) => {
       const { x, y, w, h } = system.box;
       const svg = createSvgElement("svg", {
@@ -6807,15 +7168,38 @@
       system.traceEdgesByBin = new Map();
       system.pointAtPitch = (tick, cents, line, part) => staffTracePoint(system, tick, cents, line, part);
       svg.append(system.traceLayer);
-      fragment.append(svg);
+      system.traceSvg = svg;
     });
-    elements.score.append(fragment);
+    mountStaffPitchTraces();
     renderPitchTrace(staffTraceSystems);
   }
 
+  function mountStaffPitchTraces() {
+    // AlphaTab attaches/recycles SVG tiles after renderFinished. Reattach the
+    // existing contour when a tile arrives; no new paths or pitch analysis.
+    if (scoreView !== "standard") return;
+    const surfaces = [...elements.score.querySelectorAll(".at-surface-svg")].map(svg => ({svg,
+      left:parseFloat(svg.parentElement.style.left) || 0, top:parseFloat(svg.parentElement.style.top) || 0,
+      height:parseFloat(svg.getAttribute("height")) || 0}));
+    for (const system of staffTraceSystems) {
+      const {x,y,w,h} = system.box, trace = system.traceSvg;
+      const surface = surfaces.find(s => y + h / 2 >= s.top - 1 && y + h / 2 <= s.top + s.height + 1);
+      if (!surface || !trace || trace.parentElement === surface.svg) continue;
+      let staff = surface.svg.querySelector(":scope > .melete-staff-lines");
+      if (!staff) {
+        staff = createSvgElement("g", {class:"melete-staff-lines"});
+        for (const line of surface.svg.querySelectorAll(':scope > rect[fill="#A5A5A5"]')) staff.append(line);
+        surface.svg.prepend(staff);
+      }
+      trace.setAttribute("x", x - surface.left); trace.setAttribute("y", y - surface.top);
+      trace.style.removeProperty("left"); trace.style.removeProperty("top");
+      staff.after(trace);
+    }
+  }
+
   function occupiedPitchBinsForSystem(lane, system) {
-    const first = clamp(Math.ceil(system.startTick / pitchTraceBinTicks()), 0, lane.pitches.length - 1);
-    const last = clamp(Math.floor(system.endTick / pitchTraceBinTicks()), first, lane.pitches.length - 1);
+    const first = clamp(Math.ceil((system.startTick - pitchTraceOriginTick()) / pitchTraceBinTicks()), 0, lane.pitches.length - 1);
+    const last = clamp(Math.floor((system.endTick - pitchTraceOriginTick()) / pitchTraceBinTicks()), first, lane.pitches.length - 1);
     const bins = [];
     for (let bin = first; bin <= last; bin += 1) {
       if (lane.pitches[bin]) bins.push(bin);
@@ -6848,6 +7232,7 @@
   }
 
   function appendPitchTraceEdge(system, line, lane, fromBin, toBin) {
+    if (!liveTraceVisible()) return;
     const key = `${line}:${fromBin}:${toBin}`;
     if (system.traceEdges?.has(key)) return;
     const fromCents = lane.pitches[fromBin];
@@ -6858,28 +7243,13 @@
     if (pitchRestState(fromTick) === "discard" || pitchRestState(toTick) === "discard") return;
     const fromSeconds = engine.secondsAtTick(fromTick);
     const toSeconds = engine.secondsAtTick(toTick);
-    // Review replaces the practice trace in this passage, including its gaps.
-    // Capture/storage continue independently; deselection reveals them again.
-    if (takeReview && (takeReview.ranges || [[takeReview.start, takeReview.end]])
-      .some(([start, end]) => fromSeconds < end && toSeconds > start)) return;
     const gap = Math.abs(toSeconds - fromSeconds);
     if (gap > PITCH_TRACE_MAX_DRAW_GAP_SECONDS || Math.abs(toCents - fromCents) > PITCH_TRACE_RENDER_JUMP_CENTS) return;
-    let from, to;
-    if (system.pointAtPitch) {
-      from = system.pointAtPitch(fromTick, fromCents, line);
-      to = system.pointAtPitch(toTick, toCents, line);
-      if (!from || !to || from.track !== to.track) return;
-    } else {
-      const startPitch = fromCents / 100;
-      const endPitch = toCents / 100;
-      if (Math.max(startPitch, endPitch) < system.minPitch - 1 || Math.min(startPitch, endPitch) > system.maxPitch + 1) return;
-      from = { x: system.xAtTick(fromTick), y: system.yAtPitch(startPitch) };
-      to = { x: system.xAtTick(toTick), y: system.yAtPitch(endPitch),
-        error: expectedPitchErrorCents(toTick, toCents, line) };
-    }
-    const { x: x1, y: y1 } = from;
-    const { x: x2, y: y2 } = to;
-    const traceColor = pitchTraceColor(to.error);
+    const startPitch = fromCents / 100, endPitch = toCents / 100;
+    if (Math.max(startPitch, endPitch) < system.minPitch - 1 || Math.min(startPitch, endPitch) > system.maxPitch + 1) return;
+    const x1 = system.xAtTick(fromTick), y1 = system.yAtPitch(startPitch);
+    const x2 = system.xAtTick(toTick), y2 = system.yAtPitch(endPitch);
+    const traceColor = toTick < 0 ? "var(--muted)" : pitchTraceColor(expectedPitchErrorCents(toTick, toCents, line));
     const edge = createSvgElement("g", {
       class: "bar-pitch-trace-edge",
       "data-line": line,
@@ -6902,35 +7272,32 @@
 
   function pitchTraceRange(startTick, endTick) {
     let min = Infinity, max = -Infinity;
-    const replaced = takeReview ? takeReview.ranges || [[takeReview.start, takeReview.end]] : [];
+    const reviews = audibleTraceReviews();
     const include = cents => {
       if (!Number.isFinite(cents)) return;
       min = Math.min(min, cents / 100); max = Math.max(max, cents / 100);
     };
-    for (const [, lane] of pitchTraceLaneList()) {
+    for (const [, lane] of liveTraceVisible() ? pitchTraceLaneList() : []) {
       for (const bin of occupiedPitchBinsForSystem(lane, {startTick, endTick})) {
         if (pitchRestState(pitchTraceTickAtBin(bin)) === "discard") continue;
-        const seconds = engine.secondsAtTick(pitchTraceTickAtBin(bin));
-        if (replaced.some(([from, to]) => seconds >= from && seconds < to)) continue;
         include(lane.pitches[bin]);
       }
     }
-    if (takeReview) {
-      const [from, to] = window.MeleteTakeRender.frameRange(takeReview.frames,
-        (engine.secondsAtTick(startTick) - takeReview.start) / takeReview.rate,
-        (engine.secondsAtTick(endTick) - takeReview.start) / takeReview.rate);
-      for (let index = from; index < to; index++) include(takeReview.frames[index].cents);
+    for (const review of reviews) {
+      const [from, to] = window.MeleteTakeRender.frameRange(review.frames,
+        (engine.secondsAtTick(startTick) - review.start) / review.rate,
+        (engine.secondsAtTick(endTick) - review.start) / review.rate);
+      for (let index = from; index < to; index++) {
+        const cents = review.frames[index].cents;
+        if (Number.isFinite(cents)) include(cents + (review.octave || 0) * 1200);
+      }
     }
     return {min, max};
   }
 
-  function renderPitchTrace(systems = [...barSystems, ...staffTraceSystems]) {
-    if (scoreView === "bars" && barTraceResumeTimer) {
-      systems = systems.filter(system => system.pointAtPitch);
-      if (!systems.length) return;
-    }
+  function renderPitchTrace(systems = scoreView === "bars" ? barSystems : staffTraceSystems) {
+    if (scoreView === "bars" && barTraceResumeTimer) return;
     if (scoreView === "bars" && systems.some(system => {
-      if (system.pointAtPitch) return false;
       const range = pitchTraceRange(system.startTick, system.endTick);
       return range.min < system.minPitch || range.max > system.maxPitch;
     })) {
@@ -6938,14 +7305,14 @@
       return;
     }
     pitchTraceDirty.clear();
+    const reviews = audibleTraceReviews();
+    const ensemble = scoreView === "bars" && visibleChannels.size > 1;
     systems.forEach((system) => {
       system.traceLayer.replaceChildren();
       system.traceEdges.clear();
       system.traceEdgesByBin.clear();
-      if (takeReview) {
-        renderTakeTrace(system);
-      }
-      pitchTraceLaneList().forEach(([line, lane]) => {
+      for (const review of reviews) renderTakeTrace(system, review, !ensemble && review.id !== takeReview?.id);
+      (liveTraceVisible() ? pitchTraceLaneList() : []).forEach(([line, lane]) => {
         const bins = occupiedPitchBinsForSystem(lane, system);
         for (let index = 1; index < bins.length; index += 1) {
           appendPitchTraceEdge(system, line, lane, bins[index - 1], bins[index]);
@@ -6958,16 +7325,16 @@
   // `changed` maps a line to the bins that moved in it, so a take of one line
   // never redraws — or erases — another line's contour.
   function updatePitchTraceIncrementally(changed) {
-    if (scoreView === "bars" && barTraceResumeTimer) {
+    if (scoreView !== "bars" || barTraceResumeTimer) {
       updatePitchCaptureAppearance();
       return;
     }
-    const systems = scoreView === "bars" ? barSystems : staffTraceSystems;
+    const systems = barSystems;
     if (!changed?.size || !systems.length) {
       updatePitchCaptureAppearance();
       return;
     }
-    if (scoreView === "bars" && [...changed].some(([line, bins]) => [...bins].some(bin => {
+    if ([...changed].some(([line, bins]) => [...bins].some(bin => {
       const pitch = pitchTraceLane(line)?.pitches[bin] / 100;
       return pitch > 0 && systems.some(system => pitchTraceBinIsInSystem(system, bin)
         && (pitch < system.minPitch || pitch > system.maxPitch));
@@ -7031,7 +7398,8 @@
     cancelPitchAuditions();
     cancelScoreScrub();
     const rawNotes = visiblePitchNotes();
-    const segments = buildPitchSegments(rawNotes);
+    const segments = buildPitchSegments(mixerParts.flatMap((p,i)=>visibleChannels.has(i)
+      ? p.barNotes.map(([s,e,n])=>[i,s,e,n]) : []));
     const reattacks = buildPitchReattacks(rawNotes);
     const lyrics = pitchBarLyrics();
     const chapters = new Set(autoChapters().map((chapter) => measureIndexAtTick(chapter.tick)));
@@ -7047,7 +7415,9 @@
     const leftPad = 34;
     // Leave a gutter for the next-line pitch cues beyond the closing barline.
     const rightPad = pitchStep * 2 + 2;
-    const rows = pitchBarRows(sequence.measures, pixelsPerTick, availableWidth - leftPad - rightPad, continuous);
+    const measures = [[pitchTraceOriginTick(), -pitchTraceOriginTick(), countInBeats(), sequence.measures[0][3]], ...sequence.measures];
+    const rows = pitchBarRows(measures, pixelsPerTick, availableWidth - leftPad - rightPad, continuous);
+    rows.forEach(row => { row.first -= 1; });
     elements.barScore.classList.toggle("has-horizontal-overflow",
       rows.some((row) => row.plotWidth + leftPad + rightPad > availableWidth));
     elements.barScore.style.setProperty("--bar-measure-font-size", `${measureFontSize}px`);
@@ -7095,7 +7465,7 @@
       const svg = createSvgElement("svg", {
         viewBox: `0 0 ${viewWidth} ${viewHeight}`,
         role: "img",
-        "aria-label": `Measures ${first + 1} through ${first + rowMeasures.length}, pitch range ${pitchLabel(minPitch)} through ${pitchLabel(maxPitch)}`,
+        "aria-label": `${first < 0 ? "Count-in and measures 1" : `Measures ${first + 1}`} through ${first + rowMeasures.length}, pitch range ${pitchLabel(minPitch)} through ${pitchLabel(maxPitch)}`,
         preserveAspectRatio: "xMinYMin meet",
       });
       const defs = createSvgElement("defs");
@@ -7113,6 +7483,15 @@
       const loopRange = loopTickRange();
 
       rowMeasures.forEach((measure, offset) => {
+        if (measure[0] < 0) {
+          for (let beat = 0; beat < countInBeats(); beat++) {
+            const tick = measure[0] + beat * measure[1] / countInBeats(), x = xAtTick(tick);
+            svg.append(createSvgElement("line", {class:"bar-measure-line bar-count-in", x1:x, x2:x, y1:topPad, y2:topPad + plotHeight}));
+            const label = createSvgElement("text", {class:"bar-measure-number bar-count-in-label", x:x + 3, y:12});
+            label.textContent = String(beat + 1); svg.append(label);
+          }
+          return;
+        }
         const x = xAtTick(measure[0]);
         const number = first + offset + 1;
         svg.append(createSvgElement("line", {
@@ -7155,7 +7534,7 @@
           class: "bar-next-pitch",
           points: `${edge},${middle - pitchStep} ${edge + pitchStep * 2},${middle} ${edge},${middle + pitchStep}`,
         });
-        cue.style.fill = parts[track]?.color || partPaint(track);
+        cue.style.fill = mixerParts[track].color;
         svg.append(cue);
       });
 
@@ -7185,7 +7564,7 @@
         const note = createSvgElement("rect", {
           class: "bar-note", x, y: topPad + (maxPitch - segment.pitch) * pitchStep,
           width: Math.max(0.8, endX - x), height: pitchStep * 2,
-          'data-pitch':segment.pitch,'data-tracks':segment.tracks.join(','),
+          'data-pitch':segment.pitch,'data-tracks':[...new Set(segment.tracks.map(i=>mixerParts[i].source))].join(','),
           'data-start':segment.startTick,'data-end':segment.endTick,
         });
         note.style.fill = pitchStripe(defs, systemIndex, segment.tracks, patternCache);
@@ -7417,7 +7796,7 @@
   }
 
   function pitchCaptureSupported() {
-    return Boolean(window.isSecureContext && navigator.mediaDevices?.getUserMedia && window.Pitchy?.PitchDetector);
+    return Boolean(window.isSecureContext && window.MeleteMicrophoneCheck.mediaDevicesFor(window)?.getUserMedia && window.Pitchy?.PitchDetector);
   }
 
   function pitchCaptureEnabled() {
@@ -7425,26 +7804,35 @@
   }
 
   function updatePitchCaptureAppearance() {
-    const requesting = takeState === "requesting";
+    const requesting = takeState === "requesting" || pitchCaptureState === "requesting";
     const armed = pitchCaptureEnabled();
     const recording = ["counting", "recording"].includes(takeState);
+    const keeping=recording && captureIsAudio, rec=document.getElementById("recordAudio");
+    rec.disabled=!ready || conductorMode;
+    rec.setAttribute("aria-pressed",String(recordAudio));
+    rec.dataset.state=keeping ? "recording" : recordAudio ? "armed" : "off";
+    rec.setAttribute("aria-label",recordAudio ? "Disarm audio recording" : "Arm audio recording");
+    rec.title=rec.dataset.help=keeping ? "Saving audio and pitch. Disarm to keep only pitch."
+      : recordAudio ? "Audio armed for the next Play. Space starts or stops a pass."
+        : "Arm to save audio as well as pitch on the next Play.";
     elements.pitchCapture.disabled = !ready;
     elements.pitchCapture.setAttribute("aria-pressed", String(wantsPitchCapture));
     elements.pitchCapture.setAttribute("aria-busy", String(requesting));
     elements.pitchCapture.dataset.state = takeState === "off" && wantsPitchCapture ? "waiting" : takeState;
     elements.pitchCapture.classList.toggle("is-pending", wantsPitchCapture && !recording);
-    elements.pitchCapture.classList.toggle("is-recording", recording);
+    elements.pitchCapture.classList.toggle("is-recording", keeping);
     elements.pitchCapture.setAttribute("aria-label", requesting
       ? "Cancel microphone request"
-      : wantsPitchCapture ? "Turn off Sing and recording" : "Turn on Sing and recording");
+      : wantsPitchCapture ? "Turn off Sing" : "Turn on Sing");
     elements.pitchCapture.dataset.help = !pitchCaptureSupported()
       ? "Microphone requires HTTPS or localhost."
       : requesting ? "Waiting for microphone access."
-        : recording ? "Recording locally and tracing pitch."
-          : takeState === "stopping" ? "Saving recording locally."
-            : wantsPitchCapture ? pitchCaptureNotice || "Sing is enabled; Play records locally with pitch feedback."
-              : "Sing records locally with pitch feedback during playback. No sign-in needed.";
-    elements.pitchCapture.dataset.help += " Use headphones. Hold to clear.";
+        : recording ? (keeping ? "Saving microphone audio and pitch locally." : "Saving pitch only; no audio is kept.")
+          : takeState === "stopping" ? "Saving this pass locally."
+            : wantsPitchCapture ? pitchCaptureNotice || (recordAudio ? "Play to save audio and pitch." : "Play to save pitch feedback without audio.")
+              : "Sing arms pitch tracking. Play saves a local pitch-only trace.";
+    if (!Number.isInteger(practicePartIndex)) elements.pitchCapture.dataset.help += " Show one part in See to record; otherwise Play is playback only.";
+    elements.pitchCapture.dataset.help += " Use headphones. Hold to clear the live display.";
     elements.pitchCapture.title = elements.pitchCapture.dataset.help;
     elements.settingsToggle.classList.toggle("has-active-microphone", armed);
   }
@@ -7573,6 +7961,14 @@
   // the ones whose key named a build that no longer exists, which is every
   // trace recorded before the names carried the song's slug.
   function adoptedPitchTrace() {
+    if (pitchTraceBaseKey && pitchTraceKey.startsWith(`${pitchTraceBaseKey}:part:`)) {
+      // Pre-scope traces may mix several singers/parts. Keep them on disk,
+      // but never attach their unknown pitches to a new practice part.
+      try {
+        const value = localStorage.getItem(pitchTraceKey), saved = JSON.parse(value || "null");
+        return saved?.scope === pitchTraceKey ? value : null;
+      } catch { return null; }
+    }
     const named = storedValueFor(pitchTraceKey, legacyPitchTraceKeys);
     if (named !== null) return named;
     const wanted = pitchTraceFingerprint();
@@ -7596,63 +7992,17 @@
   function loadPitchTrace() {
     resetPitchTraceGrid();
     pitchTraceLoaded = false;
-    try {
-      const stored = JSON.parse(adoptedPitchTrace() || "null");
-      if (!stored || stored.fingerprint !== pitchTraceFingerprint()) return;
-      if (stored.version === PITCH_TRACE_STORAGE_VERSION && loadPitchTraceV3(stored)) {
-        pitchTraceLoaded = true;
-        if (stored.binTicks !== pitchTraceBinTicks()) savePitchTraceNow();
-        return;
-      }
-      if (stored.version === 2 && loadPitchTraceV2(stored)) {
-        pitchTraceLoaded = true;
-        savePitchTraceNow();
-        return;
-      }
-      if (stored.version === 1 && migratePitchTraceV1(stored)) {
-        pitchTraceLoaded = true;
-        savePitchTraceNow();
-      }
-    } catch {
-      // Pitch traces are optional device-local practice data.
-    }
+    // IndexedDB recordings own saved contours. Leave old trace-only data
+    // untouched, but never restore it as an independent display layer.
   }
 
   function savePitchTraceNow() {
     clearTimeout(pitchTraceSaveTimer);
     pitchTraceSaveTimer = 0;
-    try {
-      if (!pitchTraceCount) {
-        const saved = JSON.parse(localStorage.getItem(pitchTraceKey) || "null");
-        // An incompatible score was not loaded, not erased by the singer.
-        // Pausing or leaving that score must not delete its older trace.
-        if (!saved || (pitchTraceLoaded && saved.fingerprint === pitchTraceFingerprint())) localStorage.removeItem(pitchTraceKey);
-      }
-      else localStorage.setItem(pitchTraceKey, JSON.stringify({
-        version: PITCH_TRACE_STORAGE_VERSION,
-        fingerprint: pitchTraceFingerprint(),
-        binTicks: pitchTraceBinTicks(),
-        length: pitchTraceBinCount(),
-        lanes: pitchTraceLaneList().map(([line, lane]) => ({
-          line,
-          // Read-time cleanup is reversible: keep old detector observations
-          // on disk until an actual new recording replaces those bins.
-          pitches: bytesToBase64(new Uint8Array(window.MeleteVocalPitch.rawPitchGrid(
-            lane.pitches, lane.rawOctaves).buffer)),
-          ...(lane.rawOctaves?.size ? {octaveRepairs: [...lane.rawOctaves].filter(([bin, r]) => lane.pitches[bin] === r.after)
-            .map(([bin, r]) => [bin, r.before, r.after])} : {}),
-          breaks: bytesToBase64(packedPitchTraceBreaks(lane.breaks)),
-        })),
-      }));
-      if (pitchTraceCount) pitchTraceLoaded = true;
-    } catch {
-      showToast("Pitch contour could not be saved on this device", "error");
-    }
   }
 
   function schedulePitchTraceSave() {
-    clearTimeout(pitchTraceSaveTimer);
-    pitchTraceSaveTimer = window.setTimeout(savePitchTraceNow, PITCH_TRACE_SAVE_DELAY_MS);
+    // The PCM journal and cached take analysis own persistence.
   }
 
   function clearPitchTrace() {
@@ -7736,8 +8086,8 @@
       const lane = pitchTraceLane(line, { create: true });
       lineFrames.forEach((frame) => {
         const target = pitchTraceBinAtTick(frame.tick, frame.stride);
-        const first = clamp(Math.min(target, Math.ceil(frame.startTick / binTicks)), 0, lane.pitches.length - 1);
-        const last = clamp(Math.max(target, Math.floor(frame.endTick / binTicks)), first, lane.pitches.length - 1);
+        const first = clamp(Math.min(target, Math.ceil((frame.startTick - pitchTraceOriginTick()) / binTicks)), 0, lane.pitches.length - 1);
+        const last = clamp(Math.max(target, Math.floor((frame.endTick - pitchTraceOriginTick()) / binTicks)), first, lane.pitches.length - 1);
         for (let bin = first; bin <= last; bin += 1) {
           if (lane.pitches[bin]) pitchTraceCount -= 1;
           lane.pitches[bin] = 0;
@@ -7773,6 +8123,7 @@
   }
 
   function queuePitchTracePaint(changed) {
+    if (scoreView !== "bars") return; // Captured bins are still available on switching back to Pitchbar.
     for (const [line, bins] of changed) {
       if (!pitchTraceDirty.has(line)) pitchTraceDirty.set(line, new Set());
       for (const bin of bins) pitchTraceDirty.get(line).add(bin);
@@ -7798,7 +8149,7 @@
         cents: frame.pitchCents, frame});
       pitchOctaveHistory = pitchOctaveHistory.filter(item => seconds - item.start <= 0.5);
     }
-    const repaired = window.MeleteVocalPitch.repairOctaveIslands(pitchOctaveHistory);
+    const repaired = window.MeleteVocalPitch.cleanPitchFrames(pitchOctaveHistory);
     const updates = new Map(), removed = new Map();
     repaired.forEach((item, index) => {
       const original = pitchOctaveHistory[index];
@@ -7815,7 +8166,7 @@
       lane.pitches[bin] = 0; lane.breaks[bin] = 0; pitchTraceCount--;
       if (!removed.has(line)) removed.set(line, new Set());
       removed.get(line).add(bin);
-      updates.set(index, {...original.frame, pitchCents: item.cents,
+      if (Number.isFinite(item.cents)) updates.set(index, {...original.frame, pitchCents: item.cents,
         breakBefore: index > 0 && !Number.isFinite(pitchOctaveHistory[index - 1].cents)});
       const next = repaired[index + 1];
       if (Number.isFinite(next?.cents)) {
@@ -7828,7 +8179,7 @@
         }
       }
     });
-    if (!updates.size) return;
+    if (!updates.size && !removed.size) return;
     queuePitchTracePaint(removed);
     replacePitchTraceWindows([...updates].sort(([a], [b]) => a - b).map(([, frame]) => frame));
   }
@@ -7838,13 +8189,13 @@
     const lane = pitchTraceLane(line);
     if (!lane) return;
     const binTicks = pitchTraceBinTicks();
-    const first = Math.max(0, Math.ceil(frame.startTick / binTicks));
-    const last = Math.min(lane.pitches.length - 1, Math.floor(frame.endTick / binTicks));
+    const first = Math.max(0, Math.ceil((frame.startTick - pitchTraceOriginTick()) / binTicks));
+    const last = Math.min(lane.pitches.length - 1, Math.floor((frame.endTick - pitchTraceOriginTick()) / binTicks));
     const changed = new Set();
     for (let bin = first; bin <= last; bin += 1) {
       // A detector window may straddle an entrance. Silence only repairs rests,
       // never a neighboring sung note or another divisi lane's saved work.
-      if (!lane.pitches[bin] || pitchRestState(bin * binTicks) !== "rest") continue;
+      if (!lane.pitches[bin] || pitchRestState(pitchTraceOriginTick() + bin * binTicks) !== "rest") continue;
       lane.pitches[bin] = 0;
       lane.breaks[bin] = 0;
       lane.rawOctaves?.delete(bin);
@@ -7897,8 +8248,9 @@
     const inputLatency = Math.max(0, Number(pitchCaptureStream?.getAudioTracks()[0]?.getSettings?.().latency) || 0);
     const analysisLatency = PITCH_CAPTURE_BUFFER_SIZE / (2 * captureRate);
     const outputLatency = Math.max(0, (Number(context.baseLatency) || 0) + (Number(context.outputLatency) || 0));
-    const scoreSeconds = clamp(engine.currentSeconds() - (analysisLatency + inputLatency + outputLatency) * engine.rate, 0, engine.duration);
-    const tick = clamp(engine.tickAtSeconds(scoreSeconds), 0, sequence.endTick);
+    const firstTick = Math.min(0, (practiceWriter || takeJournal)?.spec.initial?.start || 0);
+    const scoreSeconds = clamp(engine.currentSeconds() - (analysisLatency + inputLatency + outputLatency) * engine.rate, engine.secondsAtTick(firstTick), engine.duration);
+    const tick = clamp(engine.tickAtSeconds(scoreSeconds), firstTick, sequence.endTick);
     if (pitchCapturePreviousTick !== null && (tick < pitchCapturePreviousTick - 2
       || pitchCapturePreviousSeconds === null || scoreSeconds - pitchCapturePreviousSeconds > 0.5)) {
       beginPitchCapturePass();
@@ -7912,9 +8264,11 @@
     const halfWindow = Math.min(hopMs, PITCH_CAPTURE_FALLBACK_INTERVAL_MS) / 2000 * engine.rate;
     const frame = {
       tick,
+      audioFrame: (audioTime - analysisLatency) * captureRate,
+      audioWidth: Math.min(hopMs, PITCH_CAPTURE_FALLBACK_INTERVAL_MS) / 1000 * captureRate,
       stride: pitchTraceStrideAt(tick, hopMs),
-      startTick: clamp(engine.tickAtSeconds(Math.max(0, scoreSeconds - halfWindow)), 0, sequence.endTick),
-      endTick: clamp(engine.tickAtSeconds(Math.min(engine.duration, scoreSeconds + halfWindow)), 0, sequence.endTick),
+      startTick: clamp(engine.tickAtSeconds(scoreSeconds - halfWindow), firstTick, sequence.endTick),
+      endTick: clamp(engine.tickAtSeconds(scoreSeconds + halfWindow), firstTick, sequence.endTick),
     };
     pitchCaptureWorker.submit(pitchCaptureBuffer, {sampleRate: captureRate, previous: pitchLastAcceptedCents,
       minimum: PITCH_CAPTURE_MIN_FREQUENCY, maximum: PITCH_CAPTURE_MAX_FREQUENCY},
@@ -7932,6 +8286,15 @@
     pitchCaptureIntervalMs = Math.max(pitchCaptureIntervalMs,
       clamp(cost / 0.5, PITCH_CAPTURE_INTERVAL_MS, PITCH_CAPTURE_FALLBACK_INTERVAL_MS));
     const decision = evaluatePitchEvidence(frequency, clarity, seconds, frame);
+    if(practiceWriter) {
+      const observe=(f,c)=>practiceWriter.observe(engine.secondsAtTick(f.startTick),engine.secondsAtTick(f.endTick),
+        pitchRestState(f.tick)==="discard"?null:c);
+      if(decision.backfill)observe(decision.backfill,decision.backfill.pitchCents);
+      if(decision.accepted || decision.unvoiced)observe(frame,decision.accepted?decision.pitchCents:null);
+    } else if(captureIsAudio) {
+      takeJournal?.observePitch(frame.audioFrame, frame.audioWidth, decision.accepted ? decision.pitchCents : null);
+      if (decision.backfill) takeJournal?.observePitch(decision.backfill.audioFrame, decision.backfill.audioWidth, decision.backfill.pitchCents);
+    }
     if (decision.accepted) {
       pitchCaptureUnvoicedFrame = null;
       const startsStroke = pitchCaptureWasSilent || decision.breakBefore;
@@ -8010,6 +8373,7 @@
   }
 
   function disablePitchCapture(announce = true, { preservePreference = false, reason = "" } = {}) {
+    preparingCapture=null;recordAudio=false;
     if (!preservePreference) wantsPitchCapture = false;
     pitchCaptureNotice = reason;
     stopPitchSampling();
@@ -8033,7 +8397,7 @@
     ensurePitchWorker();
     pitchCaptureStream.getAudioTracks().forEach((track) => { track.enabled = true; });
     pitchCaptureSource.connect(pitchCaptureAnalyser);
-    pitchCaptureState = playing ? "recording" : "armed";
+    pitchCaptureState = "armed";
     void microphoneCheck?.start();
     if (playing) startPitchSampling();
     else beginPitchCapturePass();
@@ -8050,7 +8414,7 @@
       if (pitchCaptureContext && pitchCaptureContext !== engine?.context) void pitchCaptureContext.suspend();
     }
     elements.takeMicrophone.disabled = active;
-    elements.takeMicrophone.title = active ? "Pause Sing or close the microphone check to change input" : "Microphone for Sing and recording";
+    elements.takeMicrophone.title = active ? "Turn Sing off to change input" : "Microphone for Sing and recording";
     microphoneCheck?.syncSelector(elements.takeMicrophone);
   }
 
@@ -8060,9 +8424,10 @@
   }
 
   async function refreshMicrophoneChoices() {
-    if (!navigator.mediaDevices?.enumerateDevices) return;
+    const devicesApi = window.MeleteMicrophoneCheck.mediaDevicesFor(window);
+    if (!devicesApi?.enumerateDevices) return;
     try {
-      const devices = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === "audioinput");
+      const devices = (await devicesApi.enumerateDevices()).filter(device => device.kind === "audioinput");
       const selected = readMicrophoneChoice();
       const defaultInput = devices.find(device => device.deviceId === "default");
       const options = [new Option(defaultInput?.label || "System default", "")];
@@ -8120,7 +8485,7 @@
     if (!microphoneRequest) {
       microphoneRequest = (async () => {
         releaseMicrophoneInput();
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+        const stream = await window.MeleteMicrophoneCheck.mediaDevicesFor(window).getUserMedia({ audio: {
           ...(deviceId ? {deviceId: {exact: deviceId}} : {}),
           channelCount: { ideal: 1 }, echoCancellation: { ideal: false },
           noiseSuppression: { ideal: false }, autoGainControl: { ideal: false },
@@ -8166,30 +8531,43 @@
       pitchCaptureNotice = "";
       savePreferences();
       updatePitchCaptureAppearance();
-      if (engine?.playing) {
-        if (takeState === "stopping") {
-          void takeStopPromise?.then(() => {
-            if (wantsPitchCapture && engine?.playing) void startTakeRecording();
-          });
-        } else void startTakeRecording();
-      }
+      void armMicrophone();
     }
   }
 
   function restorePitchCapture() {
     if (conductorMode) return;
-    // Persist the choice, not a live microphone. Only explicit playback resumes
-    // capture; reload and switching songs must not open the input in background.
     updatePitchCaptureAppearance();
+    if (wantsPitchCapture && pitchCapturePageActive && !document.hidden) void armMicrophone();
+  }
+
+  async function armMicrophone() {
+    if (!ready || !wantsPitchCapture || !pitchCapturePageActive || document.hidden
+      || pitchCaptureState !== "off") return;
+    pitchCaptureState = "requesting";
+    microphoneCheck?.paint("requesting", "Waiting for microphone...");
+    updatePitchCaptureAppearance();
+    try {
+      await ensureMicrophoneInput({waitForAudio: false});
+      if (!wantsPitchCapture || !pitchCapturePageActive) { syncMicrophoneActivity(); return; }
+      activateCachedPitchCapture({quiet: true});
+    } catch (error) {
+      if (!wantsPitchCapture || !pitchCapturePageActive) return;
+      const message = microphoneFailureMessage(error);
+      disablePitchCapture(false, {preservePreference: true, reason: message});
+      takeNotice = message;
+      showTakePanel();
+      renderTakePanel();
+    }
   }
 
   function recordingLoopSpec() {
     if (!ready || !engine) return null;
     const position = engine.currentSeconds();
     const looping = engine.hasLoop() && position < engine.loopEndSeconds;
-    const playhead = position <= 0.002 ? 0 : clamp(engine.tickAtSeconds(position), 0, sequence.endTick);
+    const playhead = Math.abs(position) <= 0.002 ? 0 : clamp(engine.tickAtSeconds(position), pitchTraceOriginTick(), sequence.endTick);
     const range = looping ? loopTickRange() : {
-      start: playhead, end: sequence.endTick};
+      start: Math.max(0, playhead), end: sequence.endTick};
     const part = parts[practicePartIndex]?.short || parts[practicePartIndex]?.name || "voice";
     const start = range.start;
     const entry = looping ? window.MeleteRecording.recordingEntrance(
@@ -8199,14 +8577,16 @@
     const address = takeBoundaryLabel;
     const label = `${address(start)}-${address(range.end)}`;
     // Track recordings replace their passage; older takes lack this marker.
-    const spec = {seconds, label, part, rate: engine.rate, start, end: range.end, mode: looping ? "loop" : "segment", replaces: true};
+    const spec = {seconds, label, part, rate: engine.rate, start, end: range.end, mode: looping ? "loop" : "segment",
+      replaces: true, trackSlot: compPanel?.slot() || null};
     // Ordinary practice starts at the playhead. Only a matching, enabled
     // audition preset may add preparation or move the first entrance.
     const initialStart = playhead;
     const plan = entry === null ? null : window.MeleteRecording.countInPlan(sequence.measures, sequence.division,
       entry, tick => engine.secondsAtTick(tick), engine.rate);
     const captureStart = plan?.start ?? initialStart;
-    spec.initial = {start: captureStart, entry: entry ?? initialStart, leadInSeconds: plan?.duration || 0,
+    spec.initial = {start: captureStart, entry: entry ?? Math.max(0, initialStart),
+      leadInSeconds: plan?.duration || Math.max(0, -engine.secondsAtTick(captureStart) / engine.rate), countInPlan: plan,
       label: `${captureStart < 0 ? "count-in + " : ""}${address(Math.max(0, captureStart))}-${address(range.end)}`,
       seconds: (engine.secondsAtTick(range.end) - engine.secondsAtTick(captureStart)) / engine.rate};
     return spec;
@@ -8242,35 +8622,108 @@
 
   function trackLabel(part, line = null) {
     const option = line === null ? null : practiceDivisiOptions(part).find(choice => choice.value === line);
-    return `${parts[part]?.short || parts[part]?.name || ""}${option ? ` ${option.label}` : ""}`;
+    return mixerParts.find(p => p.source === part && p.line === line)?.short
+      || `${parts[part]?.short || parts[part]?.name || ""}${option ? ` ${option.label}` : ""}`;
+  }
+
+  function trackPaint(part,line=null) {
+    return mixerParts.find(p=>p.source===part && p.line===line)?.color || parts[part]?.color || "";
+  }
+
+  function focusRecordingPart(ref) {
+    cancelTakeHearBatch();
+    const channel = mixerParts.findIndex(p => p.source === ref.part && p.line === (ref.line ?? null));
+    if (channel < 0) return;
+    cancelPracticeMixSession();
+    practiceDivisi[ref.part] = ref.line ?? null;
+    visibleChannels.clear(); visibleChannels.add(channel);
+    audibleTracks.clear();
+    mixerParts.forEach((_, i) => { if (i !== channel) audibleTracks.add(i); });
+    syncPracticeFromSee();
+    compPanel?.noteExplicitSelection();
+    selectedScorePartIndex = null;
+    updateMixerAppearance(); updateNoteActionLabel(); savePreferences(); scheduleRender();
+  }
+
+  function timedTake(t) {
+    return {...t, origin: t.pitchReference && engine
+      ? engine.secondsAtTick(t.pitchReference.captureStart ?? t.start ?? t.pitchReference.start) / t.rate : null};
   }
 
   function ensureCompPanel() {
     if (compPanel || !window.MeleteCompPanel) return;
-    compPanel = window.MeleteCompPanel.create({store: takeStore, song: takeSongKey, descriptor: compDescriptor, trackLabel,
+    compPanel = window.MeleteCompPanel.create({store: takeStore, song: takeSongKey, descriptor: compDescriptor, trackLabel, trackPaint,
+      practicePersonChanged:changed=>{
+        if(changed) void stopTakeRecording("",true);
+        readPracticeTrace();
+      },
+      keepingAudio:()=>captureIsAudio,
+      audition: () => Boolean(config.audition?.enabled), playback: singerPlayback,
       address: takeBoundaryLabel, tick: seconds => engine.tickAtSeconds(seconds),
       cloudConfig: config.cloud || {}, toast: showToast, selected: () => takePreviewId,
-      takes: () => allTakes().map(t => ({...t, origin: t.pitchReference && engine
-        ? engine.secondsAtTick(t.pitchReference.captureStart ?? t.start ?? t.pitchReference.start) / t.rate : null})),
+      rowSelected: id => id === takePreviewId && (scoreView !== "standard" || id === inspectedTakeId),
+      inspectLoaded: id => {
+        inspectedTakeId = id;
+        renderPitchTrace(); updateTakePreview();
+      },
+      selectionRevision: () => takePreviewGeneration, focusPart: focusRecordingPart,
+      cancelHearBatch: cancelTakeHearBatch,
+      sort: () => takeSort,
+      takes: () => allTakes().map(timedTake), timed: timedTake,
       context: () => { engine.ensureAudio(); return engine.context; }, wav: takeBlob,
+      rawWav: take => takeJournal?.wav(take.id) || takeStore.wav(take.id),
       downloadBlob: downloadTakeBlob,
       changed: announceTakeChange, relist: renderTakePanel, reload: loadTakeLibrary, clear: stopTakePreview,
+      trimmed: stored => {
+        stored.forEach(({id, storedFrames}) => { const take = takeLibrary.get(id); if (take) take.storedFrames = storedFrames; });
+        announceTakeChange(); renderTakePanel();
+      },
+      evicted: removed => {
+        const own = removed.filter(t => t.song === takeSongKey()).map(t => t.id);
+        own.forEach(id => { takeLibrary.delete(id); takeLayerLoads.delete(id); engine?.removeTakeLayer(id); });
+        takeJournal?.drop(own);
+        for (const song of new Set(removed.map(t => t.song))) announceTakeChange(song);
+      },
       audible: id => Boolean(id && engine?.takeLayers.has(id)),
       octaveControl: updateTakeOctave,
-      releaseOctave: element => { takeOctavePagers.get(element)?.destroy(); takeOctavePagers.delete(element); },
+      releaseOctave: element => { takeOctavePagers.delete(element); },
+      hearControl: (button, id, activate) => attachTakeHear(button, id, activate),
       choosePart: (taken, then) => {
-        const only = parts.map(part => part.index).filter(index => !taken.includes(index));
-        if (!only.length) { showToast("Every part already has a track"); return; }
-        showPartChooser({only, title: "Add a track for which part?",
+        const channels = mixerParts.filter(p => !taken.some(ref => ref.part === p.source && (ref.line ?? null) === p.line));
+        if (!channels.length) { showToast("Every part already has a track"); return; }
+        showPartChooser({channels, title: "Add a track for which part?",
           note: "Practice switches to this part; your next recording fills its track."});
         partChooserThen = then;
       },
       discard: ids => takeState === "off" && !takeActionBusy ? deleteTakes(ids, {quiet: true}) : [],
       loading: id => takeLayerLoads.has(id),
       hearReview: review => { engine.addTakeLayer(review, true); updateTakePreview(); },
-      mute: id => { takeLayerLoads.delete(id); engine?.removeTakeLayer(id); updateTakePreview(); },
-      review: review => {
+      mute: id => { cancelTakeHearBatch(); takeLayerLoads.delete(id); takeVisualReviews.delete(id); engine?.removeTakeLayer(id); updateTakePreview(); },
+      pendingRecording: (key, processed) => pendingCaptureTrace?.key === key
+        && Boolean(pendingCaptureTrace.id && processed.includes(pendingCaptureTrace.id)),
+      captureSettled: () => { pendingCaptureTrace = null; resetPitchTraceGrid(); renderPitchTrace(); },
+      patchReview: (review, select) => {
+        takeVisualReviews.set(review.id, review);
+        if (select || takePreviewId === review.id) {
+          if (takePreviewId !== review.id) inspectedTakeId = null;
+          takePreviewId = review.id; takeReview = review;
+          if (takeState === "off") { pendingCaptureTrace = null; resetPitchTraceGrid(); }
+        }
+        renderPitchTrace(); updateTakePreview();
+      },
+      replaceAudio: review => {
+        const audible = engine.takeLayers.has(review.id), selected = takePreviewId === review.id;
+        if (!audible && !selected) return;
+        const pin = engine.pinnedTakeIds.has(review.id);
+        engine.removeTakeLayer(review.id);
+        engine.addTakeLayer(review, pin);
+        if (selected) { takeReview = review; engine.takeReview = engine.takeLayers.get(review.id); }
+        takeVisualReviews.delete(review.id);
+        updateTakePreview();
+      },
+      review: (review, explicit) => {
         stopTakePreview(); takePreviewId = review.id; takeReview = review;
+        if (explicit) inspectedTakeId = review.id;
         engine.setTakeReview(review); refreshTakePitchTrace(); updateTakePreview();
       }});
   }
@@ -8299,9 +8752,8 @@
     try {
       const frames = window.MeleteTakePitch.readContour(take);
       let result;
-      if (frames) result = {...window.MeleteTakePitch.scoreFrames(frames, take.pitchReference, take.frames / take.sampleRate), frames};
-      else {
-        const wav = await (await takeStore.wav(take.id)).arrayBuffer();
+      {
+        const wav = frames ? null : await (await takeStore.wav(take.id)).arrayBuffer();
         if (job.cancelled) return;
         url = URL.createObjectURL(new Blob([window.MeleteTakePitch.workerSource(embeddedText("pitchy-runtime"))],
           {type: "text/javascript"}));
@@ -8312,7 +8764,8 @@
           job.abort = () => finish(new DOMException("Pitch analysis canceled", "AbortError"));
           worker.onmessage = event => finish(event.data.error ? new Error(event.data.error) : null, event.data.result);
           worker.onerror = () => finish(new Error("Pitch analysis unavailable in this browser"));
-          worker.postMessage({wav, reference: take.pitchReference, sampleRate: take.sampleRate, includeFrames: true}, [wav]);
+          worker.postMessage({wav, frames, seconds:take.frames / take.sampleRate,
+            reference: take.pitchReference, sampleRate: take.sampleRate, includeFrames: true}, wav ? [wav] : []);
         });
       }
       if (job.cancelled) return;
@@ -8328,8 +8781,17 @@
     }
   }
 
+  function wholeSongTakeScore(take) {
+    const ref = take.pitchReference, score = take.pitchScore;
+    if (!ref || !score) return score;
+    const full = compDescriptor(ref.part, ref.line ?? null)?.reference;
+    if (!full) return score;
+    const expected = full.notes.reduce((sum, n) => sum + n[1] - n[0], 0) * (full.rate / ref.rate);
+    return expected > 0 ? {...score, expectedSeconds: expected, coverage: Math.min(1, score.trackedSeconds / expected)} : score;
+  }
+
   function takePitchLabel(take) {
-    const pitch = take.pitchScore;
+    const pitch = wholeSongTakeScore(take);
     const date = `${new Date(take.createdAt).toLocaleString()} · ${Math.round(take.rate * 100)}% speed`;
     if (window.MeleteTakePitch.validScore(pitch)) {
       const measured = Number.isFinite(pitch.meanAbsCents);
@@ -8379,6 +8841,10 @@
 
   function takeSizeLabel(bytes) { return `${(bytes / 1048576).toFixed(1)} MB`; }
 
+  function storageTotalLabel(bytes) {
+    return bytes < 1024 ** 3 ? `${Math.round(bytes / 1048576)} MB` : `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  }
+
   function scheduleTakeDeletion() {
     window.clearTimeout(takeDeleteTimer);
     const pending = [...takeLibrary.values()].filter(take => take.deleteAfter);
@@ -8392,11 +8858,39 @@
     }, Math.max(50, deadline - Date.now() + 20));
   }
 
-  function announceTakeChange() { takeChannel?.postMessage({song: takeSongKey()}); }
+  function refreshRecordingTime() {
+    if (recordingTimeRequest) return recordingTimeRequest;
+    const day = window.MeleteRecording.recordingDay();
+    const element = document.getElementById("recordingToday"), output = element.querySelector("output");
+    window.clearTimeout(recordingDayTimer);
+    recordingTimeRequest = takeStore.recordingTime(day).then(seconds => {
+      output.textContent = `${Math.round(seconds / 60)} min`;
+      element.dataset.seconds = String(seconds);
+      element.dataset.day = day;
+    }).catch(() => {
+      output.textContent = "-- min";
+      delete element.dataset.seconds;
+    }).finally(() => {
+      recordingTimeRequest = null;
+      const now = new Date();
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
+      if (day !== window.MeleteRecording.recordingDay()) void refreshRecordingTime();
+      else recordingDayTimer = window.setTimeout(refreshRecordingTime, next - Date.now() + 50);
+    });
+    return recordingTimeRequest;
+  }
+
+  function announceTakeChange(song = takeSongKey()) {
+    if (typeof song !== "string") song = takeSongKey();
+    takeChannel?.postMessage({song});
+    void refreshRecordingTime();
+  }
 
   async function loadTakeLibrary() {
     if (takeLibraryRequest) return takeLibraryRequest;
     takeLibraryRequest = (async () => {
+      await takeStore.backfillRecordingTime();
+      await refreshRecordingTime();
       await takeStore.purgeDeleted(takeSongKey());
       const library = await takeStore.usage();
       const records = library.filter(record => record.song === takeSongKey());
@@ -8436,7 +8930,7 @@
           takeLayerLoads.delete(id); engine?.removeTakeLayer(id);
         }
       }
-      if (takePreviewId && !takePreviewId.startsWith("comp:") && (!takeLibrary.has(takePreviewId) || takeLibrary.get(takePreviewId).deleteAfter)) stopTakePreview();
+      if (takePreviewId && !takePreviewId.startsWith("trace:") && !takePreviewId.startsWith("comp:") && (!takeLibrary.has(takePreviewId) || takeLibrary.get(takePreviewId).deleteAfter)) stopTakePreview();
       scheduleTakeDeletion();
       takeLibraryReady = true;
       if (revised) announceTakeChange();
@@ -8470,7 +8964,8 @@
     }
   }
 
-  function refreshTakePitchTrace() {
+  function refreshTakePitchTrace({preserveGeometry = false} = {}) {
+    if (preserveGeometry) { renderPitchTrace(); return; }
     if (scoreView !== "bars") { renderPitchTrace(); return; }
     // A selected take replaces old observations, so its range can shrink too.
     // Keep the currently visible row anchored while earlier rows change height.
@@ -8480,7 +8975,6 @@
     const left = elements.barScore.scrollLeft;
     cancelAnimationFrame(barRenderFrame);
     renderBarScore();
-    renderPitchTrace(staffTraceSystems);
     const replacement = anchor && barSystems.find(system => system.startTick === anchor.startTick);
     if (replacement && Number.isFinite(top)) {
       automaticScrollUntil = Date.now() + 350;
@@ -8490,24 +8984,45 @@
   }
 
   function stopTakePreview() {
+    cancelTakeHearBatch();
     const hadReview = Boolean(takeReview);
     takePreviewGeneration += 1;
+    pendingCaptureTrace = null;
     takeReviewWorker?.cancel();
     takeReviewWorker = null;
     engine?.setTakeReview(null);
     takeReview = null;
     takePreviewId = null;
+    inspectedTakeId = null;
     if (hadReview) refreshTakePitchTrace();
     else renderPitchTrace();
     updateTakePreview();
     void scoreNextTake();
   }
 
+  const takeCleanAudio = new Map();
   async function takeBlob(take) {
-    return takeJournal?.wav(take.id) || await takeStore.wav(take.id);
+    const key = JSON.stringify([take.id,take.frames,take.updatedAt,take.pitchContour?.analysisVersion,window.MeleteTakeCleanup.VERSION]);
+    if (takeCleanAudio.has(key)) return takeCleanAudio.get(key).promise;
+    const entry = {bytes: Math.max(0,take.frames||0)*2, promise:null};
+    entry.promise = (async()=>{
+      const blob = await (takeJournal?.wav(take.id) || takeStore.wav(take.id));
+      if (!take.finalized) return blob;
+      const frames = window.MeleteTakePitch.readContour(take);
+      const result = await window.MeleteTakeCleanup.prepare(blob,take,frames,embeddedText("pitchy-runtime"));
+      return result.blob;
+    })().catch(error=>{takeCleanAudio.delete(key);throw error;});
+    takeCleanAudio.set(key,entry);
+    let bytes=[...takeCleanAudio.values()].reduce((n,e)=>n+e.bytes,0);
+    for(const [old,item] of takeCleanAudio){
+      if(takeCleanAudio.size<=8&&bytes<=64*1024*1024)break;
+      takeCleanAudio.delete(old);bytes-=item.bytes;
+    }
+    return entry.promise;
   }
 
   function clearTakeLayers() {
+    cancelTakeHearBatch();
     takeLayerLoads.clear();
     engine?.clearTakeLayers();
     updateTakePreview();
@@ -8530,6 +9045,17 @@
     return {ref, captureStart};
   }
 
+  async function prepareLooseTake(take) {
+    const {ref, captureStart} = takeReviewReference(take);
+    engine.ensureAudio();
+    const blob = await takeBlob(take);
+    const buffer = await engine.context.decodeAudioData(await blob.arrayBuffer());
+    return {id: take.id, label: `Take ${take.number || "..."}`, ref, buffer, blob,
+      frames: window.MeleteTakePitch.readContour(take) || [],
+      track: ref.part, rate: ref.rate, start: engine.secondsAtTick(captureStart),
+      end: engine.secondsAtTick(ref.end), latency: ref.latency};
+  }
+
   async function toggleTakeLayer(id) {
     if (takeLayerLoads.has(id)) { takeLayerLoads.delete(id); updateTakePreview(); return; }
     if (engine?.takeLayers.has(id)) { engine.removeTakeLayer(id); updateTakePreview(); return; }
@@ -8539,14 +9065,9 @@
     takeLayerLoads.set(id, token);
     updateTakePreview();
     try {
-      const {ref, captureStart} = takeReviewReference(take);
-      engine.ensureAudio();
-      const blob = await takeBlob(take);
-      const buffer = await engine.context.decodeAudioData(await blob.arrayBuffer());
+      const review = await prepareLooseTake(take);
       if (takeLayerLoads.get(id) !== token) return;
-      engine.addTakeLayer({id, label: `Take ${take.number || "..."}`, ref, buffer, blob,
-        track: ref.part, rate: ref.rate, start: engine.secondsAtTick(captureStart),
-        end: engine.secondsAtTick(ref.end), latency: ref.latency}, true);
+      engine.addTakeLayer(review, true);
     } catch (error) {
       if (takeLayerLoads.get(id) === token) showToast(error.message || "Could not load this take", "error");
     } finally {
@@ -8560,8 +9081,66 @@
     const audible = engine?.takeLayers.has(id), loading = takeLayerLoads.has(id) || engine?.takeLayers.get(id)?.stretchPending;
     button.setAttribute("aria-pressed", String(Boolean(audible)));
     button.setAttribute("aria-busy", String(loading));
-    button.title = `${loading ? "Cancel loading" : audible ? "Mute" : "Hear"} ${name}. Multiple takes can play together, including while recording.`;
+    button.title = `${loading ? "Cancel loading" : audible ? "Mute" : "Hear"} ${name}. Hold to isolate; hold the only audible track to hear everyone.`;
     button.setAttribute("aria-label", `${audible ? "Mute" : "Hear"} ${name}`);
+  }
+
+  function attachTakeHear(button, id, activate) {
+    attachHoldReset(button, () => {
+      const pending = takeHearBatch?.ids.has(id());
+      cancelTakeHearBatch();
+      if (pending) updateTakePreview();
+      else activate();
+    }, () => { void cycleTakeHear(id()); }, "recording mix", {isolate: true});
+  }
+
+  function cancelTakeHearBatch() {
+    if (!takeHearBatch) return;
+    for (const id of takeHearBatch.ids) if (takeLayerLoads.get(id) === takeHearBatch) takeLayerLoads.delete(id);
+    takeHearBatch = null;
+  }
+
+  async function cycleTakeHear(id) {
+    cancelTakeHearBatch();
+    const tracks = [...(compPanel?.layers() || []), ...looseTakes().filter(t => t.length && !t.active)
+      .map(t => ({id: t.id, prepare: () => prepareLooseTake(t)}))];
+    const target = tracks.find(t => t.id === id);
+    if (!target) return;
+    const everyone = engine.takeLayers.size === 1 && engine.takeLayers.has(id);
+    if (!everyone) {
+      engine.updateTakeLayers([], [...engine.takeLayers.keys()].filter(key => key !== id));
+      takeLayerLoads.clear();
+    }
+    const chosen = everyone ? tracks : [target];
+    const pending = chosen.filter(track => !engine.takeLayers.has(track.id));
+    const batch = {ids: new Set(pending.map(track => track.id))};
+    takeHearBatch = batch;
+    for (const track of pending) takeLayerLoads.set(track.id, batch);
+    updateTakePreview();
+    const prepared = [];
+    try {
+      // Decode and measure off the audible graph. Only the complete group is
+      // connected, so Hear all never runs normalization on intermediate mixes.
+      for (const track of pending) {
+        try {
+          const review = await track.prepare();
+          if (takeHearBatch !== batch) return;
+          review.loudness ||= await window.MeleteTakeLoudness.track(review.buffer);
+          if (takeHearBatch !== batch) return;
+          if (takeLayerLoads.get(track.id) === batch) prepared.push(review);
+        } catch (error) {
+          if (takeHearBatch !== batch) return;
+          if (error.name !== "AbortError") showToast(error.message || "Could not load this take", "error");
+        }
+      }
+      if (takeHearBatch === batch) {
+        engine.updateTakeLayers(prepared.filter(review => takeLayerLoads.get(review.id) === batch));
+        for (const track of chosen) if (engine.takeLayers.has(track.id)) engine.pinnedTakeIds.add(track.id);
+      }
+    } finally {
+      if (takeHearBatch === batch) cancelTakeHearBatch();
+      updateTakePreview();
+    }
   }
 
   function takeOctave(id) {
@@ -8579,26 +9158,30 @@
     element.dataset.takeId = id || "";
     element.inert = !id;
     element.setAttribute("aria-label", `Playback octave for ${name}`);
-    let pager = takeOctavePagers.get(element);
-    if (!pager) {
-      pager = new InfinitePager(element, {options: [
-        {value: 0, label: "0"}, {value: 1, label: "8va"}, {value: -1, label: "8vb"},
-      ], value: takeOctave(id)});
-      takeOctavePagers.set(element, pager);
-      element.addEventListener("input", () => {
+    if (!takeOctavePagers.has(element)) {
+      takeOctavePagers.set(element, true);
+      element.addEventListener("click", () => {
         const target = element.dataset.takeId;
         if (!target) return;
-        takeOctaves[target] = pager.value();
+        takeOctaves[target] = {0: 1, 1: -1, [-1]: 0}[takeOctave(target)];
         try { localStorage.setItem(`melete:take-octaves:${takeSongKey()}`, JSON.stringify(takeOctaves)); } catch {}
-        engine?.setTakeOctave(target, pager.value());
+        engine?.setTakeOctave(target, takeOctaves[target]);
         updateTakePreview();
       });
     }
-    if (!pager.drag && pager.pendingIndex === null) pager.setValue(takeOctave(id));
-    element.title = "Playback octave: 0 (original), 8va (up), 8vb (down). Tap to cycle; drag to browse. Timing, original WAV and pitch scores are unchanged.";
+    element.textContent = {0: "-", 1: "8va", [-1]: "8vb"}[takeOctave(id)];
+    element.dataset.value = String(takeOctave(id));
+    element.title = "Playback octave: - (original), 8va (up), 8vb (down). Click to cycle. Timing, original WAV and pitch scores are unchanged.";
   }
 
+  let traceLayerSignature = "";
   function updateTakePreview() {
+    document.getElementById("downloadMix").disabled = !engine?.takeLayers.size || takeActionBusy || takeState !== "off";
+    const traceSignature = JSON.stringify([takePreviewId, [...(engine?.takeLayers.values() || [])].map(r => [r.id, r.octave])]);
+    if (traceSignature !== traceLayerSignature) {
+      traceLayerSignature = traceSignature;
+      if (ready) refreshTakePitchTrace({preserveGeometry: true});
+    }
     syncPlaybackButton();
     elements.exitTakeReview.hidden = !takePreviewId;
     const selectedTake = allTakes().find(take => take.id === takePreviewId);
@@ -8617,6 +9200,7 @@
       button.title = row.dataset.comparison ? `${row.dataset.comparison}. ${action}` : action;
     }
     compPanel?.selected();
+    paintPracticeTraceRow();
     updateTakeTimeline();
   }
 
@@ -8644,8 +9228,8 @@
     const mark = (type, from, to) => {
       const span = document.createElement("span");
       span.className = `take-timeline-${type}`;
-      span.style.left = `${from / engine.duration * 100}%`;
-      if (to !== undefined) span.style.width = `${(to - from) / engine.duration * 100}%`;
+      span.style.left = `${timelineFraction(from) * 100}%`;
+      if (to !== undefined) span.style.width = `${(timelineFraction(to) - timelineFraction(from)) * 100}%`;
       span.dataset.from = String(from);
       if (to !== undefined) span.dataset.to = String(to);
       elements.takeTimeline.append(span);
@@ -8654,7 +9238,7 @@
     for (const [from, to] of takeTimeline.covered) mark("coverage", from, to);
     for (const at of takeTimeline.seams) mark("boundary", at);
     const ranges = takeReview.timelineSegments;
-    const from = Math.max(0, ranges?.length ? ranges[0].from : takeReview.start);
+    const from = Math.max(engine.secondsAtTick(pitchTraceOriginTick()), ranges?.length ? ranges[0].from : takeReview.start);
     const to = Math.min(engine.duration, ranges?.length ? ranges.at(-1).to : takeReview.end);
     if (to > from) {
       mark("extent", from, to);
@@ -8669,27 +9253,76 @@
     elements.seek.setAttribute("aria-describedby", "takeTimelineDescription");
   }
 
-  function renderTakeTrace(system) {
-    const review = takeReview;
+  function audibleTraceReviews() {
+    const channels = [...visibleChannels].map(index => mixerParts[index]);
+    const matches = review => review?.frames?.length && channels.some(channel =>
+      channel.source === review.track && channel.line === (review.ref?.line ?? null));
+    if (scoreView === "standard") {
+      if (takeState !== "off" || !matches(takeReview) || takeReview.id !== inspectedTakeId) return [];
+      return [{...takeReview, octave:takeOctave(takeReview.id)}];
+    }
+    if (!channels.length) return [];
+    const candidates = new Map([...(engine?.takeLayers || [])]);
+    for (const [id, review] of takeVisualReviews) if (candidates.has(id)) candidates.set(id, {...review, octave:engine.takeLayers.get(id).octave});
+    // A muted selected take can still be inspected in single-part practice.
+    // Ensemble listening shows only the recordings that are actually audible.
+    if (takeReview && (channels.length === 1 || candidates.has(takeReview.id)))
+      candidates.set(takeReview.id, {...takeReview, octave:takeOctave(takeReview.id)});
+    return [...candidates.values()].filter(matches)
+      .sort((a, b) => Number(a.id === takeReview?.id) - Number(b.id === takeReview?.id));
+  }
+
+  function liveTraceVisible() {
+    return scoreView === "bars" && Number.isInteger(practicePartIndex)
+      && (Boolean(pendingCaptureTrace) || ["counting", "recording", "stopping"].includes(takeState));
+  }
+
+  function renderTakeTrace(system, review = takeReview, grey = false) {
     if (!review) return;
+    const replacingTrace=practiceWriter && review.id===window.MeletePracticeTrace.id(practiceWriter.key);
     const [from, to] = window.MeleteTakeRender.frameRange(review.frames,
       (engine.secondsAtTick(system.startTick) - review.start) / review.rate,
       (engine.secondsAtTick(system.endTick) - review.start) / review.rate);
     const paths = window.MeleteTakeRender.tracePaths(review.frames, from, to, frame => {
-      const tick = engine.tickAtSeconds(review.start + (frame.start + frame.end) / 2 * review.rate);
-      if (pitchRestState(tick, review.track) === "discard") return null;
-      const line = review.ref.line ?? pitchTraceLaneAt(tick, frame.cents, review.track);
-      return system.pointAtPitch ? system.pointAtPitch(tick, frame.cents, line, review.track)
-        : {x: system.xAtTick(tick), y: system.yAtPitch(frame.cents / 100), track: review.track,
-          error: expectedPitchErrorCents(tick, frame.cents, line, review.track)};
+      const seconds = review.start + (frame.start + frame.end) / 2 * review.rate;
+      if(replacingTrace && seconds>=practiceWriter.from && seconds<=engine.currentSeconds())return null;
+      if (!system.pointAtPitch && pendingCaptureTrace && review.id === `comp:${pendingCaptureTrace.key}`
+        && seconds >= pendingCaptureTrace.from && seconds <= (pendingCaptureTrace.to ?? engine.currentSeconds())) return null;
+      const tick = engine.tickAtSeconds(seconds);
+      const line = review.ref.line ?? null;
+      if (pitchRestState(tick, review.track, line) === "discard") return null;
+      const cents = frame.cents + (review.octave || 0) * 1200;
+      return system.pointAtPitch ? system.pointAtPitch(tick, cents, line, review.track)
+        : {x: system.xAtTick(tick), y: system.yAtPitch(cents / 100), track: review.track,
+          error: tick < 0 ? "preparation" : expectedPitchErrorCents(tick, frame.cents, line, review.track)};
     // Bound paint nodes by a small color palette, not detector sample count.
     // Coordinates and grades retain their original precision.
-    }, error => pitchTraceColor(Number.isFinite(error) ? Math.round(Math.abs(error) / 2) * 2 : error));
+    }, error => grey ? "var(--muted)" : pitchTraceColor(Number.isFinite(error) ? Math.round(Math.abs(error) / 2) * 2 : error));
     if (!paths.edges) return;
-    system.traceLayer.append(createSvgElement("path", {class: "bar-pitch-trace-halo take-pitch-trace-halo", d: paths.halo}));
-    for (const [stroke, d] of paths.colors) system.traceLayer.append(createSvgElement("path", {
+    const ensemble = !system.pointAtPitch && visibleChannels.size > 1;
+    const label = `${trackLabel(review.track, review.ref.line ?? null)}: ${review.label || "Recording"}`;
+    const group = createSvgElement("g", {class: "take-pitch-trace-group",
+      "data-take-id": review.id, "data-track": review.track, "data-line": review.ref.line ?? "",
+      "data-selected": String(review.id === takeReview?.id), "data-ensemble": String(ensemble)});
+    const title = createSvgElement("title"); title.textContent = label; group.append(title);
+    group.append(createSvgElement("path", {class: "bar-pitch-trace-halo take-pitch-trace-halo", d: paths.halo}));
+    for (const [stroke, d] of paths.colors) group.append(createSvgElement("path", {
       class: "bar-pitch-trace-edge take-pitch-trace-edge bar-pitch-trace", d, stroke,
-      "data-take-id": review.id, "aria-hidden": "true"}));
+      "data-take-id": review.id, "data-reference": String(grey), opacity: grey ? .65 : 1, "aria-hidden": "true"}));
+    if (ensemble) {
+      group.append(createSvgElement("path", {class: "take-pitch-trace-hit", d: paths.halo}));
+      let press = null;
+      group.addEventListener("pointerdown", event => { press = {id:event.pointerId, x:event.clientX, y:event.clientY}; });
+      group.addEventListener("pointermove", event => {
+        if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) >= 8) press = null;
+      });
+      group.addEventListener("pointerup", event => {
+        if (press?.id === event.pointerId && event.pointerType === "touch") showToast(label);
+        press = null;
+      });
+      group.addEventListener("pointercancel", () => { press = null; });
+    }
+    system.traceLayer.append(group);
   }
 
   async function previewTake(id) {
@@ -8697,6 +9330,7 @@
     if (takeState !== "off") return;
     const take = allTakes().find(item => item.id === id);
     if (!take?.length) return;
+    if (take.pitchReference) focusRecordingPart(take.pitchReference);
     stopTakePreview();
     const generation = takePreviewGeneration;
     let ref, captureStart;
@@ -8739,6 +9373,7 @@
       if (generation !== takePreviewGeneration || takeState !== "off") return;
       takeReview = {id, label: `Take ${take.number || "..."}`, ref, frames, buffer, blob, track: ref.part, rate: ref.rate,
         start: engine.secondsAtTick(captureStart), end: engine.secondsAtTick(ref.end), latency: ref.latency};
+      inspectedTakeId = id;
       engine.setTakeReview(takeReview);
       refreshTakePitchTrace();
       renderTakePanel();
@@ -8802,11 +9437,7 @@
     const take = allTakes().find(take => take.id === id);
     if (!take) return;
     if (take.unsaved) {
-      takeDeleteIds = [id];
-      elements.takeDeleteMessage.textContent = "Delete this unsaved take? This cannot be undone. Download it first to keep a copy.";
-      elements.confirmTakeDelete.textContent = "Delete unsaved take";
-      elements.takeDeletePrompt.hidden = false;
-      elements.cancelTakeDelete.focus();
+      await deleteTakes([id]);
       return;
     }
     takeActionBusy = true;
@@ -8874,7 +9505,9 @@
   }
 
   function renderTakePanel() {
+    readPracticeTrace();
     ensureCompPanel();
+    document.getElementById("downloadMix").disabled = !engine?.takeLayers.size || takeActionBusy || takeState !== "off";
     if (takeLibraryReady) void compPanel?.refresh({active: takeState !== "off"});
     const spec = takeState !== "off" && takeJournal ? takeJournal.spec : recordingLoopSpec();
     const maximumSeconds = Math.max(spec?.seconds || 0, spec?.initial?.seconds || 0);
@@ -8895,14 +9528,14 @@
       }
     }
     const pending = Boolean(takeJournal?.entries.size);
-    elements.settingsToggle.classList.toggle("has-recording", active);
-    elements.settingsToggle.title = active ? "Settings; loop recording active" : "Settings";
+    elements.settingsToggle.classList.toggle("has-recording", active && captureIsAudio);
+    elements.settingsToggle.title = active ? captureIsAudio ? "Settings; recording audio" : "Settings; pitch practice" : "Settings";
     updatePitchCaptureAppearance();
     const captureStatus = document.getElementById("singRecordingStatus");
     captureStatus.textContent = takeState === "requesting" ? "Connecting..."
-      : takeState === "stopping" ? "Saving..." : active ? "Recording"
+      : takeState === "stopping" ? "Saving..." : active ? captureIsAudio ? "Recording" : "Pitch only"
         : pending ? "Unsaved audio" : takeScoring ? "Scoring..." : "";
-    elements.takePanel.classList.toggle("has-recording", active);
+    elements.takePanel.classList.toggle("has-recording", active && captureIsAudio);
     elements.takeMicrophone.disabled = active || pitchCaptureState !== "off" || Boolean(microphoneCheck?.active);
     elements.checkMicrophone.disabled = !ready || !pitchCaptureSupported() || pitchCaptureState !== "off" || takeState !== "off";
     let status = takeNotice || (spec ? `${spec.label} · ${formatTime(spec.seconds * 1000)}${spec.mode === "loop" ? " per pass" : ""}` : "Move playhead to record");
@@ -8910,32 +9543,32 @@
     if (takeState === "requesting") status = "Preparing recording...";
     if (takeState === "counting") status = `Recording count-in · ${spec?.initial?.label || spec?.label || ""}`;
     if (takeState === "armed") status = "Starting loop...";
-    if (takeState === "recording") status = `Recording take ${all.find(take => take.active)?.number || "..."}`;
+    if (takeState === "recording") status = captureIsAudio ? `Recording take ${all.find(take => take.active)?.number || "..."}` : "Pitch only";
     if (takeState === "stopping") status = "Saving take...";
     if (elements.takeStatus.textContent !== status) elements.takeStatus.textContent = status;
     elements.takeStatus.title = status;
     elements.takePanel.classList.toggle("has-notice", Boolean(takeNotice && /failed|full|unavailable|interrupted|disconnected|could not/i.test(takeNotice)));
     const bytes = window.MeleteRecording.takeBytes(allTakes(true));
     const totalBytes = bytes + takeOtherBytes;
-    elements.takeStorage.textContent = takeLibraryReady
-      ? `${all.length} take${all.length === 1 ? "" : "s"} · ${takeSizeLabel(bytes)}`
-      : "Local storage not loaded";
-    elements.takeStorage.title = `${takePersistence ? "Persistent storage" : "This browser"}. Microphone only; local autosave, no uploads. Browser data can be cleared; download important takes.`;
-    elements.downloadTakes.disabled = active || takeActionBusy || !all.length || all.some(take => take.unsaved);
+    elements.takeStorage.querySelector("output").textContent = takeLibraryReady ? storageTotalLabel(totalBytes) : "-- MB";
+    elements.takeStorage.title = [
+      "Recordings across this site's songs.",
+      takeLibraryReady ? `This song: ${all.length} take${all.length === 1 ? "" : "s"} · ${takeSizeLabel(bytes)}.` : "Local storage not loaded.",
+      `${takePersistence ? "Persistent storage" : "This browser"}. Microphone only; local autosave, no uploads. Browser data can be cleared; download important takes.`,
+    ].join(" ");
     const loose = looseTakes(all);
     elements.takeLoose.hidden = !loose.length;
-    elements.takeLooseMessage.textContent = `${loose.length} take${loose.length === 1 ? "" : "s"} not in a track \u00b7 ${takeSizeLabel(window.MeleteRecording.takeBytes(loose))}`;
+    elements.takeLooseMessage.textContent = `${config.audition?.enabled ? "Audition takes" : "Recording recovery"} \u00b7 ${takeSizeLabel(window.MeleteRecording.takeBytes(loose))}`;
     elements.deleteLooseTakes.disabled = active || takeActionBusy || !loose.length;
-    elements.takeStorageWarning.hidden = !takeLibraryReady || totalBytes < takeStorageWarningAt;
-    elements.takeStorageWarningMessage.textContent = `Recordings use ${takeSizeLabel(totalBytes)} across this site's songs. Saved takes are never evicted to make room.`;
-    elements.takeStorageCleanup.disabled = takeActionBusy || !all.length;
+    elements.deleteLooseTakes.dataset.deleteToken = loose.map(t => t.id).sort().join(",");
     const deleted = [...takeLibrary.values()].filter(take => take.deleteAfter);
     elements.takeUndo.hidden = !deleted.length;
     elements.takeUndoMessage.textContent = `${deleted.length} take${deleted.length === 1 ? "" : "s"} deleted`;
     elements.undoTakeDelete.disabled = takeActionBusy || !deleted.some(take => take.deleteAfter > Date.now());
     elements.retryTakeSave.hidden = active || !pending;
     elements.retryTakeSave.disabled = takeActionBusy;
-    const filtered = loose.sort((a, b) => window.MeleteTakePitch.compareTakes(a, b, takeSort));
+    const filtered = loose.sort((a, b) => window.MeleteTakePitch.compareTakes(
+      {...a, pitchScore: wholeSongTakeScore(a)}, {...b, pitchScore: wholeSongTakeScore(b)}, takeSort));
     const takes = filtered.slice(0, takeVisibleCount);
     elements.takeMore.hidden = takes.length === filtered.length;
     elements.takeMore.textContent = `Show more (${takes.length}/${filtered.length})`;
@@ -8944,7 +9577,7 @@
       elements.takeList.dataset.ids = key;
       const existing = new Map([...elements.takeList.children].map(row => [row.dataset.takeId, row]));
       const retained = new Set(takes.map(take => take.id));
-      for (const [id, row] of existing) if (!retained.has(id)) takeOctavePagers.get(row.querySelector(".take-octave"))?.destroy();
+      for (const [id, row] of existing) if (!retained.has(id)) takeOctavePagers.delete(row.querySelector(".take-octave"));
       const rows = takes.map(take => {
         if (existing.has(take.id)) return existing.get(take.id);
         const row = document.createElement("div");
@@ -8954,18 +9587,21 @@
         row.innerHTML = `<div class="take-summary">
           <button class="take-select" type="button">
           <span class="take-row-label"><span class="take-number"></span><span class="take-part"></span></span>
-          <span class="take-start"></span><span class="take-end"></span>
+          <span class="take-segments"></span>
           <span class="take-detail"><span class="take-tracked"><strong></strong></span><span class="take-error"><strong></strong></span><span class="take-median"><strong></strong></span><span class="take-within"><strong></strong></span></span>
+          <span class="take-created"></span><span class="take-modified"></span>
           </button>
           <span class="take-warning" hidden>!</span>
-          <div class="practice-part-pager take-octave" role="spinbutton" tabindex="0"></div>
-          <button class="icon-button take-hear" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4V5ZM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"></path></svg></button>
+          <button class="take-octave" type="button">-</button>
+          <span class="take-hear-cell"><button class="icon-button take-hear" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4V5ZM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"></path></svg></button></span>
+          <span class="take-row-actions">
           <button class="icon-button take-download" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg></button>
           <button class="icon-button take-delete" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M19 6v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6M8 6V3h8v3M10 10v7M14 10v7"></path></svg></button>
+          </span>
           </div>`;
         const preview = row.querySelector(".take-select"), download = row.querySelector(".take-download"), remove = row.querySelector(".take-delete");
         preview.addEventListener("click", () => { void previewTake(take.id); });
-        row.querySelector(".take-hear").addEventListener("click", () => { void toggleTakeLayer(take.id); });
+        attachTakeHear(row.querySelector(".take-hear"), () => take.id, () => { void toggleTakeLayer(take.id); });
         row.addEventListener("click", event => {
           if (!preview.disabled && !event.target.closest("button, [role=spinbutton]")) void previewTake(take.id);
         });
@@ -8985,12 +9621,10 @@
       row.dataset.takeNumber = take.number || "unsaved";
       row.querySelector(".take-number").textContent = take.number || "...";
       row.querySelector(".take-part").textContent = take.part;
+      row.style.setProperty("--take-part-color",trackPaint(take.pitchReference?.part,take.pitchReference?.line ?? null));
+      window.MeleteTakeControls.showDates(row, take);
       const bounds = window.MeleteTakePitch.takeBounds(take);
-      for (const endpoint of ["start", "end"]) {
-        const cell = row.querySelector(`.take-${endpoint}`);
-        cell.textContent = takeBoundaryLabel(bounds[endpoint]);
-        cell.title = `${endpoint === "start" ? "Recording starts" : "Recording ends (exclusive)"}: ${cell.textContent}`;
-      }
+      row.querySelector(".take-segments").textContent = "1";
       const range = `${takeBoundaryLabel(bounds.start)}-${takeBoundaryLabel(bounds.end)}`;
       row.querySelector(".take-row-label").title = [comparison, `Take ${take.number || "..."} · ${take.part} · ${range}`].filter(Boolean).join(". ");
       const warning = take.unsaved ? "Unsaved audio; download or retry saving" : take.gap ? "Audio gap" : !take.active && !take.complete ? "Recovered incomplete audio" : take.peak >= 0.999 ? "Clipping" : take.peak < 0.001 && take.seconds > 1 ? "Very quiet" : "";
@@ -9018,7 +9652,9 @@
       row.querySelector(".take-hear").disabled = takeActionBusy || !take.length || take.active;
       download.disabled = active || takeActionBusy || !take.length;
       remove.disabled = active || takeActionBusy;
+      remove.dataset.deleteToken = `${take.id}:${take.updatedAt}`;
     });
+    window.MeleteTakeControls.fitTable(elements.takePanel.querySelector(".take-review"));
     updateTakePreview();
   }
 
@@ -9031,21 +9667,111 @@
     elements.checkMicrophone.focus();
   }
 
-  async function startTakeRecording() {
-    if (takeState !== "off" || !pitchCapturePageActive || document.hidden) return;
+  function practiceTraceKeyNow() {
+    if(!ready || conductorMode || !Number.isInteger(practicePartIndex))return null;
+    return window.MeletePracticeTrace.key(takeSongKey(),practicePartIndex,practiceDivisi[practicePartIndex],
+      compPanel?.stationPerson(),pitchTraceFingerprint());
+  }
+  function reviewPracticeTrace(explicit=true) {
+    if (!practiceTraceRecord || takeState!=="off") return;
+    const id=practiceTraceIdentity;
+    if(explicit && takePreviewId===id && (scoreView==="bars" || inspectedTakeId===id)){stopTakePreview();return;}
+    compPanel?.noteExplicitSelection();
+    if (takePreviewId!==id) stopTakePreview();
+    takePreviewId=id;inspectedTakeId=explicit?id:null;
+    takeReview={id,label:trackLabel(practiceTraceRef.part,practiceTraceRef.line)+" pitch practice",ref:practiceTraceRef,
+      track:practiceTraceRef.part,rate:1,start:0,end:practiceTraceRef.seconds,frames:practiceTraceRecord.frames};
+    renderPitchTrace();updateTakePreview();
+  }
+  function paintPracticeTraceRow() {
+    if(!practiceTraceRow)return;
+    const selected=takePreviewId===practiceTraceIdentity && (scoreView!=="standard" || inspectedTakeId===takePreviewId);
+    practiceTraceRow.classList.toggle("is-selected",selected);
+    const button=practiceTraceRow.querySelector(".comp-review");
+    button.setAttribute("aria-pressed",String(selected));button.disabled=takeState!=="off";
+    practiceTraceRow.querySelector(".take-delete").disabled=takeState!=="off";
+  }
+  function readPracticeTrace(force=false,select=false) {
+    const k=practiceTraceKeyNow(), id=k?window.MeletePracticeTrace.id(k):"";
+    if(!force && practiceTraceIdentity===id){paintPracticeTraceRow();return;}
+    const ticket=++practiceTraceTicket,changed=practiceTraceIdentity!==id;
+    practiceTraceIdentity=id;
+    if(changed && takePreviewId?.startsWith("trace:"))stopTakePreview();
+    const selection=takePreviewGeneration;
+    const host=document.getElementById("practiceTraceRows");
+    practiceTraceRecord=null;practiceTraceRow=null;host.replaceChildren();
+    if(!k)return;
+    const ref=takePitchReference({start:0,end:sequence.endTick,rate:1},k[2],k[3]===-1?null:k[3]);ref.latency=0;
+    void window.MeletePracticeTrace.read(takeStore,k).then(record=>{
+      if(ticket!==practiceTraceTicket)return;
+      if(!record){if(takePreviewId===id)stopTakePreview();return;}
+      const frames=window.MeleteVocalPitch.cleanPitchFrames(window.MeleteTakePitch.cleanRestFrames(window.MeletePracticeTrace.unpack(record.data),ref));
+      const stats=window.MeleteTakePitch.scoreFrames(frames,ref,ref.seconds);
+      practiceTraceRecord={...record,frames};practiceTraceRef=ref;
+      const row=practiceTraceRow=document.getElementById("compRowTemplate").content.firstElementChild.cloneNode(true);
+      row.dataset.traceId=id;row.style.setProperty("--take-part-color",trackPaint(ref.part,ref.line));
+      row.querySelector(".take-number").textContent="Trace";row.querySelector(".take-singer").textContent=compPanel?.stationPerson()?.name||"";
+      row.querySelector(".take-part").textContent=trackLabel(ref.part,ref.line);
+      const btn=row.querySelector(".comp-review");
+      btn.setAttribute("aria-label","Review saved practice pitch for "+trackLabel(ref.part,ref.line));
+      btn.title=`Pitch practice: ${Math.ceil(record.data.byteLength/1024)} KiB of contour data. No recorded audio.`;btn.onclick=()=>reviewPracticeTrace();
+      for(const [name,v] of Object.entries(window.MeleteTakeControls.metricValues(stats))) row.querySelector(".comp-"+name).textContent=Number.isFinite(v)?v.toFixed(1):"—";
+      for(const el of row.querySelectorAll(".take-octave,.take-hear,.take-download,.take-upload")){el.disabled=true;el.style.visibility="hidden";}
+      const del=row.querySelector(".take-delete");del.dataset.deleteToken=id+record.updatedAt;del.setAttribute("aria-label","Delete saved practice contour");
+      del.onclick=async()=>{if(takeState!=="off")return;try{await window.MeletePracticeTrace.remove(takeStore,k);readPracticeTrace(true);}
+        catch(error){showToast(error.message,"error");}};
+      window.MeleteTakeControls.showDates(row,record);host.append(row);paintPracticeTraceRow();
+      if((select && selection===takePreviewGeneration && !takePreviewId) || takePreviewId===id) reviewPracticeTrace(false);
+    }).catch(()=>{ /* Playback stays available when browser storage is restricted. */ });
+  }
+
+  document.getElementById("recordAudio").addEventListener("click",async()=>{
+    if(!recordAudio && !Number.isInteger(practicePartIndex) && mixerParts.length===1) choosePracticePart(mixerParts[0].source,mixerParts[0].line);
+    if(!recordAudio && !Number.isInteger(practicePartIndex)){showPartChooser({title:"Record which part?"});
+      partChooserThen=()=>document.getElementById("recordAudio").click();return;}
+    recordAudio=!recordAudio;
+    if(!recordAudio && preparingCapture) preparingCapture.audio=false;
+    if(!wantsPitchCapture) togglePitchCapture();
+    else updatePitchCaptureAppearance();
+    if(recordAudio || !captureIsAudio || takeState==="off" || takeState==="stopping") return;
+    // Withdrawing audio consent is immediate. Only an already moving pass can
+    // continue here, and its replacement can never open the PCM recorder.
+    const moving=engine.playing, transport=engine.transportRequest;
+    await stopTakeRecording("",!moving,{preserveRecordIntent:true});
+    if(moving && engine.playing && transport===engine.transportRequest && wantsPitchCapture)
+      void startTakeRecording({audio:false,joinOnly:true});
+  });
+
+  async function startTakeRecording({audio=recordAudio,joinOnly=false}={}) {
+    if (takeState !== "off" || !wantsPitchCapture || !pitchCapturePageActive || document.hidden || (joinOnly && !engine.playing)) return;
+    if (compPanel?.prepareStation) {
+      if(preparingCapture) return;
+      const pending=preparingCapture={audio}, transport=engine.transportRequest;
+      try {
+        await compPanel.prepareStation();
+        if(preparingCapture!==pending || transport!==engine.transportRequest) return;
+        audio=pending.audio;
+      } catch(error) {
+        if(preparingCapture===pending) showToast(error.message || "Could not prepare this singer's recording.", "error");
+        return;
+      } finally {if(preparingCapture===pending) preparingCapture=null;}
+      if (takeState !== "off" || !pitchCapturePageActive || document.hidden || !wantsPitchCapture || (joinOnly && !engine.playing)) return;
+    }
+    if (!Number.isInteger(practicePartIndex)) {
+      showToast("Show one part in See to record; hold its name to isolate it."); return;
+    }
     if (takeActionBusy || takeJournal?.entries.size) {
       showToast("Save or download the pending recording before starting another.", "error"); return;
     }
+    const keepAudio=audio && recordAudio;
     let spec = recordingLoopSpec();
-    if (!spec || Math.max(spec.seconds, spec.initial?.seconds || 0) > window.MeleteRecording.MAX_LOOP_SECONDS) {
+    if (!spec || keepAudio && Math.max(spec.seconds, spec.initial?.seconds || 0) > window.MeleteRecording.MAX_LOOP_SECONDS) {
       showToast("Choose a passage of 5 minutes or less to record.", "error"); renderTakePanel(); return;
     }
     if (!pitchCaptureSupported()) { showToast("Microphone recording is unavailable here", "error"); return; }
-    // Overdub against the chosen recordings, but display this pass's live trace.
-    if (takeReview) {
-      if (engine.takeLayers.has(takeReview.id)) engine.pinnedTakeIds.add(takeReview.id);
-      stopTakePreview();
-    }
+    // Pitchbar keeps the selected comp's untouched phrases during overdub.
+    captureIsAudio=keepAudio;
+    pendingCaptureTrace = keepAudio ? {key: compPanel?.state()?.key, from:engine.secondsAtTick(spec.initial.start), to:null} : null;
     const joining = engine.playing;
     if (!joining) {
       engine.pauseTransport();
@@ -9055,23 +9781,24 @@
     pitchCaptureNotice = "";
     savePreferences();
     takeState = "requesting";
+    resetPitchTraceGrid();
+    if (scoreView === "standard") renderPitchTrace();
     takeNotice = "";
     const generation = ++takeRequestGeneration;
     renderTakePanel();
     try {
-      await loadTakeLibrary();
-      await checkTakeSpace(spec);
+      if(keepAudio){await loadTakeLibrary();await checkTakeSpace(spec);}else await takeStore.open();
       if (generation !== takeRequestGeneration) return;
       await ensureMicrophoneInput();
       if (generation !== takeRequestGeneration) { syncMicrophoneActivity(); return; }
       let journal, initialAudio;
-      const capture = await window.MeleteRecording.PcmCapture.create(pitchCaptureContext, pitchCaptureSource,
+      const capture = keepAudio ? await window.MeleteRecording.PcmCapture.create(pitchCaptureContext, pitchCaptureSource,
         (frame, samples) => {
           if (journal) journal.append(frame, samples);
           else initialAudio = {frame, samples};
         },
-        error => { void stopTakeRecording(error.message, true, {discardShortTail: false}); });
-      if (generation !== takeRequestGeneration) { await capture.stop(); syncMicrophoneActivity(); return; }
+        error => { void stopTakeRecording(error.message, true, {discardShortTail: false}); }) : null;
+      if (generation !== takeRequestGeneration) { await capture?.stop(); syncMicrophoneActivity(); return; }
       takeCapture = capture;
       if (joining) {
         spec = recordingLoopSpec();
@@ -9082,17 +9809,24 @@
           label: `${scoreLocationAtTick(start)}-${spec.label.split("-").at(-1)}`};
         if (spec.mode === "segment") Object.assign(spec, {start, seconds: spec.initial.seconds});
       }
+      if (compPanel) spec = compPanel.recordingPlan(spec);
       spec.pitchReference = takePitchReference(spec);
       if (spec.initial) spec.initial.pitchReference = takePitchReference({...spec, ...spec.initial});
-      journal = new window.MeleteRecording.TakeJournal(takeStore, takeSongKey(), spec, pitchCaptureContext.sampleRate, {
+      if(!keepAudio) practiceWriter=window.MeletePracticeTrace.writer(takeStore,practiceTraceKeyNow(),spec,error=>{
+        const message=error?.name==="QuotaExceededError" ? "Storage full. Pitch practice stopped at the last saved point." : "Pitch practice could not be saved locally.";
+        void stopTakeRecording(message,true);showToast(message,"error");
+      });
+      else journal = new window.MeleteRecording.TakeJournal(takeStore, takeSongKey(), spec, pitchCaptureContext.sampleRate, {
         onSaved: record => {
           takeLibrary.set(record.id, record);
+          if (record.finalized && takeState === "stopping" && pendingCaptureTrace) pendingCaptureTrace.id = record.id;
           announceTakeChange();
           renderTakePanel();
           if (record.finalized) window.setTimeout(() => { void scoreNextTake(); }, 0);
         },
         onDiscard: id => {
           takeLibrary.delete(id);
+          if (pendingCaptureTrace) { pendingCaptureTrace = null; resetPitchTraceGrid(); renderPitchTrace(); }
           takeNotice = "";
           announceTakeChange();
           renderTakePanel();
@@ -9103,12 +9837,15 @@
           showTakePanel();
         },
       });
-      takeJournal = journal;
+      takeJournal = journal || null;
       // The ready block may straddle the transport start. Keep its real samples
       // so TakeBuffer can recover that boundary without inserting silence.
       if (initialAudio) journal.append(initialAudio.frame, initialAudio.samples);
       takeState = joining ? "recording" : "armed";
-      if (joining) journal.begin(Math.round(pitchCaptureContext.currentTime * pitchCaptureContext.sampleRate));
+      if (joining) {
+        if(practiceWriter)practiceWriter.from=engine.currentSeconds();
+        (practiceWriter || journal).begin(Math.round(pitchCaptureContext.currentTime * pitchCaptureContext.sampleRate));
+      }
       activateCachedPitchCapture({quiet: true});
       takeRefreshTimer = window.setInterval(renderTakePanel, 250);
       renderTakePanel();
@@ -9118,7 +9855,7 @@
       elements.takeCountIn.hidden = true;
       if (!joining) await engine.startTransport({allowLoopLeadIn: true,
         recordingLeadIn: engine.secondsAtTick(spec.initial.start)});
-      if (!takePersistenceRequested && generation === takeRequestGeneration) {
+      if (keepAudio && !takePersistenceRequested && generation === takeRequestGeneration) {
         takePersistenceRequested = true;
         void navigator.storage?.persist?.().then(granted => { takePersistence = granted; renderTakePanel(); }).catch(() => {});
       }
@@ -9128,6 +9865,7 @@
     } catch (error) {
       if (generation !== takeRequestGeneration) return;
       console.error("Loop recording could not start", error);
+      recordAudio=false;
       const message = error?.name === "QuotaExceededError" ? "Storage full. Delete unwanted takes before recording."
         : !takeLibraryReady ? "Local storage unavailable. Enable site storage to record." : microphoneFailureMessage(error);
       await stopTakeRecording(message, true);
@@ -9136,7 +9874,9 @@
     }
   }
 
-  function stopTakeRecording(message = "", pausePlayback = false, {discardShortTail = true} = {}) {
+  function stopTakeRecording(message = "", pausePlayback = false, {discardShortTail = true, preserveRecordIntent=false} = {}) {
+    preparingCapture=null;
+    if(!preserveRecordIntent && recordAudio){recordAudio=false;updatePitchCaptureAppearance();}
     if (takeState === "off") return Promise.resolve();
     if (takeState === "stopping") return takeStopPromise || Promise.resolve();
     ++takeRequestGeneration;
@@ -9145,11 +9885,14 @@
     window.clearTimeout(takeCountHideTimer);
     elements.takeCountIn.hidden = true;
     takeState = "stopping";
+    if (pendingCaptureTrace) pendingCaptureTrace.to = engine.currentSeconds();
     stopPitchSampling();
     takeNotice = ["Stopped", "Count-in canceled"].includes(message) ? "" : message;
-    const journal = takeJournal;
+    const journal = captureIsAudio ? takeJournal : null, writer=practiceWriter, finishingTrace=writer?.finish();
+    practiceWriter=null;
     journal?.finish((pitchCaptureContext?.currentTime || 0) * (pitchCaptureContext?.sampleRate || 1), {
       discardShortTail,
+      trimStopNoise: discardShortTail,
       segment: discardShortTail ? (record, seconds) => {
         const ref = record.pitchReference;
         const end = Math.min(record.end, engine.tickAtSeconds(engine.secondsAtTick(record.start) + seconds * record.rate));
@@ -9164,13 +9907,20 @@
     if (pausePlayback) engine?.pauseTransport();
     renderTakePanel();
     takeStopPromise = (async () => {
-      try { await capture?.stop(); await journal?.flush(); }
+      try { await capture?.stop(); await journal?.flush(); await finishingTrace; }
       finally {
         takeState = "off";
+        // Pitchbar keeps live samples until the persisted comp swaps in.
+        renderPitchTrace();
         takeStopPromise = null;
         if (journal?.failed) takeNotice = takeSaveError(journal.failed);
-        disablePitchCapture(false, {preservePreference: true, reason: takeNotice});
+        if (wantsPitchCapture && pitchCapturePageActive && !document.hidden && !takeNotice && pitchInputIsLive()) {
+          pitchCaptureState = "armed";
+          updatePitchCaptureAppearance();
+        } else disablePitchCapture(false, {preservePreference: true, reason: takeNotice});
         renderTakePanel();
+        if(writer){const same=JSON.stringify(writer.key)===JSON.stringify(practiceTraceKeyNow());
+          readPracticeTrace(true,same && !writer.failed);void refreshRecordingTime();}
         void scoreNextTake();
       }
     })();
@@ -9181,19 +9931,12 @@
     await stopTakeRecording("Stopped", true);
     if (takeActionBusy) return;
     const loose = looseTakes();
-    takeDeleteIds = loose.map(take => take.id);
-    if (!takeDeleteIds.length) {
+    const ids = loose.map(take => take.id);
+    if (!ids.length) {
       showToast("Every recording here belongs to a track or its Undo, so all were kept.");
       return;
     }
-    showTakePanel();
-    elements.takeActions.open = false;
-    const count = takeDeleteIds.length;
-    elements.takeDeleteMessage.textContent = `Permanently delete ${count} take${count === 1 ? "" : "s"} not in a track and free ${takeSizeLabel(window.MeleteRecording.takeBytes(loose))}? Download first to keep copies. Tracks and their Undo are kept.`;
-    elements.confirmTakeDelete.textContent = count === 1 ? "Delete take" : "Delete takes";
-    elements.takeDeletePrompt.hidden = false;
-    elements.cancelTakeDelete.focus();
-    renderTakePanel();
+    await deleteTakes(ids);
   }
 
   function takeTransportChanged(kind) {
@@ -9202,12 +9945,17 @@
       return;
     }
     if ((kind === "play" && takeState === "armed") || (kind === "loop" && takeState === "recording")) {
-      takeState = kind === "play" && takeJournal.spec.initial?.leadInSeconds > 0 ? "counting" : "recording";
-      takeJournal.begin(Math.round(pitchCaptureContext.currentTime * pitchCaptureContext.sampleRate));
+      if (kind === "loop" && takeJournal?.spec.station?.stage === "scratchpad") {
+        const next = compPanel?.advanceStart(takeJournal.spec.initial?.trackSlot);
+        if (next) pendingCaptureTrace = {key: next, from: engine.loopStartSeconds, to: null};
+      }
+      takeState = kind === "play" && takeJournal?.spec.initial?.countInPlan ? "counting" : "recording";
+      if(practiceWriter)practiceWriter.from=kind==="loop" ? engine.loopStartSeconds : engine.secondsAtTick(practiceWriter.spec.initial.start);
+      (practiceWriter || takeJournal).begin(Math.round(pitchCaptureContext.currentTime * pitchCaptureContext.sampleRate));
       if (kind === "play" && takeState === "counting") {
         // Guide music, microphone frames and beat cues share one start. The
         // count-in stays in the first take; entering never cuts or restarts it.
-        const plan = window.MeleteRecording.countInPlan(sequence.measures, sequence.division,
+        const plan = takeJournal.spec.initial.countInPlan || window.MeleteRecording.countInPlan(sequence.measures, sequence.division,
           takeJournal.spec.initial.entry, tick => engine.secondsAtTick(tick), engine.rate);
         const countIn = new window.MeleteRecording.CountIn(engine.context, engine.master, plan, beat => {
           elements.takeCountIn.querySelector("strong").textContent = String(beat.label);
@@ -9230,15 +9978,17 @@
       renderTakePanel();
       startPitchSampling();
     } else if (!["play", "loop"].includes(kind) && takeState !== "off" && takeState !== "stopping") {
-      void stopTakeRecording(kind === "pause" ? "Stopped" : "Stopped: playback changed", kind !== "pause");
+      void stopTakeRecording(["pause","end"].includes(kind) ? "Stopped" : "Stopped: playback changed",
+        kind !== "pause",{preserveRecordIntent:true});
     }
   }
 
   function togglePracticePlayback() {
+    if(preparingCapture){preparingCapture=null;engine?.pauseTransport();return;}
     if (takeState !== "off") {
       if (takeState === "stopping") engine?.pauseTransport();
       void stopTakeRecording(["requesting", "counting"].includes(takeState) ? "Count-in canceled" : "Stopped",
-        true, {discardShortTail: true});
+        true, {discardShortTail: true,preserveRecordIntent:true});
     }
     else {
       engine?.toggleTransport();
@@ -9374,8 +10124,16 @@
   function performNotationRender() {
     renderTimer = 0;
     if (!api || !scoreTracks.length || scoreView !== "standard") return;
+    elements.score.hidden = !visibleTracks.size;
     if (notationRenderInFlight) {
       notationRenderQueued = true;
+      return;
+    }
+    if (!visibleTracks.size) {
+      // AlphaTab ignores renderTracks([]), so handle the empty view ourselves.
+      notationRenderQueued = false;
+      clearNotationRenderTimeout();
+      discardScoreRenderSnapshot();
       return;
     }
     cancelPitchAuditions();
@@ -9496,9 +10254,13 @@
   }
 
   function updateSeekAppearance(milliseconds) {
-    const maximum = Number(elements.seek.max) || 1;
-    const progress = clamp((milliseconds / maximum) * 100, 0, 100);
+    const progress = timelineFraction(milliseconds / 1000) * 100;
     elements.timelineRail.style.setProperty("--seek-progress", `${progress}%`);
+  }
+
+  function timelineFraction(seconds) {
+    const start = engine?.secondsAtTick(pitchTraceOriginTick()) || 0;
+    return clamp((seconds - start) / Math.max(.001, (engine?.duration || 1) - start), 0, 1);
   }
 
   function observePlaybackCursor(barCursor, beatCursor) {
@@ -9592,15 +10354,18 @@
     if (clearPrediction) predictiveFollowRange = null;
   }
 
-  function interruptVerticalFollow() {
+  function interruptVerticalFollow(event) {
     pendingLoopRevealTick = null;
     if (verticalFollowAnimationFrame || predictiveFollowRange) cancelVerticalFollowAnimation(true);
     // Real input must also end the grace period after a completed auto-scroll.
     automaticScrollUntil = 0;
+    if (event?.target instanceof Node && elements.score.contains(event.target)) {
+      horizontalGestureUntil = performance.now() + 200;
+    }
   }
 
   function followScrollDuration(distance) {
-    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return 0;
+    if (reducedFollowMotion?.matches) return 0;
     return clamp(150 + Math.sqrt(Math.max(0, distance)) * 8, 180, 520);
   }
 
@@ -9722,11 +10487,40 @@
     return true;
   }
 
+  function notationBeatLine() {
+    const line = elements.score.querySelector(".at-cursor-beat")?.getBoundingClientRect();
+    return line?.width > 0 ? line : null;
+  }
+
+  function followHorizontalScore(now) {
+    if (now < horizontalGestureUntil || !visibleTracks.size || notationRenderInFlight || pinchActive) return;
+    const score = elements.score;
+    if (score.scrollWidth <= score.clientWidth) return;
+    const cursor = notationBeatLine();
+    if (!cursor) return;
+    const rect = score.getBoundingClientRect();
+    const left = Math.max(0, rect.left), right = Math.min(window.innerWidth, rect.right);
+    const width = right - left;
+    if (width <= 0) return;
+    // Leave music ahead of the beat. At either end the score stops and the
+    // line keeps moving. Reduced motion advances a page at a time instead.
+    const anchor = left + width * HORIZONTAL_READING_FRACTION;
+    const edge = reducedFollowMotion?.matches ? right - width * 0.15 : anchor;
+    if (cursor.left >= left + 8 && cursor.left <= edge + 0.5) return;
+    const destination = clamp(score.scrollLeft + cursor.left - anchor, 0, score.scrollWidth - score.clientWidth);
+    if (Math.abs(destination - score.scrollLeft) < 0.5) return;
+    score.scrollLeft = destination;
+    followedScoreLeft = score.scrollLeft;
+  }
+
   function gentleFollowCursor() {
     if (conductor) return;
     if (!engine?.playing || pendingNotationReload || scoreScrub) return;
-    if (performance.now() - lastFollow < FOLLOW_CHECK_INTERVAL_MS) return;
-    lastFollow = performance.now();
+    const now = performance.now();
+    const horizontalScore = flow === "continuous" && scoreView === "standard";
+    if (horizontalScore && !playbackDetached) followHorizontalScore(now);
+    if (now - lastFollow < FOLLOW_CHECK_INTERVAL_MS) return;
+    lastFollow = now;
     const cursor = playbackCursorBounds();
     if (!cursor) return;
     if (playbackDetached) {
@@ -9741,8 +10535,9 @@
     }
     if (verticalFollowAnimationFrame) return;
     const direction = playbackDirection(cursor);
-    if (direction) scrollToPlayback(direction, "smooth", true);
-    else predictiveVerticalFollow(cursor);
+    if (direction) {
+      if (!horizontalScore || (direction !== "left" && direction !== "right")) scrollToPlayback(direction, "smooth", true);
+    } else predictiveVerticalFollow(cursor);
   }
 
   // Where the music comes to rest when the view follows it: a fifth of the way
@@ -9781,7 +10576,7 @@
   }
 
   function playbackCursorBounds() {
-    if (!engine || pendingNotationReload) return null;
+    if (!engine || pendingNotationReload || !visibleTracks.size) return null;
     const tick = clamp(engine.tickAtSeconds(engine.currentSeconds()), 0, Math.max(0, sequence.endTick - 1));
     if (scoreView === "bars") {
       const system = barSystems.find((system) => tick >= system.startTick && tick < system.endTick);
@@ -9793,9 +10588,10 @@
     if (!box) return null;
     const origin = elements.score.getBoundingClientRect();
     let left = origin.left + box.x - elements.score.scrollLeft, width = box.w;
-    if (elements.score.classList.contains("has-horizontal-overflow")) {
-      const line = elements.score.querySelector(".at-cursor-beat")?.getBoundingClientRect();
+    if (flow === "continuous" || elements.score.classList.contains("has-horizontal-overflow")) {
+      const line = notationBeatLine();
       if (line) { left = line.left; width = line.width; }
+      else if (flow === "continuous") return null;
     }
     const top = origin.top + box.y - elements.score.scrollTop;
     return { left, top, right: left + width, bottom: top + box.h, width, height: box.h,
@@ -9893,6 +10689,9 @@
         window.scrollTo({ top: Math.max(0, destination), behavior: "auto" });
       }
     } else {
+      // A native smooth scroll would compete with the score's frame-by-frame follow.
+      const followingBeat = flow === "continuous" && scoreView === "standard" && engine.playing;
+      if (followingBeat) behavior = "auto";
       automaticScrollUntil = Date.now() + (behavior === "smooth" ? 800 : 300);
       const scoreSurface = scoreView === "bars" ? elements.barScore : elements.score;
       const scoreBounds = scoreSurface.getBoundingClientRect();
@@ -9900,13 +10699,19 @@
         ? direction === "left"
           ? scoreSurface.scrollLeft + bounds.left - scoreBounds.left - 10
           : scoreSurface.scrollLeft + bounds.right - scoreBounds.right + 10
-        : scoreSurface.scrollLeft + bounds.left - scoreBounds.left - (scoreBounds.width - bounds.width) / 2;
+        : scoreSurface.scrollLeft + bounds.left - scoreBounds.left
+          - (scoreBounds.width - bounds.width) * (followingBeat ? HORIZONTAL_READING_FRACTION : 0.5);
       scoreSurface.scrollTo({ left: Math.max(0, destination), behavior });
     }
     return true;
   }
 
-  function recordManualScoreScroll() {
+  function recordManualScoreScroll(event) {
+    if (event?.currentTarget === elements.score && flow === "continuous" && scoreView === "standard") {
+      if (elements.score.scrollLeft === followedScoreLeft) return;
+      followedScoreLeft = null;
+      if (Date.now() >= automaticScrollUntil) horizontalGestureUntil = performance.now() + 200;
+    }
     if (Date.now() < automaticScrollUntil) return;
     cancelVerticalFollowAnimation(true);
     const cursor = playbackCursorBounds();
@@ -9925,6 +10730,7 @@
 
   function syncPlaybackButton() {
     const preparing = Boolean(engine?.preparing);
+    stationMixEditor?.transportChanged();
     elements.playPause.disabled = !ready;
     elements.playPause.classList.toggle("is-playing", playing || preparing);
     elements.playPause.setAttribute("aria-busy", String(preparing));
@@ -9941,7 +10747,7 @@
       });
       navigator.mediaSession.setActionHandler("play", () => { void engine?.startTransport(); });
       navigator.mediaSession.setActionHandler("pause", () => {
-        if (takeState !== "off") void stopTakeRecording("Stopped", true, {discardShortTail: true});
+        if (takeState !== "off") void stopTakeRecording("Stopped", true, {discardShortTail:true,preserveRecordIntent:true});
         else engine?.pauseTransport();
       });
       navigator.mediaSession.setActionHandler("seekbackward", (details) => {
@@ -9997,7 +10803,7 @@
   new MutationObserver(changes => {
     if (rangeBindFrame || !changes.some(change => [...change.addedNodes].some(node => node.nodeType === 1
       && (node.matches('.at-surface-svg') || node.querySelector('.at-surface-svg'))))) return;
-    rangeBindFrame = requestAnimationFrame(() => { rangeBindFrame = 0; bindScoreRanges(); });
+    rangeBindFrame = requestAnimationFrame(() => { rangeBindFrame = 0; bindScoreRanges(); mountStaffPitchTraces(); });
   }).observe(elements.score, {childList:true,subtree:true});
   elements.score.addEventListener('pointerleave',()=>hoverNote(null));
   window.addEventListener('blur',()=>hoverNote(null));
@@ -10021,6 +10827,8 @@
     clearTakeLayers();
   });
   window.addEventListener("pageshow", () => {
+    // This fires inside hidden collection frames too, once they finish loading.
+    if (window.frameElement?.inert) return;
     pitchCapturePageActive = true;
     referencePlayer?.activate(true);
     restorePitchCapture();
@@ -10035,6 +10843,7 @@
     const selected = practicePartPager?.value();
     void stopTakeRecording("Stopped: practice part changed", true);
     setPracticePart(selected);
+    applyRelativeGuide(selected);
     updateNoteActionLabel();
     if (scoreView === "bars") scheduleBarRender();
     // Choosing here answers the first-visit question as well.
@@ -10066,9 +10875,9 @@
   attachHoldReset(elements.pitchCapture, togglePitchCapture, clearPitchTrace, "pitch trace");
   microphoneCheck = new window.MeleteMicrophoneCheck.Check({
     dialog: document.getElementById("microphoneCheck"), trigger: elements.checkMicrophone,
-    inline: true, select: elements.takeMicrophone,
+    inline: true, passive: true, select: elements.takeMicrophone,
     acquire: async () => {
-      await ensureMicrophoneInput();
+      await ensureMicrophoneInput({waitForAudio: false});
       return {source: pitchCaptureSource, context: pitchCaptureContext, track: pitchCaptureStream.getAudioTracks()[0]};
     },
     release: syncMicrophoneActivity,
@@ -10081,52 +10890,36 @@
       releaseMicrophoneInput();
       takeNotice = "";
       renderTakePanel();
+      if (wantsPitchCapture) void armMicrophone();
     },
   });
-  navigator.mediaDevices?.addEventListener?.("devicechange", () => { void refreshMicrophoneChoices(); });
+  window.MeleteMicrophoneCheck.mediaDevicesFor(window)?.addEventListener?.("devicechange", () => { void refreshMicrophoneChoices(); });
   for (const button of elements.takePanel.querySelectorAll("[data-take-sort]")) {
     button.addEventListener("click", () => {
       takeSort = window.MeleteTakePitch.nextTakeSort(takeSort, button.dataset.takeSort);
       try { localStorage.setItem("melete:take-sort", JSON.stringify(takeSort)); } catch {}
       renderTakePanel();
       compPanel?.selected();
-      elements.takePanel.querySelector(".take-review").scrollTop = 0;
     });
   }
   elements.takeMore.addEventListener("click", () => { takeVisibleCount += 25; renderTakePanel(); });
-  elements.downloadTakes.addEventListener("click", () => { void downloadAllTakes(); });
+  document.getElementById("downloadMix").addEventListener("click", async () => {
+    if (!engine?.takeLayers.size || takeActionBusy || takeState !== "off") return;
+    takeActionBusy = true; updateTakePreview(); renderTakePanel();
+    const button = document.getElementById("downloadMix"); button.setAttribute("aria-busy", "true");
+    try {
+      const result = await window.MeleteTakeMix.render([...engine.takeLayers.values()], {
+        duration: engine.duration, rate: engine.rate, reverb: takeReverbControl.value(), volume: takeVolumeControl.value(), sampleRate: engine.context.sampleRate,
+      });
+      downloadTakeBlob(result.blob, `${config.slug || "melete"}-mix.wav`);
+    } catch (error) { showToast(`Mix export failed: ${error.message}`, "error"); }
+    finally { takeActionBusy = false; button.setAttribute("aria-busy", "false"); updateTakePreview(); renderTakePanel(); }
+  });
   elements.deleteLooseTakes.addEventListener("click", () => { void clearTakes(); });
   elements.exitTakeReview.addEventListener("click", stopTakePreview);
   elements.undoTakeDelete.addEventListener("click", () => { void undoTakeDeletion(); });
-  elements.takeStorageCleanup.addEventListener("click", () => { void clearTakes(); });
-  elements.takeStorageKeep.addEventListener("click", () => {
-    takeStorageWarningAt = takeOtherBytes + window.MeleteRecording.takeBytes(allTakes(true)) + window.MeleteRecording.STORAGE_WARNING_BYTES;
-    renderTakePanel();
-  });
-  document.addEventListener("click", event => {
-    if (!elements.takeActions.contains(event.target)) elements.takeActions.open = false;
-  });
   elements.retryTakeSave.addEventListener("click", () => { void retryTakeSave(); });
-  elements.cancelTakeDelete.addEventListener("click", () => { takeDeleteIds = []; elements.takeDeletePrompt.hidden = true; });
-  elements.confirmTakeDelete.addEventListener("click", () => {
-    const ids = takeDeleteIds;
-    takeDeleteIds = [];
-    elements.takeDeletePrompt.hidden = true;
-    void deleteTakes(ids);
-  });
-  document.addEventListener("keydown", event => {
-    if (event.key !== "Escape" || !elements.settingsPanel.classList.contains("is-open")) return;
-    if (elements.takeActions.open) {
-      event.preventDefault();
-      elements.takeActions.open = false;
-      elements.takeActions.querySelector("summary").focus();
-    } else if (!elements.takeDeletePrompt.hidden) {
-      event.preventDefault();
-      takeDeleteIds = [];
-      elements.takeDeletePrompt.hidden = true;
-      elements.checkMicrophone.focus();
-    }
-  });
+  window.MeleteTakeControls.confirmDeletes(document);
   elements.tempo.addEventListener("input", () => {
     if (api) api.playbackSpeed = tempoControl.value() / 100;
     renderTakePanel();
@@ -10154,6 +10947,8 @@
     requestAnimationFrame(revealPendingLoopStart);
   });
   document.addEventListener("melete:deactivate", () => {
+    linkedPracticeState = null;
+    relativeMix=null;relativeGuide=null;pendingMixReceipt=null;
     referencePlayer?.activate(false);
     pitchCapturePageActive = false;
     microphoneCheck?.close();
@@ -10175,7 +10970,7 @@
     if (!ready || !engine) return;
     seeking = false;
     const value = previewSeek(Number(elements.seek.value));
-    api.tickPosition = seekTickFor(value);
+    seekPlaybackTick(seekTickFor(value));
   });
   elements.seek.addEventListener("pointercancel", () => { seeking = false; hideScrubLabel(); });
   // A release can land anywhere once the finger has slid off the rail.
@@ -10255,6 +11050,7 @@
   // browser cannot scroll the page; preserve ordinary spaces in text editors.
   document.addEventListener("keydown", (event) => {
     if (document.getElementById("microphoneCheck").open) return;
+    if (stationMixDialog.open || event.target.closest?.("#takeFieldMenu, #takeSingerDialog, #shareMixDialog, #expandTakes, .edit-take-singer")) return;
     if (event.code !== "Space" || isTextEntryTarget(event.target)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -10267,10 +11063,17 @@
 
   document.addEventListener("keydown", (event) => {
     const target = event.target;
+    if (event.defaultPrevented) return;
     if (document.getElementById("microphoneCheck").open) return;
+    if (document.getElementById("takeSingerDialog").open || shareDialog.open || stationMixDialog.open || document.getElementById("takeFieldMenu").matches(":popover-open")) return;
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable
       || target?.closest?.("audio, video")) return;
-    if (event.defaultPrevented) return;
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "z") {
+      if (target?.closest?.("dialog")) return;
+      event.preventDefault();
+      if (!event.repeat) void compPanel?.stepHistory(event.shiftKey ? "redo" : "undo");
+      return;
+    }
     if (event.key.startsWith("Arrow") && target instanceof Element
       && target.closest("button, select, [role='spinbutton'], [role='slider'], [role='tab']")) return;
     // Up and down step between section breaks, the way an editor steps between
@@ -10512,6 +11315,15 @@
         elements.downloadScore.addEventListener("click", downloadMuseScore);
         elements.downloadScore.hidden = false;
       }
+      const printParts = document.getElementById("printParts");
+      if (config.partsPdf) {
+        printParts.href = URL.createObjectURL(new Blob([base64ToBytes(config.partsPdf)], {type:"application/pdf"}));
+        printParts.hidden = false;
+      } else if (config.partsPdfUrl) {
+        const address = new URL(config.partsPdfUrl, document.baseURI);
+        if (!["http:", "https:", "file:"].includes(address.protocol)) throw new Error("Invalid parts PDF link");
+        printParts.href = address.href; printParts.hidden = false;
+      }
       fullScoreXml = embeddedText("score-data");
       const playbackJson = embeddedText("playback-data");
       sequence = JSON.parse(playbackJson);
@@ -10527,6 +11339,8 @@
       if (!parts.length) throw new Error("No score parts were found");
       configurePitchGuides(fullScoreXml);
       partDivisi = analysePartDivisi();
+      mixerParts = window.MeleteDivisiMixer.channels(parts, partDivisi);
+      prepareVoicePalette();
       // One key per kind of saved data, named after the song and never
       // versioned. Keying on the build's fingerprint meant every rebuild of the
       // same song started from nothing and left the last build's data behind,
@@ -10557,6 +11371,7 @@
       loadPitchTrace();
       buildMixer();
       buildPracticePartPicker();
+      setupMixLink();
       registerStaticResetTargets();
       loadAnnotations();
       if (!conductorMode) sweepSupersededStorage(config.slug || config.title || "score");
@@ -10572,10 +11387,12 @@
         consumeLoopLink();
       }
       const ownLinkNamesPart = ownPartLink.part !== undefined || ownPartLink.div !== undefined;
-      if (ownLinkNamesPart) consumePartLink();
+      const ownMix=Object.fromEntries(new URLSearchParams(window.location.search));
+      const mixArrival=openMixLink({...ownMix,...ownPartLink});
+      if (ownLinkNamesPart && !mixArrival) consumePartLink();
       const arrivalLink = pendingPartLink || (ownLinkNamesPart ? ownPartLink : null);
       pendingPartLink = null;
-      if (!applyPartLink(arrivalLink) && !conductorMode && !Number.isInteger(practicePartIndex) && !partChooserAnswered()) showPartChooser();
+      if (!mixArrival && !applyPartLink(arrivalLink) && !conductorMode && !Number.isInteger(practicePartIndex) && !partChooserAnswered()) showPartChooser();
 
       const settings = new window.alphaTab.Settings();
       settings.core.file = null;
@@ -10638,6 +11455,7 @@
           });
           return true;
         }
+        if (!Number.isInteger(practicePartIndex)) return false;
         if (takeState === "off") { void startTakeRecording(); return true; }
         return takeState === "requesting";
       };
@@ -10677,7 +11495,7 @@
           console.error(detail);
           scoreTracks = [];
           showLoadError("Score and playback parts do not match.", detail);
-        } else if (scoreView === "standard" && !notationRenderInFlight) {
+        } else if (scoreView === "standard" && visibleTracks.size && !notationRenderInFlight) {
           notationRenderInFlight = true;
           notationRenderQueued = false;
           notationRenderFailed = false;
@@ -10726,6 +11544,7 @@
         conductor?.setReady();
         elements.playPause.disabled = false;
         elements.seek.disabled = false;
+        elements.seek.min = String(Math.floor(engine.secondsAtTick(pitchTraceOriginTick()) * 1000));
         elements.seek.max = String(Math.max(1, Math.round(engine.duration * 1000)));
         elements.totalTime.textContent = formatTime(engine.duration * 1000);
         api.playbackSpeed = tempoControl.value() / 100;
@@ -10737,7 +11556,8 @@
         updateLoopState();
         // AlphaTab resets external output as playerReady unwinds. Restore the
         // initial loop only after that reset; later notation reloads keep position.
-        requestAnimationFrame(() => requestAnimationFrame(restoreStartupLoop));
+        // A station singer's mix goes on after the startup loop, outside any other settings change.
+        requestAnimationFrame(() => requestAnimationFrame(() => { restoreStartupLoop(); compPanel?.settleStation?.(); }));
         initializeMediaSession();
         updatePitchCaptureAppearance();
         renderTakePanel();

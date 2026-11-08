@@ -74,7 +74,7 @@ async function checkLayeredTakes(frame, page, {output, label}) {
   await page.bringToFront();
   if (await frame.locator('#partChooser').isVisible()) await frame.locator('#partChooserDismiss').click();
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await frame.locator('#settingsToggle').click();
-  if (await frame.locator('#practicePart').getAttribute('data-value') === '') await frame.locator('#practicePart').press('ArrowDown');
+  await require('./browser-sing.cjs').choosePart(frame);
   await frame.waitForFunction(() => Number.isInteger((window.__qa || window.__probe).savedPractice.practicePart));
   for (const section of ['takes', 'practice']) {
     const toggle = frame.locator(`[data-settings-section="${section}"] .settings-section-toggle`);
@@ -120,8 +120,12 @@ async function checkLayeredTakes(frame, page, {output, label}) {
   for (const id of fixture.ids) await hear(id).click();
   await frame.waitForFunction(ids => ids.every(id => (window.__qa || window.__probe).engine.takeLayers.has(id)), fixture.ids);
   const prefs = await frame.evaluate(() => (window.__qa || window.__probe).savedPractice);
-  await frame.locator('#practicePart').press('ArrowDown');
+  await require('./browser-sing.cjs').nextPart(frame);
   await frame.waitForFunction(() => (window.__qa || window.__probe).engine.takeLayers.size === 2);
+  // Layers are attached before asynchronous loudness analysis sets their gain.
+  // Source-node readiness alone is not evidence that the layer is audible yet.
+  await frame.waitForFunction(() => [...(window.__qa || window.__probe).engine.takeLayers.values()]
+    .every(layer => Number.isFinite(layer.loudness?.gain) && layer.loudness.gain > 0));
   await frame.evaluate(() => {
     const e = (window.__qa || window.__probe).engine;
     e.setRate(1); e.seek(.25);
@@ -156,11 +160,11 @@ async function checkLayeredTakes(frame, page, {output, label}) {
   const cycleOctave = async label => {
     await octave.click();
     await frame.waitForFunction(({id,label}) => document.querySelector(`[data-take-id="${id}"] .take-octave`)
-      .getAttribute('aria-valuetext')===label,{id:fixture.ids[0],label});
+      .textContent===label,{id:fixture.ids[0],label});
   };
-  assert.equal(await octave.getAttribute('aria-valuetext'),'0');
+  assert.equal(await octave.textContent(),'-');
   await cycleOctave('8va');
-  assert.equal(await octave.getAttribute('aria-valuetext'),'8va');
+  assert.equal(await octave.textContent(),'8va');
   await frame.waitForFunction(id => {
     const r=(window.__qa||window.__probe).engine.takeLayers.get(id);
     return r?.octave===1 && r.source?.stretch;
@@ -175,12 +179,12 @@ async function checkLayeredTakes(frame, page, {output, label}) {
   },fixture.ids[0]);
   assert.ok(Math.abs(shifted.hz-880)<12 && shifted.db>-40,JSON.stringify(shifted));
   await cycleOctave('8vb');
-  assert.equal(await octave.getAttribute('aria-valuetext'),'8vb');
+  assert.equal(await octave.textContent(),'8vb');
   assert.equal(await frame.evaluate(id=>(window.__qa||window.__probe).engine.takeLayers.get(id).octave,fixture.ids[0]),-1);
-  await cycleOctave('0');
-  assert.equal(await octave.getAttribute('aria-valuetext'),'0','the pager wraps without a double-octave option');
+  await cycleOctave('-');
+  assert.equal(await octave.textContent(),'-','the button wraps without a double-octave option');
   await cycleOctave('8va');
-  assert.equal(await octave.getAttribute('aria-valuetext'),'8va');
+  assert.equal(await octave.textContent(),'8va');
   await hear(fixture.ids[0]).click();
   assert.deepEqual(await frame.evaluate(() => [...(window.__qa || window.__probe).engine.takeLayers.keys()]), [fixture.ids[1]]);
   await hear(fixture.ids[0]).click();
@@ -212,6 +216,6 @@ async function checkLayeredTakes(frame, page, {output, label}) {
     await q.takeStore.deleteTakes(q.takeSong,q.recording.takes.filter(t=>!originalIds.includes(t.id)).map(t=>t.id));
     await q.reloadTakes();q.pitchbar.applySettingsState(__layerProof.settings);
   },fixture.originalIds);
-  return {layers:2,audio,shifted,octaveCycle:['0','8va','8vb','0'],overdub:true,rawAudioUnchanged:unchanged,priorPart:prefs.practicePart,initialVisibility};
+  return {layers:2,audio,shifted,octaveCycle:['-','8va','8vb','-'],overdub:true,rawAudioUnchanged:unchanged,priorPart:prefs.practicePart,initialVisibility};
 }
 module.exports = {checkLayeredTakes,checkNoteHitAreas};

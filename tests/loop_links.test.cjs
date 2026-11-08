@@ -17,7 +17,7 @@ function fixture(href = 'https://example.test/song/') {
   const element = () => ({classList: {toggle() {}, add() {}, remove() {}, contains: () => false}, setAttribute() {}, dataset: {}, style: {}});
   const c = vm.createContext({
     URL, URLSearchParams, ready: true, pendingLoopLink: undefined, takePreviewId: null,
-    initialLoopRestored: false, pendingLoopRevealTick: null, pendingNotationReload: null,
+    compPanel:null, initialLoopRestored: false, pendingLoopRevealTick: null, pendingNotationReload: null,
     barRenderFrame: 0, renderTimer: 0, notationRenderInFlight: false, notationRenderQueued: false, flow: 'wrap',
     sequence: {division: 960, endTick: 14400,
       measures: [[0,3840,4,4], [3840,2880,6,8], [6720,6720,7,4], [13440,960,4,4]]},
@@ -29,7 +29,7 @@ function fixture(href = 'https://example.test/song/') {
     playbackCursorBounds: () => null, updateTransportHeight() {}, scrollToPlayback: (...args) => scrolls.push(args),
     savePreferences: () => saved.push({loopStart:c.loopStartMeasure, loopEnd:c.loopEndMeasure,
       loopStartTick:c.loopStartTick, loopEndTick:c.loopEndTick}),
-    engine: {playing: false, pause() { this.playing = false; }, seek(s) { tick = s * 1000; },
+    config: {}, engine: {duration:14.4, playing: false, pause() { this.playing = false; }, seek(s) { tick = s * 1000; },
       secondsAtTick: t => t / 1000, tickAtSeconds: s => s * 1000, currentSeconds: () => tick / 1000,
       setLoop(...values) { loops.push(values); this.loopEndSeconds = values[1] === null ? null : values[1] / 1000; }},
     api: {pause() {}},
@@ -39,6 +39,7 @@ function fixture(href = 'https://example.test/song/') {
   for (const name of ['measureIndexAtTick', 'currentMeasureIndex', 'scoreLocationAtTick', 'takeBoundaryLabel', 'loopLinkValue',
     'loopAddressTick', 'parseLoopLink', 'consumeLoopLink', 'loopTickRange', 'restoreLoopState',
     'applyLoopLink', 'seekLoopStart', 'restoreStartupLoop', 'revealPendingLoopStart',
+    'countInBeats', 'pitchTraceOriginTick', 'timelineFraction',
     'updateLoopState', 'setLoopPoint', 'clearLoop', 'toggleLoop']) vm.runInContext(source(name), c);
   return {c, messages, saved, loops, scrolls, tick: () => tick};
 }
@@ -56,7 +57,11 @@ test('loop can be suspended and restored without erasing endpoints or seeking on
   c.updateLoopState(); c.engine.seek(0); c.restoreStartupLoop();
   assert.equal(tick(),0);
   c.clearLoop();
-  assert.equal(c.elements.loopToggle.disabled,true);
+  assert.equal(c.elements.loopToggle.disabled,false);
+  c.toggleLoop();
+  assert.equal(c.loopStartMeasure,0);
+  assert.equal(c.loopEndMeasure,c.sequence.measures.length-1);
+  assert.equal(c.loopEnabled,true);
 });
 
 test('reload starts at a complete saved loop once; URL endpoints take priority', () => {
@@ -207,9 +212,22 @@ test('manual endpoints and restored links use whole measures; clear resets both'
   assert.deepEqual(saved.at(-1), {loopStart:null,loopEnd:null,loopStartTick:null,loopEndTick:null});
 });
 
+test('a saved loop can render its controls before the playback clock exists', () => {
+  const {c} = fixture();
+  c.restoreLoopState({loopStart:1,loopEnd:2});
+  const engine=c.engine;
+  c.engine=null;
+  assert.doesNotThrow(()=>c.updateLoopState());
+  assert.equal(c.elements.loopStart.textContent,'2');
+  c.engine=engine;
+  c.updateLoopState();
+  assert.equal(c.elements.loopEnd.textContent,'3');
+});
+
 test('recording entrance metadata never changes repeat boundaries, at any practice speed', () => {
   const {c} = fixture();
   c.window.MeleteRecording = require('../template/loop_recorder.js');
+  c.recordCountIn = false;
   c.parts = [{short:'B2'}, {short:'S1'}, {short:'A2'}];
   c.config = {recordingEntrances:[{loop:'2-4',parts:{B2:'2.3',S1:'1.4',A2:'2'}}]};
   c.engine.hasLoop = () => true;
@@ -235,6 +253,7 @@ test('recording entrance metadata never changes repeat boundaries, at any practi
 
 test('free recording uses the exact playhead, and archived audition entries stay dormant', () => {
   const {c} = fixture();
+  c.recordCountIn = false;
   c.window.MeleteRecording = require('../template/loop_recorder.js');
   c.parts = [{short:'B2'}]; c.practicePartIndex = 0; c.engine.rate = 1;
   c.config = {audition: {enabled:false,recordingEntrances:[{loop:'2-4',parts:{B2:'2.3'}}]}};

@@ -191,7 +191,10 @@ test('short tail cleanup keeps completed loops and old partials, waiting for pen
   journal.begin(0); journal.append(0, new Float32Array(200)); journal.begin(200); await tick();
   const append = store.append.bind(store);
   let release;
-  store.append = (...args) => new Promise(resolve => { release = () => resolve(append(...args)); });
+  store.append = (...args) => {
+    store.append = append;
+    return new Promise(resolve => { release = () => resolve(append(...args)); });
+  };
   journal.append(200, new Float32Array(120));
   const tail = journal.views().find(take => take.active).id;
   journal.finish(320, {discardShortTail: true});

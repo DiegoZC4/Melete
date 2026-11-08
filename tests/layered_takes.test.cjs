@@ -11,9 +11,11 @@ test('independent take layers survive focus changes and release every source on 
   const removed = [];
   const c = vm.createContext({URL: {createObjectURL: () => String(++serial), revokeObjectURL: id => removed.push(id)},
     Audio: class {load() {} removeAttribute() {}},
-    window: {MeleteRecording: {takePlaybackGain: () => 1}}, takeOctave: () => 0, SCHEDULER_LEAD_SECONDS: .03});
+    window: {MeleteRecording: {takePlaybackGain: () => 1}, MeleteTakeMix:{bus:()=>({input:{}})}},
+    takeReverbControl:{value:()=>0},takeVolumeControl:{value:()=>100},takeOctave: () => 0, SCHEDULER_LEAD_SECONDS: .03});
   const LayerEngine = vm.runInContext(`(class {${app.slice(start, end)}})`, c);
   const engine = new LayerEngine();
+  engine.balanceTakeLayers = () => {}; // Audio normalization is tested with real Web Audio separately.
   Object.assign(engine, {context: {createGain: () => ({gain: {}, connect() {}, disconnect() {}}),
     createMediaElementSource: () => ({connect() {}, disconnect() {}})},
     takeLayers: new Map(), pinnedTakeIds: new Set(), takeReview: null, playing: false});

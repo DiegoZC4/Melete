@@ -3,6 +3,13 @@ const assert = require('node:assert/strict');
 const R = require('../template/take_render.js');
 const A = require('../template/comp_audio.js');
 const point = f => ({x: f.start * 100, y: f.cents, track: 0, error: 1});
+test('live display joins delivery jitter but never an explicit unvoiced interval or long dropout',()=>{
+  const frames=[{start:0,end:.01,cents:6000,live:true},{start:.015,end:.025,cents:6001,live:true},
+    {start:.03,end:.04,cents:null,live:true},{start:.045,end:.055,cents:6001,live:true},
+    {start:.12,end:.13,cents:6001,live:true}];
+  const before=JSON.stringify(frames),result=R.tracePaths(frames,0,frames.length,point,()=> 'green');
+  assert.equal(result.edges,1);assert.equal(JSON.stringify(frames),before,'scores keep all exact gaps');
+});
 test('batched paths retain every pitch sample but never bridge missing detection or a splice', () => {
   const frames = [1, 2, null, 4, 5, 6, 7].map((cents, i) => ({start: i, end: i+1, cents, takeId: i<5?'a':'b'}));
   const before = JSON.stringify(frames), result = R.tracePaths(frames, 0, frames.length, point, ()=>'green');

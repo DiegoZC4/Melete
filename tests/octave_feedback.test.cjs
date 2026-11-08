@@ -12,8 +12,9 @@ function source(name) {
 }
 
 test('live and review colors agree on octave equivalents without forgiving another pitch class', () => {
-  const c = vm.createContext({window: {MeleteTakePitch: pitch}, practicePartIndex: 0,
+  const c = vm.createContext({window: {MeleteTakePitch: pitch}, practicePartIndex: 0, practiceDivisi:[null],
     pitchRestState: () => 'sing',
+    liveTraceVisible: () => false,
     expectedPitchAt: () => [[0, 0, 1, 69]], clamp: (v, a, b) => Math.max(a, Math.min(b, v)),
     PITCH_TRACE_GREEN_TOLERANCE_CENTS: 10, PITCH_TRACE_RED_CENTS: 50});
   for (const fn of ['expectedPitchErrorCents', 'pitchTraceColor']) vm.runInContext(source(fn), c);
@@ -30,6 +31,7 @@ test('live and review colors agree on octave equivalents without forgiving anoth
 
 test('pitchbar bounds include the sung register but not a hidden practice contour', () => {
   const c = vm.createContext({
+    liveTraceVisible: () => false,
     window: {MeleteTakeRender: require('../template/take_render.js')},
     engine: {secondsAtTick: tick => tick},
     pitchRestState: () => 'sing',
@@ -40,10 +42,16 @@ test('pitchbar bounds include the sung register but not a hidden practice contou
       frames: [{start: 0, end: 1, cents: 5500}, {start: 1, end: 2, cents: 5700}]},
   });
   vm.runInContext(source('pitchTraceRange'), c);
+  c.audibleTraceReviews=()=>c.takeReview?[c.takeReview]:[];
   const range = () => ({...c.pitchTraceRange(0, 4)});
-  assert.deepEqual(range(), {min: 55, max: 62}, 'ordinary review hides the live trace throughout its passage');
+  assert.deepEqual(range(), {min: 55, max: 57}, 'only the selected saved contour contributes while not recording');
   c.takeReview.ranges = [[2, 3]];
-  assert.deepEqual(range(), {min: 36, max: 62}, 'comp review hides only its recorded passages');
+  assert.deepEqual(range(), {min: 55, max: 57}, 'comp gaps never reveal an obsolete standalone contour');
+  c.liveTraceVisible=()=>true;
+  assert.deepEqual(range(), {min:36,max:84}, 'recording over a selected take still makes room for the live sung register');
+  c.liveTraceVisible=()=>false;
   c.takeReview = null;
-  assert.deepEqual(range(), {min: 36, max: 84}, 'deselection restores the full raw register');
+  assert.deepEqual(range(), {min: Infinity, max: -Infinity}, 'deselection removes the contour instead of resurrecting raw data');
+  c.liveTraceVisible=()=>true;
+  assert.deepEqual(range(), {min:36,max:84}, 'active recording still contributes its actual sung register');
 });

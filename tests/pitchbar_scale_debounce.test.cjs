@@ -72,7 +72,7 @@ test('both full and incremental bar-contour painting are suspended without clear
     traceEdges: new Map(), traceEdgesByBin: new Map(),
   });
   Object.assign(c, {barSystems: [system('bars')], staffTraceSystems: [system('staff', true)],
-    pitchTraceDirty: dirty, pitchTraceLaneList: () => [], takeReview: null,
+    pitchTraceDirty: dirty, pitchTraceLaneList: () => [], takeReview: null, visibleChannels:new Set([0]), audibleTraceReviews:()=>[], liveTraceVisible:()=>false,
     pitchTraceRange: () => ({min: 48, max: 60}), updatePitchCaptureAppearance() {},
     scheduleBarRender() { throw new Error('unexpected reflow'); },
   });

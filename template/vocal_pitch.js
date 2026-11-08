@@ -12,6 +12,50 @@
   const OCTAVE_DROPOUT_SECONDS = 0.25;
   const OCTAVE_CONTEXT_SECONDS = 0.4;
 
+  // A periodic consonant/noise burst can have high detector clarity but no
+  // musical support. Omit it, rather than inventing its intended octave.
+  // This uses only neighbouring observations, never the score's target pitch.
+  function cleanPitchFrames(frames) {
+    const repaired = repairOctaveIslands(frames);
+    let result = repaired;
+    const voiced = f => f && Number.isFinite(f.cents);
+    const connected = (a, b) => a && b && Math.abs(a.end - b.start) < 1e-6;
+    const omit = (from, to) => {
+      if (result === repaired) result = repaired.slice();
+      for (let j = from; j < to; j++) if (voiced(repaired[j])) result[j] = {
+        ...repaired[j], cents: null, rawCents: repaired[j].rawCents ?? repaired[j].cents, omitted: true,
+      };
+    };
+    for (let i = 0; i < repaired.length;) {
+      if (!voiced(repaired[i])) { i++; continue; }
+      let end = i + 1;
+      while (end < repaired.length && connected(repaired[end-1], repaired[end]) && voiced(repaired[end])
+        && Math.abs(repaired[end].cents - repaired[i].cents) < 400) end++;
+      const duration = repaired[end-1].end - repaired[i].start;
+      const before = repaired[i-1], after = repaired[end];
+      if (duration <= .04 + 1e-6 && before && after && !voiced(before) && !voiced(after)) {
+        let left = i-1, right = end;
+        while (left > 0 && !voiced(repaired[left-1]) && connected(repaired[left-1], repaired[left])) left--;
+        while (right+1 < repaired.length && !voiced(repaired[right+1]) && connected(repaired[right], repaired[right+1])) right++;
+        if (repaired[i].start - repaired[left].start >= .04 - 1e-6
+          && repaired[right].end - repaired[end-1].end >= .04 - 1e-6) omit(i, end);
+      } else if (duration <= .16 + 1e-6 && voiced(before) && voiced(after)
+        && connected(before, repaired[i]) && connected(repaired[end-1], after)
+        && Math.abs(before.cents-after.cents) < 250
+        && Math.abs(repaired[i].cents-before.cents) > 650
+        && Math.abs(repaired[end-1].cents-after.cents) > 650) {
+        let left = i-1, right = end;
+        while (left > 0 && voiced(repaired[left-1]) && connected(repaired[left-1], repaired[left])
+          && Math.abs(repaired[left-1].cents-before.cents) < 200) left--;
+        while (right+1 < repaired.length && voiced(repaired[right+1]) && connected(repaired[right], repaired[right+1])
+          && Math.abs(repaired[right+1].cents-after.cents) < 200) right++;
+        if (before.end-repaired[left].start >= .04-1e-6 && repaired[right].end-after.start >= .04-1e-6) omit(i,end);
+      }
+      i = end;
+    }
+    return result;
+  }
+
   function repairMovingOctaves(frames) {
     let result = frames;
     const timed = f => f && Number.isFinite(f.start) && Number.isFinite(f.end) && f.end > f.start;
@@ -136,12 +180,12 @@
     const frames = Array.from(pitches, (cents, i) => ({
       start: secondsAtBin(i), end: secondsAtBin(i + 1), cents: cents || null,
     }));
-    const cleaned = repairOctaveIslands(frames), rawOctaves = new Map();
+    const cleaned = cleanPitchFrames(frames), rawOctaves = new Map();
     let output = pitches;
     cleaned.forEach((frame, i) => {
       if (frame.cents === frames[i].cents) return;
       if (output === pitches) output = pitches.slice();
-      output[i] = frame.cents;
+      output[i] = frame.cents ?? 0;
       rawOctaves.set(i, {before: pitches[i], after: output[i]});
     });
     return {pitches: output, rawOctaves};
@@ -155,8 +199,8 @@
       if (!Array.isArray(repair) || repair.length !== 3) continue;
       const [bin, before, after] = repair;
       if (![bin, before, after].every(Number.isInteger) || bin < 0 || bin >= pitches.length
-        || before !== pitches[bin] || after < 2000 || after > 11000
-        || Math.abs(after - before) !== 1200 || rawOctaves.has(bin)) continue;
+        || before !== pitches[bin] || after !== 0 && (after < 2000 || after > 11000
+          || Math.abs(after - before) !== 1200) || rawOctaves.has(bin)) continue;
       if (output === pitches) output = pitches.slice();
       output[bin] = after;
       rawOctaves.set(bin, {before, after});
@@ -217,5 +261,5 @@
   function source() { return `globalThis.MeleteVocalPitch = (${vocalPitchTools.toString()})();`; }
   return {HIGH_PASS_HZ, OCTAVE_ISLAND_SECONDS, OCTAVE_FLANK_SECONDS,
     OCTAVE_TOLERANCE_CENTS, OCTAVE_DROPOUT_SECONDS, OCTAVE_CONTEXT_SECONDS,
-    repairOctaveIslands, repairPitchGrid, restorePitchGrid, rawPitchGrid, createDetector, source};
+    cleanPitchFrames, repairOctaveIslands, repairPitchGrid, restorePitchGrid, rawPitchGrid, createDetector, source};
 });

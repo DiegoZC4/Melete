@@ -5,6 +5,18 @@
 })(typeof window === "object" ? window : globalThis, function() {
   "use strict";
 
+  function mediaDevicesFor(view) {
+    // Firefox Android rejects microphone requests from about:srcdoc. Let our
+    // same-origin collection page request permission; the player owns the stream.
+    try {
+      if (view.frameElement?.hasAttribute("data-melete-collection-player")
+        && view.parent !== view && view.parent.origin === view.origin) {
+        return view.parent.navigator.mediaDevices;
+      }
+    } catch { /* Unrelated cross-origin embeds use their own permission policy. */ }
+    return view.navigator.mediaDevices;
+  }
+
   class Level {
     constructor(now = 0) {
       this.started = now;
@@ -38,8 +50,8 @@
     signal: "Input detected", clipping: "Clipping", muted: "Input muted"};
 
   class Check {
-    constructor({dialog, trigger, acquire, release, choose, busy, failureMessage, refresh, inline = false, select}) {
-      Object.assign(this, {dialog, trigger, acquire, release, choose, busy, failureMessage, refresh, inline});
+    constructor({dialog, trigger, acquire, release, choose, busy, failureMessage, refresh, inline = false, select, passive = false}) {
+      Object.assign(this, {dialog, trigger, acquire, release, choose, busy, failureMessage, refresh, inline, passive});
       this.select = select || dialog.querySelector("select");
       this.status = dialog.querySelector("[role=status]");
       this.meter = dialog.querySelector("[role=meter]");
@@ -50,6 +62,7 @@
       this.generation = 0;
       this.active = false;
       trigger.addEventListener("click", () => {
+        if (this.passive) return;
         if (this.inline) {
           if (this.busy()) return;
           if (this.active) { this.close(); return; }
@@ -62,12 +75,12 @@
       this.select.addEventListener("change", () => {
         if (this.busy() || this.requesting) return;
         const selected = this.select.value;
-        const restart = !this.inline || this.active || this.dialog.dataset.state === "error";
+        const restart = !this.passive && (!this.inline || this.active || this.dialog.dataset.state === "error");
         this.stop();
         this.choose(selected);
         if (restart) void this.start();
       });
-      if (inline) this.paint("idle", "Test input");
+      if (inline) this.paint("idle", passive ? "Mic off" : "Test input");
     }
     syncSelector(original) {
       if (this.select !== original) {
@@ -88,6 +101,10 @@
       this.readout.textContent = this.inline && ["idle", "error", "requesting"].includes(state) ? ""
         : db <= -60 ? "< -60 dBFS" : `${db.toFixed(0)} dBFS`;
       if (this.inline) {
+        if (this.passive) {
+          this.trigger.title = [this.inputLabel, text].filter(Boolean).join("; ");
+          return;
+        }
         const action = this.active ? "Stop microphone check" : state === "error" ? "Retry microphone check" : "Test microphone input";
         this.trigger.setAttribute("aria-pressed", String(this.active));
         this.trigger.setAttribute("aria-label", action);
@@ -108,7 +125,7 @@
       if (this.inline) {
         this.select.disabled = this.busy();
         this.inputLabel = "";
-        this.paint("idle", "Test input");
+        this.paint("idle", this.passive ? "Mic off" : "Test input");
       } else if (this.dialog.open) this.dialog.close();
     }
     fail(message) {
@@ -118,6 +135,9 @@
       if (this.retry) this.retry.hidden = false;
     }
     async start() {
+      // Recording and metering share one live source. Starting recording must
+      // not tear down a running meter (and release that source underneath it).
+      if (this.active && (this.requesting || this.source)) return;
       this.stop();
       const generation = this.generation;
       this.active = this.requesting = true;
@@ -144,7 +164,12 @@
         const tick = () => {
           if (generation !== this.generation) return;
           if (track.readyState !== "live") { this.fail("Microphone disconnected"); return; }
-          if (context.state !== "running") { this.fail("Microphone audio interrupted"); return; }
+          if (context.state !== "running") {
+            if (!this.passive) { this.fail("Microphone audio interrupted"); return; }
+            this.paint("idle", "Paused");
+            this.timer = setTimeout(tick, 100);
+            return;
+          }
           this.analyser.getFloatTimeDomainData(samples);
           const result = level.sample(samples, performance.now(), {muted: track.muted});
           this.paint(result.state, labels[result.state], result.db, result.percent);
@@ -160,5 +185,5 @@
       }
     }
   }
-  return {Level, Check};
+  return {Level, Check, mediaDevicesFor};
 });

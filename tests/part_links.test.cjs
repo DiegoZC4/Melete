@@ -13,7 +13,7 @@ function source(name) {
 const start = app.indexOf('  function choosePracticePart(');
 const end = app.indexOf('  elements.partChooserOptions.addEventListener("click"');
 assert.ok(start > 0 && end > start);
-const chooserSource = app.slice(start, end);
+const chooserSource = app.slice(start, app.indexOf('  let pendingMixReceipt')) + app.slice(app.indexOf('  // Later fields win'),end);
 const plain = value => JSON.parse(JSON.stringify(value));
 
 const SEED = ['Soprano', 'Alto', 'Tenor', 'Bass'].flatMap(name => [1, 2].map(line => `${name} ${line}`));
@@ -27,18 +27,18 @@ function fixture({names = SEED, practicePart = null, divisi = {}, view = 'standa
     classList: {contains: () => false}, focus() {}, ...extra});
   const c = vm.createContext({
     URL,
-    sequence: {}, pitchTraceBaseKey: '', pitchTraceKey: '',
+    sequence: {}, pitchTraceBaseKey: '', pitchTraceKey: '',pendingMixReceipt:null,lastGuideChannel:null,
     parts: names.map((name, index) => ({index, id: `P${index + 1}`, name,
       short: name.split(' ').map((word, i) => i ? word : word[0]).join(''), color: '#123456'})),
     partDivisi: names.map((_, index) => ({maxLines: divisi[index] || 1})),
     practicePartIndex: practicePart, practiceDivisi: names.map(() => null), selectedScorePartIndex: 4,
-    scoreView: view, visibleTracks: new Set(visible || names.map((_, index) => index)),
+    scoreView: view, visibleTracks: new Set(visible || names.map((_, index) => index)),visibleChannels:new Set(),
     audibleTracks: new Set(names.map((_, index) => index)),
     trackVolumes: names.map((_, index) => 100 - index * 5), trackPans: names.map((_, index) => index * 10 - 40),
-    partChooserKey: 'choir-practice:song:part-chooser', pendingPartLink: null,
+    partChooserKey: 'choir-practice:song:part-chooser', pendingPartLink: null, explicitPracticeChoice: false,
     practicePartPager: {setValue: value => calls.push(['pager', value])},
     updateMixerAppearance: () => calls.push(['mixer']), updateNoteActionLabel() {},
-    savePreferences: () => calls.push(['save']), renderPitchTrace() {}, renderTakePanel() {}, scheduleBarRender: () => calls.push(['bars']),
+    savePreferences: () => calls.push(['save']), renderPitchTrace() {}, renderTakePanel() {}, scheduleRender: () => calls.push(['render']),
     setPracticePart: forbidden('setPracticePart'), applyPracticeMix: forbidden('applyPracticeMix'),
     cyclePartVolumeMix: forbidden('cyclePartVolumeMix'), togglePartPanSeparation: forbidden('togglePartPanSeparation'),
     setTrackAudible: forbidden('setTrackAudible'), restorePracticeMix: forbidden('restorePracticeMix'),
@@ -48,12 +48,15 @@ function fixture({names = SEED, practicePart = null, divisi = {}, view = 'standa
     elements: {
       partChooser: element(), partChooserNote: element(), partChooserTitle: element(), settingsPanel: element(), practicePart: element(),
       settingsToggle: element(),
+      mixer:{querySelector:()=>null},
       partChooserOptions: {replaceChildren: (...children) => { options = children; }},
     },
-    window: {location: {href: href || 'https://example.test/song/'},
+    window: {MeleteTakePitch:require('../template/take_pitch.js'),location: {href: href || 'https://example.test/song/'},
       history: {state: null, replaceState: (_state, _title, address) => replaced.push(address)}},
   });
-  vm.runInContext(source('practiceDivisiOptions') + chooserSource, c);
+  c.mixerParts = require('../template/divisi_mixer.js').channels(c.parts,c.partDivisi);
+  c.practiceMixerIndex = () => c.mixerParts.findIndex(p => p.source === c.practicePartIndex && p.line === (c.practiceDivisi[c.practicePartIndex] ?? null));
+  vm.runInContext(source('practiceDivisiOptions') + source('syncPracticeFromSee') + chooserSource, c);
   const mix = () => plain({volumes: c.trackVolumes, pans: c.trackPans, audible: [...c.audibleTracks]});
   return {c, toasts, stored, replaced, calls, mix,
     options: () => options.map(option => c.parts[Number(option.dataset.partIndex)].name),
@@ -102,11 +105,12 @@ test('a first visit arriving with a part chooses it and leaves the whole mix alo
   assert.equal(f.c.practicePartIndex, 2);
   assert.equal(f.c.selectedScorePartIndex, null);
   assert.deepEqual(f.mix(), before);
-  assert.deepEqual(plain([...f.c.visibleTracks]), [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(plain([...f.c.visibleTracks]), [2]);
   assert.equal(f.stored.get('choir-practice:song:part-chooser'), 'chosen');
   assert.deepEqual(f.toasts.map(toast => [toast.message, Boolean(toast.undo)]), [['Practising Alto 1', false]]);
   assert.deepEqual(f.calls.filter(call => call[0] === 'pager'), [['pager', 2]]);
   assert.ok(f.calls.some(call => call[0] === 'save'));
+  assert.ok(f.calls.some(call => call[0] === 'render'),'isolating See through a link redraws standard notation');
 });
 
 test('ambiguous and unknown links ask instead of guessing, and never change a chosen part', () => {
@@ -161,6 +165,7 @@ test('divisi links choose a line of the named or current part', () => {
   assert.equal(f.toasts.at(-1).message, 'Practising Soprano 1 Div 2');
   f.c.applyPartLink({div: 'all'});
   assert.equal(f.c.practiceDivisi[0], null);
+  assert.equal(f.c.practicePartIndex,null,'showing multiple divisi leaves no single recording target');
   assert.equal(f.toasts.at(-1).message, 'Practising Soprano 1 from the link');
   assert.equal(typeof f.toasts.at(-1).undo, 'function');
   f.c.applyPartLink({part: 'S1', div: '5'});
@@ -197,7 +202,7 @@ test('the chooser needs two parts, remembers a dismissal and returns focus', () 
   const f = fixture();
   f.c.showPartChooser();
   assert.deepEqual(f.options(), SEED);
-  assert.equal(f.note(), 'You can change it later in settings, under Practice.');
+  assert.equal(f.note(), 'Hold a part in See to practise it.');
   let focused = null;
   f.c.elements.partChooser.contains = () => true;
   f.c.elements.settingsToggle.focus = () => { focused = 'settings'; };

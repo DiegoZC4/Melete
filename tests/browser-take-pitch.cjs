@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const {compareParts} = require('../template/take_pitch.js');
 const {checkTakeStore} = require('./browser-local-takes.cjs');
 const {checkTakeReview, checkCachedTakeReview} = require('./browser-take-review.cjs');
 const {checkMetronome} = require('./browser-volume-drag.cjs');
@@ -43,6 +44,8 @@ async function checkTakeDominance(frame, page, {mobile, output, label, reload}) 
   await assertHints(true);
   frame = await reload();
   await frame.waitForFunction(() => (window.__qa || window.__probe)?.recording.ready);
+  // enableAudition does not redraw, and a song player has already listed its takes by now.
+  await frame.evaluate(() => (window.__qa || window.__probe).reloadTakes());
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await frame.locator('#settingsToggle').click();
   await assertHints(true);
   const themes = [];
@@ -71,6 +74,7 @@ async function checkTakeDominance(frame, page, {mobile, output, label, reload}) 
     if (value === null) delete el.dataset.theme; else el.dataset.theme = value;
   }, originalTheme);
   await frame.locator(`.take-row[data-take-id="${fixtures.better.id}"] .take-delete`).click();
+  await frame.locator(`.take-row[data-take-id="${fixtures.better.id}"] .take-delete.is-delete-armed`).click();
   await frame.waitForFunction(id => !document.querySelector(`[data-take-id="${id}"]`), fixtures.better.id);
   assert.equal(await frame.locator(`.take-row[data-take-id="${fixtures.dominated.id}"]`).evaluate(el => el.classList.contains('is-dominated')), false,
     'deleting the only dominator immediately clears the hint');
@@ -93,6 +97,9 @@ async function checkTakeDominance(frame, page, {mobile, output, label, reload}) 
 }
 
 async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
+  await frame.evaluate(()=>(window.__qa||window.__probe).enableAudition());
+  const reloadPlayer = reload;
+  reload = async () => { const target = await reloadPlayer(); await target.evaluate(()=>(window.__qa||window.__probe).enableAudition()); return target; };
   const storage = await checkTakeStore(frame);
   // Transport tests can leave the document scrolled beneath its sticky toolbar.
   await frame.evaluate(()=>window.scrollTo({top:0,left:0,behavior:'instant'}));
@@ -107,13 +114,14 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
       practice: document.querySelector('.practice-group').getBoundingClientRect().toJSON(),
       controlHeight: box('takeMicrophone').height, referenceHeight: box('tempo').height,
       toggle: Boolean(document.getElementById('loopRecorder') || document.getElementById('closeTakes')),
-      panel: box('takePanel'), score: box('scoreShell'), toolbar: document.querySelector('.transport').getBoundingClientRect().toJSON(),
+      panel: box('takePanel'), narrow: getComputedStyle(document.querySelector('.take-layout')).gridTemplateRows.split(' ').length===5,
+      score: box('scoreShell'), toolbar: document.querySelector('.transport').getBoundingClientRect().toJSON(),
       overflow: document.documentElement.scrollWidth > innerWidth};
   });
   assert.equal(layout.inside, true, 'Takes is a permanent settings group on every viewport');
   assert.equal(layout.toggle, false, 'no separate open/close tools');
   assert.equal(layout.overflow, false);
-  assert.equal(layout.panel.height, layout.practice.height, 'Takes shares the four-row settings height');
+  assert.equal(layout.panel.height, layout.practice.height+(layout.narrow?27:0), 'desktop uses four rows; narrow controls wrap to five');
   assert.equal(layout.controlHeight, layout.referenceHeight);
   if (!mobile) {
     assert.ok(layout.panel.bottom <= layout.toolbar.bottom + 1);
@@ -249,9 +257,14 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
   assert.deepEqual(errors, [...errors].sort((a, b) => a - b), 'all measured takes sort by actual cents, regardless of coverage');
   for (const [name, score] of Object.entries(scores)) {
     const row = frame.locator(`.take-row[data-take-id="${ids[name]}"]`);
-    const range = `${await row.locator('.take-start').innerText()}-${await row.locator('.take-end').innerText()}`;
-    assert.ok((await row.locator('.take-row-label').getAttribute('title')).endsWith(range), 'tooltip and boundary columns agree');
-    assert.equal(await row.locator('.take-tracked strong').innerText(), score ? (score.coverage * 100).toFixed(1) : '\u2014');
+    assert.equal(await row.locator('.take-segments').innerText(),'1');
+    const tracked=await frame.evaluate(id=>{
+      const q=window.__qa||window.__probe,t=q.recording.takes.find(t=>t.id===id),s=t.pitchScore;
+      const r=q.pitchReference({start:0,end:q.scoreMeasures.at(-1)[0]+q.scoreMeasures.at(-1)[1],rate:t.rate},t.pitchReference?.part,t.pitchReference?.line);
+      const total=r?.notes.reduce((sum,n)=>sum+n[1]-n[0],0) || s?.expectedSeconds;
+      return s?(100*s.trackedSeconds/total).toFixed(1):'\u2014';
+    },ids[name]);
+    assert.equal(await row.locator('.take-tracked strong').innerText(),tracked);
     assert.equal(await row.locator('.take-error strong').innerText(), Number.isFinite(score?.meanAbsCents) ? score.meanAbsCents.toFixed(1) : '\u2014');
     assert.equal(await row.locator('.take-median strong').innerText(), Number.isFinite(score?.medianAbsCents) ? score.medianAbsCents.toFixed(1) : '\u2014');
     const within = score && Number.isFinite(score.within50CentsSeconds) && score.trackedSeconds > 0
@@ -263,16 +276,16 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
     const tooltip = await row.locator('.take-detail').getAttribute('title');
     if (band) {
       const text = `Within \u00b150 cents: ${(score.within50CentsSeconds / score.trackedSeconds * 100).toFixed(1)}% of tracked singing; `
-        + `${(score.within50CentsSeconds / score.expectedSeconds * 100).toFixed(1)}% of written singing.`;
+        + `${(score.within50CentsSeconds / score.trackedSeconds * Number(tracked)).toFixed(1)}% of written singing.`;
       assert.ok(tooltip.includes(text), `${name}: ${tooltip}`);
       assert.ok((await row.locator('.take-select').getAttribute('aria-description')).includes(text));
     } else assert.doesNotMatch(tooltip, /Within \u00b150 cents:/);
   }
   assert.deepEqual(await frame.locator('#takeColumns > span').allTextContents(),
-    ['Take', 'Part', 'Start', 'End', 'Tracked (%)', 'Mean (\u00a2)', 'Median (\u00a2)', '\u226450\u00a2 (%)', 'Oct', 'Hear']);
-  assert.equal(await frame.locator('#takeColumns > span').nth(7).getAttribute('aria-label'),
+    ['Take', 'Part', 'Segments', 'Tracked (%)', 'Mean (\u00a2)', 'Median (\u00a2)', '\u226450\u00a2 (%)', 'Created', 'Modified', 'Oct', 'Hear']);
+  assert.equal(await frame.locator('#takeColumns > span').nth(6).getAttribute('aria-label'),
     'Within 50 cents, percent of tracked singing');
-  assert.match(await frame.locator(`.take-row[data-take-id="${ids.sharp}"] .take-detail`).getAttribute('title'), /100\.0% tracked; 30\.1 cents/);
+  assert.match(await frame.locator(`.take-row[data-take-id="${ids.sharp}"] .take-detail`).getAttribute('title'), /% tracked; 30\.1 cents/);
   assert.match(await frame.locator(`.take-row[data-take-id="${ids['current-score']}"] .take-detail`).getAttribute('title'), /25\.235 cents/);
   assert.doesNotMatch(await frame.locator(`.take-row[data-take-id="${ids.accurate}"] .take-detail`).getAttribute('title'), /90%/);
   assert.equal((await frame.locator('#takePanel').boundingBox()).height, layout.panel.height, 'populating takes never grows settings');
@@ -298,6 +311,7 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
       const dimensions = await frame.evaluate(() => {
         const box = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
         return {panel: box('#takePanel'), practice: box('.practice-group'), record: box('#takeMicrophone'),
+          narrow:getComputedStyle(document.querySelector('.take-layout')).gridTemplateRows.split(' ').length===5,
           review: box('.take-review'), overflow: document.documentElement.scrollWidth > innerWidth,
           overflowElements: [...document.querySelectorAll('body *')].filter(el => el.getBoundingClientRect().right > innerWidth + 1)
             .slice(0, 10).map(el => ({tag: el.tagName, class: el.className?.baseVal ?? el.className})),
@@ -320,7 +334,7 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
           }))};
       });
       assert.equal(dimensions.overflow, false, `no page overflow at ${width}: ${JSON.stringify(dimensions.overflowElements)}`);
-      assert.equal(dimensions.panel.height, dimensions.practice.height);
+      assert.equal(dimensions.panel.height, dimensions.practice.height+(dimensions.narrow?27:0));
       assert.equal(dimensions.record.height, 24);
       assert.equal(dimensions.headersFit, true, `column labels fit at ${width}`);
       if (!dimensions.metricsVisible) assert.equal(dimensions.tableScroll, 'auto',
@@ -333,7 +347,7 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
         assert.equal(metric.cells.length, 4, 'keep tracking, mean and median alongside the pitch-band column');
         assert.equal(new Set(metric.cells.map(cell => cell.y)).size, 1, 'four side-by-side metric columns');
         for (const [index, cell] of metric.cells.entries()) {
-          const header = dimensions.headers[index + 4], value = metric.values[index];
+          const header = dimensions.headers[index + 3], value = metric.values[index];
           assert.ok(Math.abs(cell.x + cell.width / 2 - header.x - header.width / 2) < .5, 'values align beneath the shared header');
           assert.ok(Math.abs(value.x + value.width / 2 - cell.x - cell.width / 2) < .5, 'numeric values are centered in their column');
           assert.ok(Math.abs(value.y + value.height / 2 - cell.y - cell.height / 2) < .5, 'values are vertically centered within the row');
@@ -350,7 +364,7 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
         const cells = [...el.querySelector('#takeList .take-detail').children];
         const headings = [...el.querySelectorAll('#takeColumns > span')];
         const aligned = cells.every((cell, i) => {
-          const a = cell.getBoundingClientRect(), b = headings[i + 4].getBoundingClientRect();
+          const a = cell.getBoundingClientRect(), b = headings[i + 3].getBoundingClientRect();
           return Math.abs(a.x + a.width / 2 - b.x - b.width / 2) < .5;
         });
         const result = {reachable, aligned, scrollLeft: el.scrollLeft, clientWidth: el.clientWidth, scrollWidth: el.scrollWidth};
@@ -426,9 +440,11 @@ async function checkTakeSorting(frame, reload) {
       const q = window.__qa || window.__probe;
       return [...document.querySelectorAll('#takeList .take-row')].map(el => {
         const t = q.recording.takes.find(t => t.id === el.dataset.takeId), p = t.pitchScore;
+        const ref=t.pitchReference&&q.pitchReference({start:0,end:q.scoreMeasures.at(-1)[0]+q.scoreMeasures.at(-1)[1],rate:t.rate},t.pitchReference.part,t.pitchReference.line);
+        const total=ref?.notes.reduce((sum,n)=>sum+n[1]-n[0],0)||p?.expectedSeconds;
         const value = column === 'number' ? t.number : column === 'part' ? t.part
-          : column === 'start' || column === 'end' ? MeleteTakePitch.takeBounds(t)[column]
-          : column === 'tracked' ? p?.expectedSeconds > 0 ? p.coverage : null
+          : column === 'segments' ? 1
+          : column === 'tracked' ? total > 0 ? Math.min(1,p.trackedSeconds/total) : null
           : column === 'mean' ? p?.meanAbsCents : column === 'median' ? p?.medianAbsCents
           : p?.trackedSeconds > 0 && Number.isFinite(p.within50CentsSeconds) ? p.within50CentsSeconds / p.trackedSeconds : null;
         return {id: t.id, value: value ?? null, createdAt: t.createdAt, number: t.number};
@@ -436,14 +452,15 @@ async function checkTakeSorting(frame, reload) {
     }, column);
     const expected = [...rows].sort((a, b) => {
       if ((a.value === null) !== (b.value === null)) return a.value === null ? 1 : -1;
-      const primary = typeof a.value === 'string' ? a.value.localeCompare(b.value, undefined, {numeric: true})
+      const primary = column === 'part' ? compareParts(a.value,b.value)
+        : typeof a.value === 'string' ? a.value.localeCompare(b.value, undefined, {numeric: true})
         : a.value === b.value ? 0 : a.value < b.value ? -1 : 1;
       return primary * (direction === 'ascending' ? 1 : -1) || a.createdAt - b.createdAt || a.number - b.number;
     });
     assert.deepEqual(rows.map(t => t.id), expected.map(t => t.id), `${column} ${direction}`);
   };
   assert.equal(await frame.locator('#takeColumns [data-take-sort="mean"]').getAttribute('data-sorted'), 'ascending', 'default is ascending mean');
-  for (const column of ['mean', 'median', 'tracked', 'within', 'part', 'start', 'end', 'number']) {
+  for (const column of ['mean', 'median', 'tracked', 'within', 'part', 'segments', 'number']) {
     const first = column === 'mean' || ['tracked', 'within'].includes(column) ? 'descending' : 'ascending';
     const button = frame.locator(`#takeColumns [data-take-sort="${column}"]`);
     await button.click();
@@ -465,7 +482,7 @@ async function checkTakeSorting(frame, reload) {
   await check('tracked', 'descending');
   await frame.locator('#takeColumns [data-take-sort="mean"]').click();
   await check('mean', 'ascending');
-  return {frame, proof: {columns: 8, reversible: true, keyboard: true, missingLast: true, persisted: true, dataUnchanged: true}};
+  return {frame, proof: {columns: 7, reversible: true, keyboard: true, missingLast: true, persisted: true, dataUnchanged: true}};
 }
 
 module.exports = {checkTakePitch};

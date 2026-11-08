@@ -92,7 +92,7 @@ async function checkSettingsSections(frame, page, {mobile, output, label, probe 
     await resize(viewport);
   }
   await toggle('practice').click();
-  if (await frame.locator('#practicePart').getAttribute('data-value') === '') await frame.locator('#practicePart').press('ArrowDown');
+  await require('./browser-sing.cjs').choosePart(frame);
   await frame.waitForFunction(() => document.getElementById('practicePart').dataset.value !== '');
   await toggle('takes').click();
   await frame.waitForFunction(probe => window[probe].recording.ready && !document.getElementById('pitchCapture').disabled, probe);
@@ -129,7 +129,8 @@ async function checkSettingsSections(frame, page, {mobile, output, label, probe 
   await frame.waitForFunction(probe => window[probe].recording.ready, probe);
   assert.equal(await collapsed('takes'), true);
   await toggle('takes').click();
-  // The silent favourite stays outside the track, so it is reviewed as a loose take.
+  // The optional audition view still supports individual takes and folding.
+  await frame.evaluate(async probe=>{window[probe].enableAudition();await window[probe].reloadTakes();},probe);
   await group('takes').screenshot({path: path.join(output, `sections-${label}-takes.png`)});
   await frame.getByRole('button', {name: `Review take ${number}`, exact: true}).click();
   await frame.waitForFunction(probe => window[probe].takeReview, probe);
@@ -140,8 +141,10 @@ async function checkSettingsSections(frame, page, {mobile, output, label, probe 
   await frame.locator('#exitTakeReview').click();
 
   // A denied microphone must expose its error and input selection, not hide them.
+  if (await frame.locator('#pitchCapture').getAttribute('aria-pressed') === 'true') await toggleRecording(frame);
   await frame.evaluate(() => {
-    navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('Test microphone denied', 'NotAllowedError'));
+    // Collection frames ask the host document, so stub the API the player uses.
+    MeleteMicrophoneCheck.mediaDevicesFor(window).getUserMedia = () => Promise.reject(new DOMException('Test microphone denied', 'NotAllowedError'));
   });
   await toggleRecording(frame);
   await frame.waitForFunction(probe => window[probe].recording.state === 'off' && !document.querySelector('#takePanel.is-collapsed'), probe);

@@ -3,156 +3,62 @@ const path = require('node:path');
 
 async function checkSelectiveLyrics(page, frame, {mobile = false, output, label = 'lyrics', splitWord, reload} = {}) {
   const ready = () => frame.waitForFunction(() => !(window.__qa || window.__probe)?.busy
-    && !document.querySelector('.score-render-snapshot')
-    && document.querySelector('#score .lyric-toggle')
-    && (document.getElementById('annotationLayout').getAttribute('aria-pressed') === 'true'
-      || !document.querySelector('#score .shared-notation-layer')));
-  const showSettings = async () => {
+    && !document.querySelector('.score-render-snapshot') && document.querySelector('#score .lyric-toggle'));
+  const settings = async () => {
     if (await frame.locator('#partChooser').isVisible()) await frame.locator('#partChooserDismiss').click();
     if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await frame.locator('#settingsToggle').click();
-    if (!(await frame.locator('#annotationLayout').isVisible())) {
-      await frame.locator('[data-settings-section="display"] .settings-section-toggle').click();
-    }
+    if (!await frame.locator('#lyricEditing').isVisible()) await frame.locator('[data-settings-section="display"] .settings-section-toggle').click();
   };
   const showScore = async () => {
     if (mobile && await frame.locator('#settingsToggle').getAttribute('aria-expanded') === 'true') await frame.locator('#settingsToggle').click();
     await frame.evaluate(() => window.scrollTo(0,0));
-    await frame.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   };
-  await showSettings();
-  const editingInitially = await frame.locator('#lyricEditing').getAttribute('aria-pressed');
-  if (editingInitially !== 'true') await frame.locator('#lyricEditing').click();
+  const reset = async () => {
+    await settings();
+    if (mobile) {
+      const box=await frame.locator('#lyricEditing').boundingBox();
+      const touch=await page.context().newCDPSession(page);
+      try {
+        await touch.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:box.x+box.width/2,y:box.y+box.height/2}]});
+        await page.waitForTimeout(750);
+        await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+      } finally {await touch.detach();}
+    } else await frame.locator('#lyricEditing').click({button:'right'});
+  };
+  await settings();
+  assert.equal(await frame.locator('#annotationLayout,#showAllLyrics').count(),0);
+  await require('./browser-sing.cjs').choosePart(frame);
   if (await frame.locator('#barScore').isVisible()) await frame.locator('#scoreViewToggle').click();
-  if (await frame.locator('#annotationLayout').getAttribute('aria-pressed') === 'true') await frame.locator('#annotationLayout').click();
-  await ready();
-  const first = frame.locator('#score .selective-lyric-source.lyric-toggle').first();
-  const id = await first.getAttribute('data-lyric-words');
-  const part = await first.getAttribute('data-lyric-parts');
-  for (let step=0; step<20 && await frame.locator('#practicePart').getAttribute('data-value') !== part; step++) {
-    await frame.locator('#practicePart').press('ArrowDown');
-    await frame.waitForFunction(() => !document.getElementById('practicePart').classList.contains('is-paging'));
-  }
-  assert.equal(await frame.locator('#practicePart').getAttribute('data-value'),part);
-  await showScore();
-  const selector = `.lyric-toggle[data-lyric-words="${id}"]`;
-  const target = frame.locator(`#score ${selector}`).first();
-  const text = await target.locator('text').textContent();
-  const before = await target.locator('text').boundingBox();
-  const playhead = await frame.locator('#seek').inputValue();
-  try { await (mobile ? target.tap({timeout:3000}) : target.click({timeout:3000})); }
-  catch (error) {
-    console.error('Lyric hit area', await target.evaluate(el => ({html:el.outerHTML,box:el.getBoundingClientRect().toJSON(),
-      text:el.querySelector('text').getBBox(),transform:el.getAttribute('transform')})));
-    if (output) await page.screenshot({path:path.join(output,`selective-lyrics-${label}-failure.png`)});
-    throw error;
-  }
-  assert.equal(await target.getAttribute('aria-pressed'), 'true');
-  assert.equal(await target.locator('text').evaluate(el => getComputedStyle(el).opacity), '0');
-  assert.deepEqual(await target.locator('text').boundingBox(), before, 'masking never moves a word');
-  assert.equal(await frame.locator('#seek').inputValue(), playhead, 'lyric click must not seek');
-  assert.equal(await frame.locator('#showAllLyrics').isEnabled(), true);
-  if (output) await page.screenshot({path:path.join(output,`selective-lyrics-${label}-hidden.png`)});
-  await target.press('Enter');
-  assert.equal(await target.getAttribute('aria-pressed'), 'false');
-  await target.press('Enter');
-  assert.equal(await target.getAttribute('aria-pressed'), 'true');
-
-  await showSettings();
-  await frame.locator('#lyricEditing').click();
-  assert.equal(await target.getAttribute('aria-disabled'),'true');
-  assert.equal(await target.getAttribute('tabindex'),'-1');
-  await target.press('Enter');
-  assert.equal(await target.getAttribute('aria-pressed'),'true','locking keeps the word hidden and disables editing');
-
-  if (reload) {
-    frame = await reload();
-    await ready();
-    assert.equal(await frame.locator(`#score ${selector}`).first().getAttribute('aria-pressed'), 'true', 'hidden words persist on reload');
-    assert.equal(await frame.locator('#lyricEditing').getAttribute('aria-pressed'),'false','word editing lock persists on reload');
-  }
-  await showSettings();
-  await frame.locator('#lyricEditing').click();
+  if (await frame.locator('#lyricEditing').getAttribute('aria-pressed') !== 'true') await frame.locator('#lyricEditing').click();
+  await ready();await showScore();
+  const first=frame.locator('#score .lyric-toggle').filter({visible:true}).first();
+  const ids=await first.getAttribute('data-lyric-words'), selector=`.lyric-toggle[data-lyric-words="${ids}"]`;
+  const before=await first.locator('text').boundingBox(),position=await frame.locator('#seek').inputValue();
+  await first.click();
+  assert.equal(await first.getAttribute('aria-pressed'),'true');
+  assert.deepEqual(await first.locator('text').boundingBox(),before);
+  assert.equal(await frame.locator('#seek').inputValue(),position);
+  await first.press('Enter');assert.equal(await first.getAttribute('aria-pressed'),'false');
+  await first.press('Enter');
+  await settings();await frame.locator('#lyricEditing').click();
+  assert.equal(await first.getAttribute('aria-disabled'),'true');
+  if(reload) {frame=await reload();await ready();assert.equal(await frame.locator('#score '+selector).first().getAttribute('aria-pressed'),'true');}
+  await reset();assert.equal(await frame.locator('.lyric-toggle.is-lyric-hidden').count(),0);
+  const editState=await frame.locator('#lyricEditing').getAttribute('aria-pressed');
+  await reset();
+  assert.ok(await frame.locator('.lyric-toggle.is-lyric-hidden').count()>0);
+  assert.equal(await frame.locator('#lyricEditing').getAttribute('aria-pressed'),editState,'hold/context action does not toggle the editing tool');
+  await reset();
+  if(editState!=='true') await frame.locator('#lyricEditing').click();
   await frame.locator('#scoreViewToggle').click();
+  await frame.waitForFunction(()=>document.querySelector('#barScore .lyric-toggle'));
   await showScore();
-  try { await frame.waitForFunction(() => document.querySelector('#barScore .lyric-toggle'),null,{timeout:5000}); }
-  catch(error) {
-    console.error('Pitchbar lyric state', await frame.evaluate(() => ({
-      part:document.querySelector('#practicePart').dataset.value,
-      bars:document.querySelector('#barScore').innerHTML.slice(0,1500),
-      view:document.querySelector('#scoreViewToggle').outerHTML,
-      lyrics:JSON.parse(document.querySelector('#playback-data').textContent).lyrics.slice(0,4),
-    })));
-    throw error;
-  }
-  const bar = frame.locator(`#barScore ${selector}`).first();
-  if (!await bar.count()) {
-    console.error('Missing mapped pitchbar word', await frame.evaluate(({id,text}) => ({id,text,
-      part:document.querySelector('#practicePart').dataset.value,
-      words:[...document.querySelectorAll('#barScore .bar-lyric-text')].slice(0,8).map(el=>({text:el.textContent,attr:{...el.dataset},group:el.parentElement.outerHTML.slice(0,600)})),
-      prefs:Object.fromEntries(Object.entries(localStorage).filter(([key])=>key.includes('prefs'))),
-    }),{id,text}));
-  }
-  assert.equal(await bar.getAttribute('aria-pressed'), 'true', 'same occurrence is hidden in pitchbar');
-  await (mobile ? bar.tap() : bar.click());
-  assert.equal(await bar.getAttribute('aria-pressed'), 'false');
-  await (mobile ? bar.tap() : bar.click());
-  await showSettings();
-  await frame.locator('#showAllLyrics').click();
-  assert.equal(await frame.locator('.lyric-toggle.is-lyric-hidden').count(), 0);
-  assert.equal(await frame.locator('#showAllLyrics').isDisabled(), true);
-  await frame.locator('#scoreViewToggle').click();
-  await ready();
-  await showScore();
-  assert.equal(await frame.locator(`#score ${selector}`).first().getAttribute('aria-pressed'), 'false');
-
-  const split = splitWord && frame.locator(`#score .lyric-toggle[aria-label="Hide lyric: ${splitWord}"]`);
-  if (split) {
-    assert.equal(await split.count(),2,'fixture has a two-syllable word');
-    await split.first().click();
-    assert.equal(await frame.locator('#score .lyric-toggle.is-lyric-hidden').count(), 2, 'both syllables hide together');
-    await showSettings();
-    await frame.locator('#showAllLyrics').click();
-  }
-  await showSettings();
-  await frame.locator('#annotationLayout').click();
-  await ready();
-  await showScore();
-  const shared = frame.locator('.shared-notation-layer .lyric-toggle');
-  const sharedCount = await shared.count();
-  if (sharedCount) {
-    const members = (await shared.first().getAttribute('data-lyric-words')).split(',');
-    await (mobile ? shared.first().tap() : shared.first().click());
-    assert.equal(await shared.first().getAttribute('aria-pressed'), 'true');
-    const owner = shared.first().locator('..').locator('.shared-owners');
-    if (await owner.count()) assert.equal(await owner.evaluate(el => getComputedStyle(el).opacity), '1');
-    await showSettings();
-    await frame.locator('#annotationLayout').click();
-    await ready();
-    try { await frame.waitForFunction(ids => ids.every(id => document.querySelector(
-      `#score .lyric-toggle.is-lyric-hidden[data-lyric-words="${id}"]`)),members,{timeout:5000}); }
-    catch(error) {
-      console.error('Shared masks after full notation', await frame.evaluate(ids => ({ids,
-        mode:document.querySelector('#annotationLayout').getAttribute('aria-pressed'),
-        groups:[...document.querySelectorAll('#score .lyric-toggle.is-lyric-hidden')].map(el=>({ids:el.dataset.lyricWords,text:el.textContent})),
-        counts:ids.map(id=>({id,count:document.querySelectorAll(`#score .lyric-toggle[data-lyric-words="${id}"]`).length})),
-      }),members));
-      throw error;
-    }
-    for (const id of members) {
-      assert.ok(await frame.locator(`#score .lyric-toggle.is-lyric-hidden[data-lyric-words="${id}"]`).count(), 'each shared part keeps its mask in full notation');
-    }
-    await frame.locator('#showAllLyrics').click();
-    await frame.locator('#annotationLayout').click();
-    await ready();
-  }
-  await showSettings();
-  await ready();
-  if (output) await page.screenshot({path: path.join(output, `selective-lyrics-${label}.png`)});
-  if (!mobile) await frame.locator('#annotationLayout').click();
-  await ready();
-  if (await frame.locator('#lyricEditing').getAttribute('aria-pressed') !== editingInitially) await frame.locator('#lyricEditing').click();
-  if (mobile) await frame.locator('#settingsToggle').click();
-  return {text, persisted: Boolean(reload), sharedCount, hidden: await frame.locator('.is-lyric-hidden').count()};
+  const bar=frame.locator('#barScore .lyric-toggle').first();await bar.click();
+  assert.equal(await bar.getAttribute('aria-pressed'),'true');
+  await reset();assert.equal(await frame.locator('.lyric-toggle.is-lyric-hidden').count(),0);
+  await frame.locator('#scoreViewToggle').click();await ready();
+  if(output)await page.screenshot({path:path.join(output,`selective-lyrics-${label}.png`)});
+  return {compactAlways:true,hideAndRestore:true,globalHideShow:true,persistent:true,gesturePreservesTool:true,mobile};
 }
 
 async function checkLyricNotePriority(page, frame, {mobile=false, part, measure=0, word, output, label='generic'} = {}) {
@@ -163,6 +69,7 @@ async function checkLyricNotePriority(page, frame, {mobile=false, part, measure=
       Object.assign(s,{scoreView:'standard',flow:'wrap',vertical:100,horizontal:100,lyricEditing:true,
         lyrics:'full',annotationLayouts:{desktop:'part',mobile:'part'},hiddenLyrics:[]});
       s.visible=s.visible.map((_,i)=>i===(part??Math.min(7,s.visible.length-1)));
+      delete s.visibleChannels;
       q.pitchbar.applySettingsState(s);
     },{part});
     await frame.waitForTimeout(500);

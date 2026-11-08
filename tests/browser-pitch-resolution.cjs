@@ -4,6 +4,9 @@ const path = require('node:path');
 // This instrumentation exists only in isolated QA builds. A quiet synthetic
 // input exercises the actual analyser/Pitchy path without recording the user.
 const pitchTraceProbe = `pitchResolution: {
+  get divisiSpans() { return partDivisi[practicePartIndex]?.spans || []; },
+  divisiTargets(tick,cents) { return {line:pitchTraceLaneAt(tick,cents),error:expectedPitchErrorCents(tick,cents),
+    pitches:expectedPitchAt(tick).map(n=>n[3]),part:practicePartIndex,chosen:practiceDivisi[practicePartIndex]}; },
   clearPitchTrace, loadPitchTrace, disablePitchCapture, setScoreView,
   traceState() {
     const review=takeReview;
@@ -25,10 +28,8 @@ const pitchTraceProbe = `pitchResolution: {
     const lane=pitchTraceLane(0,{create:true});
     lane.pitches.set(values,20);lane.breaks[29]=1;
     pitchTraceCount=values.filter(Boolean).length;
-    savePitchTraceNow();
-    const stored=JSON.parse(localStorage.getItem(pitchTraceKey)),saved=stored.lanes[0];
-    stored.lanes[0]={line:saved.line,pitches:saved.pitches,
-      octaveRepairs:[[29,3505,4705],[30,3500,4700]],breaks:saved.breaks};
+    const stored={version:3,track:0,lanes:[{line:0,pitches:values,
+      octaveRepairs:[[29,3505,4705],[30,3500,4700]],breaks:[]}]};
     localStorage.setItem(pitchTraceKey,JSON.stringify(stored));
     // Adopt the imported cache before unload's ordinary save, just as a
     // startup import does; otherwise this test overwrites its own fixture.
@@ -38,7 +39,7 @@ const pitchTraceProbe = `pitchResolution: {
   oldMovingOnsetSnapshot() {
     savePitchTraceNow();
     const lane=pitchTraceLane(0);
-    return {values:Array.from(lane.pitches.slice(20,42)),split:lane.breaks[29],
+    return {values:lane?Array.from(lane.pitches.slice(20,42)):[],split:lane?.breaks[29],
       stored:localStorage.getItem(pitchTraceKey)};
   },
   seedReviewOutlier(tick) {
@@ -108,6 +109,7 @@ const pitchTraceProbe = `pitchResolution: {
   seedOctave(offset) {
     clearPitchTrace();
     setPracticePart(0); setScoreView("bars");
+    takeState='recording';
     const note=sequence.notes.find(n=>n[0]===0&&n[2]-n[1]>=sequence.division/2);
     const first=pitchTraceBinAtTick(note[1])+1,last=Math.min(pitchTraceBinAtTick(note[2])-1,first+12);
     const lane=pitchTraceLane(0,{create:true});
@@ -124,7 +126,7 @@ const pitchTraceProbe = `pitchResolution: {
       edges:edges.map(e=>({y:Number(e.getAttribute('y1')),color:e.getAttribute('stroke')}))};
   },
   prepare() {
-    engine.pauseTransport(); clearLoop(); clearPitchTrace(); engine.setRate(1);
+    engine.pauseTransport(); clearLoop(); stopTakePreview(); clearPitchTrace(); engine.setRate(1);
     setPracticePart(0);
     const note = sequence.notes.find(note => note[0] === 0) || sequence.notes[0];
     api.tickPosition = note[1];
@@ -171,16 +173,23 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true')
     await frame.locator('#settingsToggle').click();
   await frame.evaluate(name => window[name].pitchResolution.prepare(), probe);
+  await frame.evaluate(name => window[name].pitchResolution.setScoreView('standard'), probe);
   await frame.waitForFunction(name => !window[name].pitchResolution.snapshot().busy, probe);
-  await frame.locator('#pitchCapture').click();
+  await frame.locator('#recordAudio').click();
   await frame.locator('#playPause').click();
   await frame.waitForFunction(name => window[name].pitchResolution.snapshot().state === 'recording', probe);
   let captured;
   try {
     await frame.evaluate(name => window[name].pitchResolution.input(), probe);
     await frame.waitForFunction(name => window[name].pitchResolution.observations.length > 5, probe);
+    await frame.waitForFunction(name => window[name].recording.takes.some(t=>t.active), probe);
+    const activeTake = await frame.evaluate(name => window[name].recording.takes.find(t=>t.active)?.id, probe);
+    assert.ok(activeTake, 'Score view starts a real microphone recording');
+    assert.equal(await frame.locator('#score .bar-pitch-trace-edge').count(), 0, 'no live or reference traces on notation');
+    await frame.locator('#scoreViewToggle').click();
+    await frame.locator('#barScore [data-from-bin]').first().waitFor({state:'attached'});
+    await frame.locator('#scoreViewToggle').click();
     await page.waitForTimeout(3000);
-    await frame.evaluate(name => window[name].pitchResolution.stop(), probe);
     captured = await frame.evaluate(name => window[name].pitchResolution.snapshot(), probe);
     assert.equal(captured.binTicks,captured.division/64);
     assert.ok(captured.count>80,`expected denser capture than 15 Hz: ${JSON.stringify({count:captured.count,
@@ -193,16 +202,45 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
       assert.equal(reading.bin%reading.stride,0,'all observations share the score grid origin');
     }
     assert.ok(captured.observations.some(frame=>frame.stride<=2),'256th or 128th works at ordinary tempo');
+    const recordedId=await frame.evaluate(name=>window[name].recording.takes.find(t=>t.active)?.id,probe);
+    assert.equal(recordedId,activeTake,'switching Score/Pitchbar twice preserves the uninterrupted take');
+    assert.equal(await frame.locator('#score .bar-pitch-trace-edge').count(),0,'notation is still clean after live samples and layout');
+    await frame.evaluate(name => window[name].pitchResolution.stop(), probe);
+    // Earlier fixtures can already have contours. Wait for this capture's
+    // analysis and comp adoption; replaced source takes may then be collected.
+    await frame.waitForFunction(({name,id})=>window[name].recording.state==='off'
+      &&window[name].recording.takes.some(t=>t.id===id&&t.finalized&&!t.unsaved&&t.pitchContour),{name:probe,id:recordedId});
+    await frame.waitForFunction(name=>window[name].tracksSettled(),probe);
+    const saved=await frame.evaluate(({name,id})=>window[name].recording.takes.filter(t=>t.id===id)
+      .map(t=>({id:t.id,frames:t.frames})),{name:probe,id:recordedId});
+    assert.equal(saved.length,1,'the newly recorded source remains in its track');
+    const comp=await frame.evaluate(({name,id}) => {
+      const q=window[name], state=q.compState;
+      return {key:state?.key, includesTake:state?.segments.some(segment=>segment.takeId===id),
+        tracked:q.recording.takes.find(t=>t.id===id)?.pitchScore?.trackedSeconds};
+    }, {name:probe,id:recordedId});
+    assert.ok(comp.includesTake && comp.tracked > 0,'Score recording was saved, scored and incorporated');
+    const row=frame.locator(`#compRows [data-comp-key=${JSON.stringify(comp.key)}] .comp-review`);
+    assert.equal(await row.getAttribute('aria-pressed'),'false','automatic comp arming is not an explicit request to draw on the staff');
+    assert.equal(await frame.locator('#score .bar-pitch-trace-edge').count(),0,'finishing the first take does not expose its trace');
+    await row.click();
+    assert.equal(await frame.evaluate(name=>window[name].engine.playing,probe),false,'inspecting the saved contour does not start playback');
     for(const view of ['standard','bars']) {
       await frame.evaluate(({name,view})=>window[name].pitchResolution.setScoreView(view),{name:probe,view});
-      await frame.waitForFunction(name => {const state=window[name].pitchResolution.snapshot();return !state.busy && state.edges>0;},probe);
+      const surface=view==='bars'?'#barScore':'#score';
+      await frame.locator(`${surface} .take-pitch-trace-group[data-selected="true"] .take-pitch-trace-edge`).first().waitFor({state:'attached'});
       if(output) await page.screenshot({path:path.join(output,`pitch-resolution-${label}-${view}.png`)});
     }
     frame = await reload();
     const restored = await frame.evaluate(name=>window[name].pitchResolution.snapshot(),probe);
     assert.equal(restored.state,'off','reload does not turn on the microphone');
-    assert.deepEqual(restored.points,captured.points,'all pitches, lanes and breaks survive reload');
-    assert.equal(restored.stored,captured.stored);
+    assert.equal(restored.count,0,'the transient live grid is never restored from localStorage');
+    await frame.waitForFunction(({name,saved})=>saved.every(s=>window[name].recording.takes.some(t=>t.id===s.id&&t.frames===s.frames&&t.pitchContour)),{name:probe,saved});
+    assert.equal(restored.stored,null);
+    // The latest track now selects itself after reload. Clicking while its
+    // audio finishes loading would toggle that freshly selected track off.
+    await frame.waitForFunction(name=>window[name].takeReview,probe);
+    assert.equal(await frame.locator('#compRows .comp-review[aria-pressed="true"]').count(),1);
     const octaves=[];
     for(const offset of [-12,12,-11]) {
       await frame.evaluate(({probe,offset})=>window[probe].pitchResolution.seedOctave(offset),{probe,offset});
@@ -216,57 +254,19 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
       octaves.push(view);
       if(output)await page.screenshot({path:path.join(output,`octave-${label}-${offset}.png`)});
     }
-    const rest = await frame.evaluate(name=>window[name].pitchResolution.prepareRestRepair(),probe);
-    await frame.waitForFunction(name=>!window[name].busy,probe);
-    rest.initial=await frame.evaluate(({name,rest})=>window[name].pitchResolution.restSnapshot(rest),{name:probe,rest});
-    assert.ok(rest.initial.remaining>8,'seed a visible stale rest contour');
-    assert.ok(rest.initial.edges>0,'stale rest contour actually renders');
-    await frame.locator('#pitchCapture').click();
-    await frame.locator('#playPause').click();
-    await frame.waitForFunction(name=>window[name].pitchResolution.snapshot().state==='recording',probe);
-    await frame.evaluate(name=>window[name].pitchResolution.input(0),probe);
-    await frame.waitForFunction(({name,end})=>window[name].engine.currentSeconds()>=end,
-      {name:probe,end:rest.endSeconds});
-    await frame.evaluate(name=>window[name].pitchResolution.stop(),probe);
-    try {
-      await frame.waitForFunction(({name,rest})=>window[name].pitchResolution.restSnapshot(rest).edges===0,{name:probe,rest});
-    } catch(error) {
-      const detail=await frame.evaluate(({name,rest})=>({rest,state:window[name].pitchResolution.restSnapshot(rest),
-        input:window[name].pitchResolution.snapshot()}),{name:probe,rest});
-      throw new Error(`${label}: silent rest cleanup failed: ${JSON.stringify(detail)}; ${error.message}`);
-    }
-    const repaired=await frame.evaluate(({name,rest})=>window[name].pitchResolution.restSnapshot(rest),{name:probe,rest});
-    assert.equal(repaired.remaining,0,'fresh silent input erases every old pitch in the rest');
-    assert.equal(repaired.note,rest.initial.note,'silent input does not erase a written-note passage');
-    for(const view of ['standard','bars']) {
-      await frame.evaluate(({name,view})=>window[name].pitchResolution.setScoreView(view),{name:probe,view});
-      await frame.waitForFunction(name=>!window[name].busy,probe);
-      const state=await frame.evaluate(({name,rest})=>window[name].pitchResolution.restSnapshot(rest),{name:probe,rest});
-      assert.equal(state.edges,0,'erased rests do not reappear when changing views');
-      if(output)await page.screenshot({path:path.join(output,`silent-rest-${label}-${view}.png`)});
-    }
-    await page.waitForTimeout(600);
-    frame=await reload();
-    const reloaded=await frame.evaluate(({name,rest})=>window[name].pitchResolution.restSnapshot(rest),{name:probe,rest});
-    assert.equal(reloaded.remaining,0,'rest erasure survives reload');
-    assert.equal(reloaded.note,rest.initial.note,'neighboring sung contour survives reload');
     const oldTrace=await frame.evaluate(name=>window[name].pitchResolution.seedOldMovingOnset(),probe);
     frame=await reload();
     const cleaned=await frame.evaluate(name=>window[name].pitchResolution.oldMovingOnsetSnapshot(),probe);
-    assert.deepEqual(cleaned.values,oldTrace.values.map((v,i)=>i===9||i===10?v+1200:v),
-      'an old live cache replays its verified correction without guessing recording speed');
-    assert.equal(cleaned.split,1,'old stroke breaks are retained');
-    assert.equal(cleaned.stored,oldTrace.stored,'save/reload retains every raw detector observation');
+    assert.equal(cleaned.values.filter(Boolean).length,0,'an old live cache never resurfaces as a second contour');
+    assert.equal(cleaned.stored,oldTrace.stored,'ignoring the old cache does not delete user data');
     frame=await reload();
     const repeated=await frame.evaluate(name=>window[name].pitchResolution.oldMovingOnsetSnapshot(),probe);
     assert.deepEqual(repeated,cleaned,'repair is stable across subsequent reloads');
     return {count:captured.count, detectorReadings:captured.observations.length,
       binTicks:captured.binTicks, cadenceMs:captured.cadence, processingIntervalMs:captured.interval,
       subdivisions:[...new Set(captured.observations.map(f=>256/f.stride))].sort((a,b)=>b-a),
-      reload:true, views:['standard','bars'], octaves,
-      oldMovingOnset:{rawPreserved:true,corrected:2,reload:true},
-      silentRest:{part:rest.part,measure:rest.measure,guard:rest.guard,cleared:rest.initial.remaining,
-        remaining:reloaded.remaining,keptNote:reloaded.note,reload:true},
+      reload:true, views:['standard','bars'], cleanStaffDuringRecording:true, sameTakeAcrossViewSwitches:true, scoredInStaffView:true, octaves,
+      savedTakes: saved.length, legacyCacheIgnored:true,
       input:'synthetic oscillator/silence through actual analyser/Pitchy'};
   } finally {
     await frame.evaluate(name=>{const p=window[name].pitchResolution;p.stop();p.clearPitchTrace();},probe);

@@ -30,12 +30,19 @@ test('retired per-mixer divisi choices and drag icons are neither applied nor sa
 
 test('follow geometry uses the sounding measure even while the DOM cursor is still on the previous system', () => {
   const boxes = [{x:10,y:100,w:200,h:300},{x:10,y:600,w:200,h:300}];
-  const c = vm.createContext({clamp, pendingNotationReload:null,scoreView:'standard',sequence:{endTick:800},
+  const c = vm.createContext({clamp, pendingNotationReload:null,scoreView:'standard',flow:'wrap',sequence:{endTick:800},visibleTracks:new Set([0]),
     engine:{currentSeconds:()=>500,tickAtSeconds:t=>t},measureIndexAtTick:t=>t<400?0:1,
     notationFollowBox:i=>boxes[i],
     elements:{score:{classList:{contains:()=>false},getBoundingClientRect:()=>({left:20,top:-50}),scrollLeft:0,scrollTop:0}}});
   vm.runInContext(source('playbackCursorBounds'),c);
   assert.deepEqual(plain(c.playbackCursorBounds()),{left:30,top:550,right:230,bottom:850,width:200,height:300});
+  c.flow='continuous';
+  c.notationBeatLine=()=>({left:712,width:1});
+  assert.deepEqual(plain(c.playbackCursorBounds()),{left:712,top:550,right:713,bottom:850,width:1,height:300});
+  c.notationBeatLine=()=>null;
+  assert.equal(c.playbackCursorBounds(),null,'wait for a visible beat instead of following the old bar');
+  c.visibleTracks.clear();
+  assert.equal(c.playbackCursorBounds(),null,'an empty See selection does not follow stale notation');
 });
 
 test('paused position changes cannot start a follow-scroll', () => {

@@ -23,25 +23,26 @@ function fixture({key=69, scale=1} = {}) {
     staffSystemBounds:{index,realBounds:box(30,index?280:80,200,120)}}));
   const c=vm.createContext({sequence:{division:100,endTick:800,measures:[[0,400],[400,400]],notes:[[0,0,300,key]]},
     window:{MeleteTakePitch:require('../template/take_pitch.js')},
-    visibleTracks:new Set([0]),practicePartIndex:0,partDivisi:[{spans:[{start:0,end:300,pitches:[key]}]}],divisiSpanAt:()=>null,
+    visibleTracks:new Set([0]),practicePartIndex:0,practiceDivisi:[null],partDivisi:[{spans:[{start:0,end:300,pitches:[key]}]}],divisiSpanAt:()=>null,
+    divisiLineFor:()=>0,
     restTraceSource:null,restTraceReferences:new Map(),engine:{secondsAtTick:t=>t/100},
     pitchNoteSource:null,pitchNoteCount:0,pitchNotesByPart:new Map(),
-    partIndexForTrack:t=>t,measureIndexAtTick:t=>t<400?0:1,STAFF_TRACE_CENTS_PER_STEP:25,
+    partIndexForTrack:t=>t,measureIndexAtTick:t=>t<400?0:1,STAFF_TRACE_CENTS_PER_STEP:Number(app.match(/const STAFF_TRACE_CENTS_PER_STEP = (\d+);/)[1]),
     clamp:(v,a,b)=>Math.max(a,Math.min(b,v))});
   for(const name of ['pitchRestState','performedScoreTick','expectedPitchAt','buildStaffTraceSystems','staffTracePoint'])
     vm.runInContext(source(name),c);
   const rows=c.buildStaffTraceSystems({findMasterBarByIndex:i=>masters[i]});
   return {c,masters,rows,at:(tick,cents=key*100,line=0)=>c.staffTracePoint(rows[tick<400?0:1],tick,cents,line)};
 }
-test('25 cents maps to one line/space step at every notation scale',()=>{
+test('50 cents maps to one line/space step in either direction at every notation scale',()=>{
   for(const scale of [.5,1,1.6]) {
     const f=fixture({scale});
     const close=(a,b)=>assert.ok(Math.abs(a-b)<1e-8,`${a} should equal ${b}`);
     close(f.at(0).x,50*scale);
     close(f.at(0).y,115*scale);
-    close(f.at(0,6925).y,110*scale);
-    close(f.at(0,6875).y,120*scale);
-    close(f.at(0,6950).y,105*scale);
+    close(f.at(0,6925).y,112.5*scale);
+    close(f.at(0,6850).y,120*scale);
+    close(f.at(0,6950).y,110*scale);
   }
 });
 test('enharmonic accidentals retain written centers; tenor uses sounding pitch',()=>{
@@ -49,7 +50,7 @@ test('enharmonic accidentals retain written centers; tenor uses sounding pitch',
   assert.equal(natural.at(0).y,flat.at(0).y);
   assert.equal(tenor.at(0).y,natural.at(0).y);
   assert.equal(flat.at(0,6900).error,100);
-  assert.equal(flat.at(0,6900).y,95);
+  assert.equal(flat.at(0,6900).y,105);
 });
 test('staff error remains centered for octave equivalents without modifying the raw pitch',()=>{
   const f=fixture();

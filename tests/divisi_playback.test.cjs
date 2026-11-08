@@ -20,7 +20,7 @@ function fixture(raw) {
   return {c, notes, play: (line, input = notes) => c.divisiPlaybackNotes(input, 0, line, t => t)};
 }
 
-test('only genuine simultaneous distinct pitches add a numbered pager', () => {
+test('only genuine simultaneous distinct pitches create numbered lines, defaulting to the first', () => {
   const unison = fixture([[0,0,1,60],[0,1,2,64],[0,1,2,64],[1,0,2,48]]);
   assert.deepEqual(plain(unison.c.practiceDivisiOptions(0)), []);
   assert.deepEqual(plain(unison.c.practiceDivisiOptions(null)), []);
@@ -30,7 +30,7 @@ test('only genuine simultaneous distinct pitches add a numbered pager', () => {
   assert.deepEqual(plain(split.c.practiceDivisiOptions(1)), []);
   assert.deepEqual(plain(split.c.normalizePracticeDivisi([2, 0])), [2,null]);
   for (const values of [undefined, [-1,0], [3,0], ['1',0]])
-    assert.deepEqual(plain(split.c.normalizePracticeDivisi(values)), [null,null]);
+    assert.deepEqual(plain(split.c.normalizePracticeDivisi(values)), [0,null]);
 });
 
 test('all divisions preserves originals; filtering affects only the chosen part', () => {

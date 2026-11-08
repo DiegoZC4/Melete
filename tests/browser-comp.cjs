@@ -12,7 +12,7 @@ const trackRow = frame => frame.locator('#compRows > .comp-row.is-armed');
 async function checkComp(frame, page, {output, label, reload, cloud: testCloud = true, continuous: testContinuous = true}) {
   if (await frame.locator('#partChooser').isVisible()) await frame.locator('#partChooserDismiss').click();
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await frame.locator('#settingsToggle').click();
-  if (await frame.locator('#practicePart').getAttribute('data-value') === '') await frame.locator('#practicePart').press('ArrowDown');
+  await require('./browser-sing.cjs').choosePart(frame);
   await frame.waitForFunction(() => (window.__qa || window.__probe).compDescriptor);
   await frame.waitForFunction(() => (window.__qa || window.__probe).compState);
   if(testCloud) {
@@ -21,9 +21,9 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
       localStorage.setItem('melete:cloud:enabled','true');
       await (window.__qa||window.__probe).refreshComp();
     });
-    assert.equal(await frame.locator('#compGoogleInline').getAttribute('src'),null,'old login preferences cannot activate an unconfigured player');
+    assert.equal(await frame.locator('#compGoogleInline').count(),0,'no sign-in iframe in settings');
   }
-  assert.equal(await frame.locator('#compCloud').isEnabled(), true, 'choosing a part enables its empty track immediately');
+  assert.equal(await frame.locator('#compCloud').count(), 0, 'row upload is the only sign-in entry');
   const created = await frame.evaluate(async () => {
     const q = window.__qa || window.__probe, d = q.compDescriptor, ref = d.reference;
     const mid = Math.floor(q.scoreMeasures.length / 2);
@@ -57,6 +57,7 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
       else if(t-r[0]>.01&&r[1]-t>.01&&audio[i]!==Math.round(2030*Math.sin(2*Math.PI*220*i/cleaned.sampleRate))) changedKept++;
     }
     return {ids:ids.slice(1),state:q.compState,preferences:q.savedPractice,
+      history:await q.takeStore.compHistory(q.takeSong),
       replaced:{listed:q.recording.takes.some(t=>t.id===replaced),stored:await q.takeStore.wav(replaced).then(()=>true,()=>false)},
       restCleanup:{ignored,nonzeroIgnored,changedKept,version:cleaned.restAudioVersion},
       pcm:Array.from(new Uint8Array(await (await q.takeStore.wav(full)).arrayBuffer())).slice(0,80)};
@@ -64,10 +65,10 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   assert.equal(created.restCleanup.version,1,'existing source takes gain score-aware rest handling');
   assert.equal(created.restCleanup.nonzeroIgnored,0,'discarded rest audio is absent from stored WAV, not just muted');
   assert.equal(created.restCleanup.changedKept,0,'singing and the one-beat guards preserve original samples');
-  assert.deepEqual(created.replaced,{listed:false,stored:false},'a replaced recording is deleted once neither the track nor Undo uses it');
+  assert.deepEqual(created.replaced,{listed:true,stored:true},'recent replaced audio is protected by multilevel Undo');
   assert.ok(created.state.segments.some(s=>s.takeId===created.ids[1]),'the newest recording punches in the passage it sang');
   assert.ok(created.state.segments.some(s=>s.takeId===created.ids[0]),'the earlier recording keeps the rest of the track');
-  assert.ok(created.state.undo?.length&&created.state.undo.every(s=>s.takeId===created.ids[0]),'Undo holds the track before the newest recording');
+  assert.ok(created.history.past.at(-1).before.segments.length&&created.history.past.at(-1).before.segments.every(s=>s.takeId===created.ids[0]),'Undo holds the track before the newest recording');
   const recovered = await frame.evaluate(async ({ids}) => {
     const q = window.__qa || window.__probe;
     await q.takeStore.saveComp({...q.compState, offerVersion: 1, processed: ids,
@@ -82,16 +83,20 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   assert.equal(recovered.state.offerVersion, 2);
   created.state = recovered.state;
   let row = trackRow(frame);
-  assert.equal(await row.locator('.take-number').textContent(), 'Comp', 'a track built from two recordings');
+  assert.ok(Number.isInteger(created.state.firstTakeNumber));
+  assert.equal(await row.locator('.take-number').textContent(), String(created.state.firstTakeNumber),
+    'a track built from two recordings keeps its first take number');
   assert.notEqual(await row.locator('.take-part').textContent(), '');
   assert.doesNotMatch(await frame.locator('#compView').innerText(), /\bBest\b/);
-  assert.equal(await frame.locator('#compView [data-take-sort]').count(), 0, 'one row per track needs no sorting');
+  assert.equal(await frame.locator('#compView [data-take-sort]:visible').count(), 9, 'all track columns are sortable');
   assert.equal(await frame.locator(created.ids.map(id => `#takeList [data-take-id="${id}"]`).join(', ')).count(), 0,
     'track recordings are not listed as loose takes');
   assert.equal(await frame.locator('#compProgress, .comp-progress, .comp-summary').count(),0,'no separate comp graphic remains');
+  if(await row.locator('.comp-review').getAttribute('aria-pressed')==='true')await row.locator('.comp-review').click();
   assert.equal(await frame.locator('#takeTimeline').isVisible(),false);
   const chapters = await frame.locator('#timelineSegments').innerHTML();
   await frame.evaluate(()=>{
+    (window.__qa||window.__probe).invalidateCompAudio();
     window.__compPerformance={prepare:MeleteCompAudio.prepare,calls:0,tasks:[],start:performance.now()};
     MeleteCompAudio.prepare=async(...args)=>{__compPerformance.calls++;return __compPerformance.prepare(...args);};
     __compPerformance.observer=new PerformanceObserver(list=>__compPerformance.tasks.push(...list.getEntries().map(e=>e.duration)));
@@ -99,7 +104,9 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   });
   await row.locator('.comp-review').click();
   await frame.waitForFunction(()=>(window.__qa||window.__probe).takeReview?.id.startsWith('comp:'));
-  assert.deepEqual(await frame.evaluate(()=>(window.__qa||window.__probe).savedPractice),created.preferences);
+  assert.deepEqual(await frame.evaluate(()=>(window.__qa||window.__probe).savedPractice),
+    {...created.preferences, audible: created.preferences.audible.map((_, i) => i !== created.state.descriptor.reference.part)},
+    'explicit review mutes its MIDI part; background comp updates do not change the mix');
   const review=await frame.evaluate(() => {
     const q=window.__qa||window.__probe;
     return {id:q.takeReview.id,frames:q.takeReview.frames.length,duration:q.takeReview.duration,
@@ -174,18 +181,20 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   },created.ids);
   assert.deepEqual(protection,{rejected:true,stale:true,deleted:[]});
   await row.locator('.take-delete').click();
+  assert.match(await row.locator('.take-delete').getAttribute('class'),/is-delete-armed/);
+  await row.locator('.take-delete').click();
   await frame.waitForFunction(()=>(window.__qa||window.__probe).compState?.segments.length===0);
   frame=await reload();
   await frame.waitForFunction(()=>(window.__qa||window.__probe).compState);
   row = trackRow(frame);
   const removed=await frame.evaluate(async ids=>{
     const q=window.__qa||window.__probe;
-    return {segments:q.compState.segments.length,undo:q.compState.undo?.length||0,
+    return {segments:q.compState.segments.length,undo:(await q.takeStore.compHistory(q.takeSong)).past.at(-1).before.segments.length,
       stored:await Promise.all(ids.map(id=>q.takeStore.wav(id).then(()=>true,()=>false)))};
   },created.ids);
   assert.deepEqual(removed,{segments:0,undo:created.state.segments.length,stored:[true,true]},'a removed track keeps its recordings for Undo');
-  await frame.locator('#takeActions summary').click();
-  assert.match(await frame.locator('#undoComp span').textContent(),/^Undo .+ change$/);
+
+  assert.match(await frame.locator('#undoComp').getAttribute('aria-label'),/^Undo .+ change$/);
   await frame.locator('#undoComp').click();
   await frame.waitForFunction(()=>(window.__qa||window.__probe).compState.segments.length>0);
   assert.deepEqual(await frame.evaluate(()=>(window.__qa||window.__probe).compState.segments),created.state.segments);
@@ -239,9 +248,10 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   // Clean up only this test's disposable library, after explicitly removing its track.
   await frame.evaluate(async ({ids,key})=>{
     const q=window.__qa||window.__probe;
-    await q.takeStore.transaction(['comps'],'readwrite',(tx,done)=>{tx.objectStore('comps').delete(key);done();});
-    await q.takeStore.deleteTakes(q.takeSong,ids); await q.reloadTakes(); await q.refreshComp();
+    const sources=await q.forgetCompFixtures([key]);
+    await q.takeStore.deleteTakes(q.takeSong,[...sources,...ids]); await q.reloadTakes(); await q.refreshComp();
   },{ids:created.ids,key:created.state.key});
+  const trim = await checkAutoTrim(frame);
   const rests = await checkPhraseMargins(frame,page,{output,label,reload});
   frame=await reload();
   const referenceRevision = await checkReferenceRevision(frame,page,{output,label,reload});
@@ -250,7 +260,7 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   const continuous = testContinuous ? await checkContinuousCapture(frame) : null;
   return {persisted:true,undo:true,originalsPreserved:true,protectedSources:true,staleWritesRejected:true,replacedDiscarded:true,
     compositeReview:review,performance:{first:firstPerformance,cached:cachedPerformance,pitchbarPaths},rowActions:true,
-    legacyBackfill:true,selectedPlaybarCoverage:true,metricGrid:true,noSorting:true,offlineNoUpload:true,cloud,rests,referenceRevision,segment,continuous};
+    legacyBackfill:true,selectedPlaybarCoverage:true,metricGrid:true,noSorting:true,offlineNoUpload:true,cloud,trim,rests,referenceRevision,segment,continuous};
 }
 
 async function checkReferenceRevision(frame,page,{output,label,reload}) {
@@ -271,7 +281,7 @@ async function checkReferenceRevision(frame,page,{output,label,reload}) {
     const oldState=await q.takeStore.saveComp({...C.offer(C.empty(old),sources.get(id),sources),track:true});
     const previous=(await q.takeStore.comps(q.takeSong)).find(s=>s.key===C.key(d));
     if(previous?.segments.length)throw Error('Revision fixture requires an empty temporary track');
-    await q.takeStore.transaction(['comps'],'readwrite',(tx,done)=>{tx.objectStore('comps').delete(C.key(d));done();});
+    await q.forgetCompFixtures([C.key(d)]);
     const hash=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
     return {id,oldKey:oldState.key,key:C.key(d),audio:await hash(await(await q.takeStore.wav(id)).arrayBuffer()),
       raw:await hash(cached.pitchContour.pitches),oldMean:cached.pitchScore.meanAbsCents,
@@ -295,9 +305,8 @@ async function checkReferenceRevision(frame,page,{output,label,reload}) {
     assert.equal(result.revisionOf,fixture.oldKey);assert.ok(result.segments>0);
     const row=trackRow(frame);
     assert.equal(await row.locator('.take-number').textContent(),String(fixture.number));
-    assert.equal(await row.locator('.take-start').textContent(),'1');
-    assert.match(await row.locator('.take-end').textContent(),/^\d+$/);
-    await row.locator('.comp-review').click();
+    assert.equal(await row.locator('.take-segments').textContent(),'1','rests inside one recording do not create extra segments');
+    // Reload automatically selects the latest track for the isolated part.
     await frame.waitForFunction(()=>(window.__qa||window.__probe).takeReview?.id.startsWith('comp:'));
     assert.equal(await frame.locator('.take-timeline-start').count(),1);
     assert.equal(await frame.locator('.take-timeline-end').count(),1);
@@ -309,7 +318,7 @@ async function checkReferenceRevision(frame,page,{output,label,reload}) {
   } finally {
     await frame.evaluate(async f=>{
       const q=window.__qa||window.__probe;
-      await q.takeStore.transaction(['comps'],'readwrite',(tx,done)=>{for(const k of[f.key,f.oldKey])tx.objectStore('comps').delete(k);done();});
+      await q.forgetCompFixtures([f.key,f.oldKey]);
       await q.takeStore.deleteTakes(q.takeSong,[f.id]);await q.reloadTakes();await q.refreshComp();
     },fixture);
   }
@@ -325,7 +334,7 @@ async function checkPhraseMargins(frame,page,{output,label,reload}) {
       const id=crypto.randomUUID(),n=Math.ceil(r.seconds*sr),pcm=new Int16Array(n).fill(noise?1000:0);
       P.discardRestAudio(pcm,sr,r);
       const t=await q.takeStore.append({id,song:q.takeSong,createdAt:Date.now(),sampleRate:sr,
-        part:d.label,label:'phrase-margins',rate:r.rate,start:r.start,end:r.end,pitchReference:r,restAudioVersion:P.REST_POLICY_VERSION},
+        part:d.label,label:'phrase-margins',favorite:!noise,rate:r.rate,start:r.start,end:r.end,pitchReference:r,restAudioVersion:P.REST_POLICY_VERSION},
         0,pcm,{finalized:true,complete:true});
       const frames=Array.from({length:Math.ceil(n/80)},(_,i)=>{
         const start=i*80/sr,end=Math.min((i+1)*80,n)/sr,note=r.notes.find(n=>n[0]<end&&n[1]>start);
@@ -360,6 +369,7 @@ async function checkPhraseMargins(frame,page,{output,label,reload}) {
   assert.equal(result.unchanged,true,'missing observations never count as a clean rest');
   try {
     frame=await reload();
+    await frame.waitForFunction(()=>(window.__qa||window.__probe).compState?.segments.length);
     const repaired=await frame.evaluate(()=>{
       const q=window.__qa||window.__probe,C=MeleteComp;
       const sources=new Map(q.recording.takes.map(t=>[t.id,{...t,origin:q.engine.secondsAtTick(t.pitchReference.captureStart)/t.rate}]));
@@ -367,22 +377,31 @@ async function checkPhraseMargins(frame,page,{output,label,reload}) {
     });
     assert.equal(repaired.segments.length,1);
     assert.equal(repaired.segments[0].takeId,result.ids[0]);
-    assert.deepEqual(repaired.undo,repaired.segments,'Undo cannot reintroduce independent rest splices');
+    assert.equal(repaired.undo,null,'legacy one-step Undo has moved into durable history');
     assert.equal(repaired.stats.restVoicedSeconds,result.before,'legacy repair restores the phrase original timing errors');
     assert.equal(repaired.stats.meanAbsCents,result.meanBefore,'legacy repair preserves the sung passage');
     result.savedCompRepaired=true;
     let row=trackRow(frame);
     assert.equal(await row.count(),1,'a repaired track has one row');
     assert.equal(await row.locator('.take-number').textContent(),String(result.number),'a single-recording track shows its take number');
-    await row.locator('.comp-review').click();
+    // Reload arms the repaired track. On the staff it still takes one click
+    // to inspect that saved contour, and the next click deselects it.
     await frame.waitForFunction(()=>(window.__qa||window.__probe).takeReview?.id.startsWith('comp:'));
     assert.deepEqual(await frame.evaluate(()=>(window.__qa||window.__probe).savedPractice),result.preferences);
     const downloadPromise=page.waitForEvent('download');await row.locator('.take-download').click();
     assert.match((await downloadPromise).suggestedFilename(),/-track\.wav$/);
-    await row.locator('.comp-review').click();
+    const review=row.locator('.comp-review');
+    if (await frame.locator('[data-view="standard"]').getAttribute('aria-selected')==='true') {
+      assert.equal(await review.getAttribute('aria-pressed'),'false');
+      await review.click();
+      await frame.locator('#score .take-pitch-trace-group[data-selected="true"]').first().waitFor({state:'attached'});
+      assert.equal(await review.getAttribute('aria-pressed'),'true');
+    }
+    await review.click();
     await frame.waitForFunction(()=>(window.__qa||window.__probe).takeReview===null);
     assert.equal(await frame.locator('#reviewRestComp').count(),0,'no obsolete rest-repair variant');
     frame=await reload();
+    await frame.waitForFunction(()=>(window.__qa||window.__probe).compState?.segments.length);
     row=trackRow(frame);
     assert.equal(await row.count(),1,'reload preserves the single-row presentation');
     if(output){
@@ -390,16 +409,18 @@ async function checkPhraseMargins(frame,page,{output,label,reload}) {
       await page.screenshot({path:path.join(output,`phrase-margins-${label}.png`)});
     }
     await row.locator('.take-delete').click();
+  assert.match(await row.locator('.take-delete').getAttribute('class'),/is-delete-armed/);
+  await row.locator('.take-delete').click();
     await frame.waitForFunction(()=>{const s=(window.__qa||window.__probe).compState;return s&&!s.segments.length;});
     const kept=await frame.evaluate(()=>(window.__qa||window.__probe).recording.takes.map(t=>t.id));
     assert.ok(result.ids.every(id=>kept.includes(id)),'removing the track keeps its sources for Undo');
-    await frame.locator('#takeActions summary').click();await frame.locator('#undoComp').click();
+    await frame.locator('#undoComp').click();
     await frame.waitForFunction(()=>(window.__qa||window.__probe).compState?.segments.length);
     assert.equal(await row.count(),1,'Undo restores the track in its row');
   } finally {
     await frame.evaluate(async ({ids,key})=>{
       const q=window.__qa||window.__probe;
-      await q.takeStore.transaction(['comps'],'readwrite',(tx,done)=>{tx.objectStore('comps').delete(key);done();});
+      await q.forgetCompFixtures([key]);
       await q.takeStore.deleteTakes(q.takeSong,ids);await q.reloadTakes();await q.refreshComp();
     },result);
   }
@@ -422,11 +443,12 @@ async function checkSelectedTimeline(frame, segments) {
   assert.equal(await frame.locator('#seek').getAttribute('aria-describedby'),'takeTimelineDescription');
   const layout = await frame.evaluate(()=>{
     const q=window.__qa||window.__probe, rail=document.getElementById('takeTimeline').getBoundingClientRect();
+    const start=q.engine.secondsAtTick(q.engine.leadInTicks),duration=q.engine.duration-start;
     const marks=[...document.querySelectorAll('.take-timeline-coverage')];
     return marks.map(mark=>{
       const box=mark.getBoundingClientRect();
-      return Math.abs(box.x-rail.x-Number(mark.dataset.from)/q.engine.duration*rail.width)<1
-        && Math.abs(box.width-(Number(mark.dataset.to)-Number(mark.dataset.from))/q.engine.duration*rail.width)<1;
+      return Math.abs(box.x-rail.x-(Number(mark.dataset.from)-start)/duration*rail.width)<1
+        && Math.abs(box.width-(Number(mark.dataset.to)-Number(mark.dataset.from))/duration*rail.width)<1;
     });
   });
   assert.ok(layout.every(Boolean),'coverage uses the actual main-playbar time scale');
@@ -442,6 +464,60 @@ async function checkSelectedTimeline(frame, segments) {
   assert.equal(await frame.locator('#takeTimeline').evaluate(e=>getComputedStyle(e).pointerEvents),'none','coverage never intercepts seeking');
 }
 
+// Once a track settles, the app itself deletes recorded audio no track or Undo
+// step plays. A take that ran on after its passage loses its unplayed tail in
+// whole stored chunks, while the passage the track plays stays bit-identical.
+async function checkAutoTrim(frame) {
+  const result = await frame.evaluate(async () => {
+    const q = window.__qa || window.__probe, d = q.compDescriptor, P = MeleteTakePitch;
+    const mid = Math.floor(q.scoreMeasures.length / 2);
+    const start = q.scoreMeasures[mid][0], end = q.scoreMeasures[Math.min(mid + 1, q.scoreMeasures.length - 1)][0];
+    const r = q.pitchReference({start, end, rate: q.engine.rate}); r.latency = 0;
+    const id = crypto.randomUUID(), sr = 8000, n = Math.ceil(r.seconds * sr) + 8 * sr;
+    const pcm = Int16Array.from({length: n}, (_, i) => 1 + i % 2000);
+    // Already rest-cleaned, so every kept sample must equal what was recorded.
+    const record = {id, song: q.takeSong, createdAt: Date.now(), sampleRate: sr, replaces: true, part: d.label, label: 'trim-test',
+      rate: d.reference.rate, start, end, peak: .1, pitchReference: r, restAudioVersion: P.REST_POLICY_VERSION};
+    let saved;
+    for (let at = 0; at < n; at += sr) {
+      const last = at + sr >= n;
+      saved = await q.takeStore.append(record, at, pcm.slice(at, at + sr), {finalized: last, complete: last});
+    }
+    const frames = Array.from({length: Math.ceil(n / 80)}, (_, i) => {
+      const from = i * 80 / sr, to = Math.min((i + 1) * 80, n) / sr, note = r.notes.find(m => m[0] <= from && m[1] > from);
+      return {start: from, end: to, cents: note ? note[2][0] * 100 + 10 : null};
+    });
+    await q.takeStore.pitchScore(id, n, r, P.scoreFrames(frames, r, n / sr), P.packContour(frames, saved));
+    await q.reloadTakes(); await q.refreshComp();
+    const take = (await q.takeStore.list(q.takeSong)).find(t => t.id === id);
+    const wav = new Int16Array((await (await q.takeStore.wav(id)).arrayBuffer()).slice(44));
+    const origin = q.engine.secondsAtTick(r.captureStart ?? start) / take.rate;
+    const segments = q.compState.segments.filter(s => s.takeId === id);
+    const played = segments.map(s => [Math.round((s.from - origin) * sr), Math.round((s.to - origin) * sr)]);
+    const last = Math.max(...segments.map(s => Math.ceil((s.to - origin + MeleteComp.AUDIO_MARGIN_SECONDS) * sr)));
+    const cut = Math.ceil(last / sr) * sr;
+    return {id, key: q.compState.key, frames: take.frames, storedFrames: take.storedFrames, cut, segments: segments.length,
+      listed: q.recording.takes.find(t => t.id === id)?.storedFrames, length: wav.length,
+      restCleaned: take.restAudioVersion === P.REST_POLICY_VERSION,
+      intact: played.every(([a, b]) => wav.slice(a, b).every((v, i) => v === pcm[a + i])),
+      silentTail: cut < n && wav.slice(cut).every(v => v === 0)};
+  });
+  const detail = JSON.stringify(result);
+  assert.ok(result.segments > 0, `the take must reach the track: ${detail}`);
+  assert.equal(result.restCleaned, true, detail);
+  assert.ok(result.storedFrames < result.frames && result.storedFrames <= result.cut, `the unplayed tail is deleted without a manual step: ${detail}`);
+  assert.equal(result.listed, result.storedFrames, 'the open take list learns the smaller size without a reload');
+  assert.equal(result.length, result.frames, 'a trimmed recording keeps its length');
+  assert.equal(result.intact, true, `the played passage is bit-identical: ${detail}`);
+  assert.equal(result.silentTail, true, `deleted audio reads back as silence: ${detail}`);
+  await frame.evaluate(async ({id, key}) => {
+    const q = window.__qa || window.__probe;
+    const sources = await q.forgetCompFixtures([key]);
+    await q.takeStore.deleteTakes(q.takeSong, [...sources, id]); await q.reloadTakes(); await q.refreshComp();
+  }, result);
+  return {automatic: true, playedIntact: true, deletedReadsSilent: true, freedFrames: result.frames - result.storedFrames};
+}
+
 async function checkSegmentCapture(frame) {
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await frame.locator('#settingsToggle').click();
   const target = await frame.evaluate(() => {
@@ -451,11 +527,11 @@ async function checkSegmentCapture(frame) {
     q.engine.pauseTransport(); q.api.tickPosition=q.engine.tickAtSeconds(position);
     return {tick:q.engine.tickAtSeconds(position),position,end:ref.end,key:q.compState.key};
   });
-  assert.equal(await frame.locator('#recordTake').count(),0,'one combined toggle, no separate Record');
+  assert.equal(await frame.locator('#recordAudio').count(),1,'audio saving is an explicit action');
   await toggleRecording(frame);
   await frame.waitForFunction(() => (window.__qa||window.__probe).recording.state==='recording');
-  await frame.waitForFunction(()=>document.getElementById('checkMicrophone').getAttribute('aria-pressed')==='true');
-  assert.equal(await frame.locator('#checkMicrophone').isDisabled(),true,'recording owns the inline meter');
+  await frame.waitForFunction(()=>['signal','quiet','clipping'].includes(document.getElementById('microphoneCheck').dataset.state));
+  assert.equal(await frame.locator('button#checkMicrophone').count(),0,'recording uses a passive inline meter, not another toggle');
   assert.equal(await frame.locator('#takeMicrophone').isDisabled(),true);
   const spec=await frame.evaluate(()=>(window.__qa||window.__probe).countIn.spec);
   assert.ok(Math.abs(spec.start-target.tick)<3,'free recording starts at the chosen playhead, not zero');
@@ -490,7 +566,7 @@ async function checkSegmentCapture(frame) {
   assert.ok(offered.used,`the saved excerpt replaces its passage in the track: ${JSON.stringify(offered)}`);
   await frame.evaluate(async ({id,key})=>{
     const q=window.__qa||window.__probe;
-    await q.takeStore.transaction(['comps'],'readwrite',(tx,done)=>{tx.objectStore('comps').delete(key);done();});
+    await q.forgetCompFixtures([key]);
     await q.takeStore.deleteTakes(q.takeSong,[id]);await q.reloadTakes();await q.refreshComp();
   },{id:take.id,key:target.key});
   return {playheadStart:true,noCountIn:true,manualStopSaved:true,actualRange:true,eligibleForComp:true,replacesPassage:true};
@@ -545,7 +621,7 @@ async function checkContinuousCapture(frame) {
   assert.equal(await trackRow(frame).locator('.comp-review').isEnabled(), true);
   await frame.evaluate(async id => {
     const q = window.__qa || window.__probe;
-    await q.takeStore.transaction(['comps'],'readwrite',(tx,done)=>{tx.objectStore('comps').delete(q.compState.key);done();});
+    await q.forgetCompFixtures([q.compState.key]);
     await q.takeStore.deleteTakes(q.takeSong,[id]); await q.reloadTakes(); await q.refreshComp();
   }, id);
   return {endFinalizes: true, noCountIn: true, fillsTrack: true, recoveredInputDropouts};

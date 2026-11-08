@@ -8,13 +8,16 @@
   // References stay immutable. Bump only analysis when detector behavior changes.
   const VERSION = 1;
   const ANALYSIS_VERSION = 2;
-  const SCORING_VERSION = 3;
+  const SCORING_VERSION = 4;
   const REST_POLICY_VERSION = 1;
   const CONTOUR_VERSION = 1;
   const BEST_COVERAGE_WINDOW = 0.05;
   const DOMINANCE_CENTS_MARGIN = 2;
   const DOMINANCE_COVERAGE_MARGIN = 0.02;
+  const TIME_EPSILON = 1e-6;
   const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+  // Clipping floating-point boundaries can leave fragments far below one audio sample.
+  const nonzeroNotes = notes => notes.filter(([from, to]) => to - from > TIME_EPSILON);
 
   function octaveError(cents) {
     return cents - 1200 * Math.round(cents / 1200);
@@ -48,11 +51,11 @@
 
   function reference({spans, secondsAtTick, start, end, rate, fingerprint, part, line, latency = 0, captureStart = start, measures = [], division}) {
     const origin = secondsAtTick(captureStart);
-    const notes = spans.filter(span => span.end > start && span.start < end).map(span => [
+    const notes = nonzeroNotes(spans.filter(span => span.end > start && span.start < end).map(span => [
       (secondsAtTick(Math.max(start, span.start)) - origin) / rate,
       (secondsAtTick(Math.min(end, span.end)) - origin) / rate,
       [...span.pitches],
-    ]);
+    ]));
     const chapters = measures.flatMap(([tick], index) => tick >= captureStart && tick < end
       ? [{measure: index + 1, seconds: (secondsAtTick(tick) - origin) / rate}] : []);
     const ref = {version: VERSION, fingerprint, part, line, start, end, rate, notes, captureStart, chapters,
@@ -94,7 +97,7 @@
   function trimReference(ref, end, seconds) {
     const clip = ranges => ranges.filter(r => r[0] < seconds).map(([a, b]) => [a, Math.min(b, seconds)]);
     return {...ref, end, seconds,
-      notes: ref.notes.filter(n => n[0] < seconds).map(([a, b, p]) => [a, Math.min(b, seconds), p]),
+      notes: nonzeroNotes(ref.notes.filter(n => n[0] < seconds).map(([a, b, p]) => [a, Math.min(b, seconds), p])),
       chapters: (ref.chapters || []).filter(c => c.seconds < seconds),
       ...(restPolicyValid(ref) ? {restPolicy: {...ref.restPolicy, keep: clip(ref.restPolicy.keep), guards: clip(ref.restPolicy.guards)}} : {})};
   }
@@ -122,6 +125,42 @@
   function cleanRestFrames(frames, ref) {
     return restPolicyValid(ref) ? frames.map(f => containsTime(ref.restPolicy.keep, (f.start + f.end) / 2)
       ? f : {...f, cents: null}) : frames;
+  }
+
+  function stopNoiseCut(pcm, sampleRate, frames, latency = 0) {
+    const seconds = pcm.length / sampleRate, step = Math.max(1, Math.round(sampleRate * .005));
+    if (seconds < .3 || !frames.length) return null;
+    const first = Math.max(0, pcm.length - Math.round(.5 * sampleRate)), blocks = [];
+    for (let a = first; a < pcm.length; a += step) {
+      let energy = 0;
+      const end = Math.min(pcm.length, a + step);
+      for (let i = a; i < end; i++) energy += (pcm[i] / 32768) ** 2;
+      blocks.push({start: a / sampleRate, end: end / sampleRate, rms: Math.sqrt(energy / (end - a))});
+    }
+    const sorted = blocks.map(b => b.rms).sort((a, b) => a - b);
+    const threshold = Math.max(.008, sorted[Math.floor(sorted.length / 2)] * 6);
+    const last = blocks.findLastIndex(b => b.rms > threshold);
+    if (last < 0 || seconds - blocks[last].end > .12) return null;
+    let begin = last;
+    while (begin > 0 && blocks[begin - 1].rms > threshold / 3) begin--;
+    const onset = blocks[begin].start;
+    if (blocks[last].end - onset > .08 || onset < .16) return null;
+    // Protect sung releases, consonants next to them, and every reliable pitch,
+    // including wrong notes. Missing evidence is not evidence of keyboard noise.
+    if (frames.some(f => Number.isFinite(f.cents) && f.end + latency > onset - .15)) return null;
+    const quiet = blocks.filter(b => b.start >= onset - .08 && b.end <= onset);
+    if (quiet.length < 12 || quiet.some(b => b.rms > threshold / 3)) return null;
+    const observed = frames.reduce((n, f) => n + Math.max(0, Math.min(onset, f.end + latency)
+      - Math.max(onset - .1, f.start + latency)), 0);
+    if (observed < .07) return null;
+    return Math.max(seconds - .5, onset - .005);
+  }
+
+  function muteStopTail(pcm, sampleRate, from, offset = 0) {
+    if (!Number.isFinite(from)) return pcm;
+    const start = Math.round(from * sampleRate), fade = Math.max(1, Math.round(.005 * sampleRate));
+    for (let i = Math.max(0, start - offset); i < pcm.length; i++) pcm[i] *= Math.max(0, 1 - (offset + i - start) / fade);
+    return pcm;
   }
 
   function restStats(frames, ref, duration) {
@@ -323,12 +362,13 @@
       frames.push({start: offset / sampleRate - ref.latency,
         end: (offset + count) / sampleRate - ref.latency, cents});
     }
-    const cleaned = vocal.repairOctaveIslands(cleanRestFrames(frames, ref));
+    const cleaned = vocal.cleanPitchFrames(cleanRestFrames(frames, ref));
     const result = scoreFrames(cleaned, ref, pcm.length / sampleRate);
     return includeFrames ? {...result, frames: cleaned} : result;
   }
 
   function packContour(frames, take) {
+    if (take.pitchContour?.version === 2) return packLiveContour(frames, take);
     const {sampleRate, pitchReference: ref} = take;
     const hop = Math.max(1, Math.round(sampleRate / 100));
     if (!validReference(ref) || !Number.isFinite(sampleRate) || sampleRate < 8000 || sampleRate > 192000
@@ -341,7 +381,7 @@
         || frame.end !== Math.min(offset + hop, take.frames) / sampleRate - ref.latency
         || (frame.cents !== null && !Number.isFinite(frame.cents))) throw new Error("Invalid take contour frame");
       if (frame.rawCents !== undefined && !Number.isFinite(frame.rawCents)) throw new Error("Invalid raw take pitch");
-      pitches[index] = frame.cents === null ? NaN : (frame.rawCents ?? frame.cents);
+      pitches[index] = frame.rawCents ?? (frame.cents === null ? NaN : frame.cents);
     });
     // The detector has a fixed sample hop. Store pitches only; reconstruct its
     // exact intervals, including the final partial frame and latency, on read.
@@ -350,14 +390,43 @@
       audioFrames: take.frames, reference: JSON.stringify(ref), pitches};
   }
 
+  // Live observations have real, irregular timestamps. Keep gaps rather than
+  // expanding them onto a fictitious 100 Hz grid or detecting the audio twice.
+  function packLiveContour(frames, take) {
+    const pitches = new Float64Array(frames.length * 3), ref = take.pitchReference;
+    if (!validReference(ref) || !Number.isInteger(take.frames) || take.frames <= 0
+      || !(take.sampleRate >= 8000 && take.sampleRate <= 192000)) throw new Error("Invalid live contour");
+    let end = -ref.latency;
+    frames.forEach((f, i) => {
+      if (!Number.isFinite(f.start) || !Number.isFinite(f.end) || f.start < end - 1e-8 || f.end <= f.start
+        || f.end > take.frames / take.sampleRate - ref.latency + 1e-8
+        || f.cents !== null && !Number.isFinite(f.cents)) throw new Error("Invalid live contour frame");
+      pitches.set([f.start, f.end, f.rawCents ?? (f.cents ?? NaN)], i * 3); end = f.end;
+    });
+    return {version: 2, analysisVersion: ANALYSIS_VERSION, sampleRate: take.sampleRate,
+      audioFrames: take.frames, reference: JSON.stringify(ref), pitches};
+  }
+
   function readContour(take) {
     const saved = take.pitchContour, ref = take.pitchReference, sampleRate = take.sampleRate;
-    if (!saved || saved.version !== CONTOUR_VERSION || saved.analysisVersion !== ANALYSIS_VERSION
+    if (!saved || ![CONTOUR_VERSION, 2].includes(saved.version) || saved.analysisVersion !== ANALYSIS_VERSION
       || !validReference(ref) || saved.reference !== JSON.stringify(ref)
       || !Number.isFinite(sampleRate) || sampleRate < 8000 || sampleRate > 192000
       || saved.sampleRate !== sampleRate || !Number.isInteger(take.frames) || take.frames <= 0
       || take.frames > sampleRate * 300 + 1 || saved.audioFrames !== take.frames
       || !(saved.pitches instanceof Float64Array)) return null;
+    if (saved.version === 2) {
+      if (saved.pitches.length % 3) return null;
+      const frames = [];
+      let end = -ref.latency;
+      for (let i = 0; i < saved.pitches.length; i += 3) {
+        const [start, stop, cents] = saved.pitches.subarray(i, i + 3);
+        if (!Number.isFinite(start) || !Number.isFinite(stop) || start < end - 1e-8 || stop <= start
+          || stop > take.frames / sampleRate - ref.latency + 1e-8 || !Number.isFinite(cents) && !Number.isNaN(cents)) return null;
+        frames.push({start, end: stop, cents: Number.isNaN(cents) ? null : cents, live: true}); end = stop;
+      }
+      return vocal.cleanPitchFrames(cleanRestFrames(frames, ref));
+    }
     const hop = Math.max(1, Math.round(sampleRate / 100));
     if (saved.pitches.length !== Math.ceil(take.frames / hop)) return null;
     const frames = [];
@@ -368,16 +437,17 @@
         end: Math.min(offset + hop, take.frames) / sampleRate - ref.latency,
         cents: Number.isNaN(cents) ? null : cents});
     }
-    return vocal.repairOctaveIslands(frames);
+    return vocal.cleanPitchFrames(frames);
   }
 
   function samePassage(saved, current) {
     if (!validReference(saved) || !validReference(current) || saved.part !== current.part
       || saved.line !== current.line || saved.start !== current.start || saved.end !== current.end
-      || saved.notes.length !== current.notes.length || Math.abs(saved.seconds - current.seconds) > 1e-5) return false;
-    return saved.notes.every((note, i) => Math.abs(note[0] - current.notes[i][0]) < 1e-5
-      && Math.abs(note[1] - current.notes[i][1]) < 1e-5
-      && JSON.stringify(note[2]) === JSON.stringify(current.notes[i][2]));
+      || Math.abs(saved.seconds - current.seconds) > 1e-5) return false;
+    const a = nonzeroNotes(saved.notes), b = nonzeroNotes(current.notes);
+    return a.length === b.length && a.every((note, i) => Math.abs(note[0] - b[i][0]) < 1e-5
+      && Math.abs(note[1] - b[i][1]) < 1e-5
+      && JSON.stringify(note[2]) === JSON.stringify(b[i][2]));
   }
 
   // Regrade corrections, not a different performance clock or voice assignment.
@@ -445,13 +515,17 @@
 
   const SORT_COLUMNS = {
     number: {label: "Take", direction: "ascending"},
+    singer: {label: "Singer", direction: "ascending"},
     part: {label: "Part", direction: "ascending"},
     start: {label: "Start", direction: "ascending"},
     end: {label: "End", direction: "ascending"},
+    segments: {label: "Segments", direction: "ascending"},
     tracked: {label: "Tracked (%)", direction: "descending"},
     mean: {label: "Mean (cents)", direction: "ascending"},
     median: {label: "Median (cents)", direction: "ascending"},
     within: {label: "Within 50 cents (%)", direction: "descending"},
+    created: {label: "Created", direction: "descending"},
+    modified: {label: "Modified", direction: "descending"},
   };
 
   function takeSort(value) {
@@ -469,7 +543,14 @@
   function takeSortValue(take, column) {
     if (column === "number") return Number.isFinite(take.number) ? take.number : null;
     if (column === "part") return take.part || null;
+    if (column === "singer") return take.singer || null;
+    if (column === "segments") return take.segmentCount ?? take.pitchScore?.segmentCount ?? 1;
     if (column === "start" || column === "end") return takeBounds(take)[column];
+    if (column === "created") return Number.isFinite(take.createdAt) ? take.createdAt : null;
+    if (column === "modified") {
+      const value = take.editedAt ?? take.updatedAt ?? take.createdAt;
+      return Number.isFinite(value) ? value : null;
+    }
     const score = take.pitchScore;
     if (!validScore(score)) return null;
     if (column === "tracked") return score.expectedSeconds > 0 ? score.coverage : null;
@@ -478,12 +559,24 @@
     return hasPitchBand(score) && score.trackedSeconds > 0 ? score.within50CentsSeconds / score.trackedSeconds : null;
   }
 
+  function compareParts(a, b) {
+    const rank = value => {
+      const text = String(value || "").trim();
+      const match = /^(soprano|alto|tenor|bass|[satb])\s*(\d*)\b/i.exec(text);
+      return match ? ["satb".indexOf(match[1][0].toLowerCase()), Number(match[2] || 0), /solo/i.test(text) ? 1 : 0]
+        : [4, 0, 0];
+    };
+    const x = rank(a), y = rank(b);
+    return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]
+      || String(a || "").localeCompare(String(b || ""), undefined, {numeric: true});
+  }
+
   function compareTakes(a, b, order) {
     const {column, direction} = takeSort(order);
     const x = takeSortValue(a, column), y = takeSortValue(b, column);
     // Missing values always stay last, including when the direction reverses.
     if ((x === null) !== (y === null)) return x === null ? 1 : -1;
-    const primary = typeof x === "string" && typeof y === "string"
+    const primary = column === "part" ? compareParts(x, y) : typeof x === "string" && typeof y === "string"
       ? x.localeCompare(y, undefined, {numeric: true}) : x === y ? 0 : x < y ? -1 : 1;
     return primary * (direction === "descending" ? -1 : 1)
       || (a.createdAt || 0) - (b.createdAt || 0) || (a.number || 0) - (b.number || 0);
@@ -544,11 +637,13 @@
     return result;
   }
 
+  function source() { return `${vocal.source()}\nglobalThis.MeleteTakePitch = (${takePitchTools.toString()})(MeleteVocalPitch);`; }
   function workerSource(pitchy) {
     return `self.window = self;\n${pitchy}\n${vocal.source()}\nconst assessment = (${takePitchTools.toString()})(MeleteVocalPitch);
       self.onmessage = event => {
         try {
-          const {wav, reference, sampleRate, includeFrames = false} = event.data;
+          const {wav, reference, sampleRate, frames, includeFrames = false} = event.data;
+          if (frames) { self.postMessage({result:{...assessment.scoreFrames(frames, reference, event.data.seconds), frames}}); return; }
           const view = new DataView(wav);
           if (view.byteLength < 44 || view.getUint16(20, true) !== 1 || view.getUint16(22, true) !== 1
             || view.getUint32(24, true) !== sampleRate || view.getUint16(34, true) !== 16
@@ -560,9 +655,10 @@
       };`;
   }
 
-  return {VERSION, ANALYSIS_VERSION, SCORING_VERSION, REST_POLICY_VERSION, mergeRanges, subtractRanges, containsTime,
+  return {VERSION, ANALYSIS_VERSION, SCORING_VERSION, REST_POLICY_VERSION, TIME_EPSILON, nonzeroNotes, mergeRanges, subtractRanges, containsTime,
     restPolicyValid, trimReference, discardRestAudio, cleanRestFrames, restStats, restLabel,
     octaveError, currentScore, BEST_COVERAGE_WINDOW, DOMINANCE_CENTS_MARGIN, DOMINANCE_COVERAGE_MARGIN,
-    reference, validReference, validScore, hasMedian, hasPitchBand, scoreFrames, reviewTimeline, analyse, packContour, readContour,
-    samePassage, sameTimeline, rebaseTake, takeBounds, measureAddress, comparisonKey, SORT_COLUMNS, takeSort, nextTakeSort, compareTakes, dominatedBy, bestIds, workerSource};
+    reference, validReference, validScore, hasMedian, hasPitchBand, scoreFrames, reviewTimeline, analyse, packContour, packLiveContour, readContour,
+    stopNoiseCut, muteStopTail,
+    samePassage, sameTimeline, rebaseTake, takeBounds, measureAddress, comparisonKey, SORT_COLUMNS, takeSort, nextTakeSort, compareParts, compareTakes, dominatedBy, bestIds, source, workerSource};
 });

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex,nofollow">
+  <title>__COLLECTION_TITLE__ - Melete</title>
+  <link rel="icon" type="image/svg+xml" href="__COLLECTION_ICON__">
+  <style>
+    :root { color-scheme: light dark; font: 14px system-ui, sans-serif; letter-spacing: 0; --bg: #f5f7f4; --fg: #202822; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); height: 100dvh; overflow: hidden; }
+    main { height: 100%; position: relative; }
+    iframe { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border: 0; }
+    iframe[aria-hidden="true"] { visibility: hidden; pointer-events: none; }
+    .loading { position: absolute; inset: 0; display: grid; place-items: center; background: var(--bg); pointer-events: none; }
+    [hidden] { display: none !important; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #171e1a; --fg: #e4eae5; } }
+  </style>
+</head>
+<body>
+  <template id="collectionSettings">
+    <style>
+      #songToggle { height: 34px; padding: 0; border: 0; box-shadow: inset 0 0 0 1px var(--line); flex: 0 1 auto; min-width: 0; max-width: 190px; }
+      #songToggle .pill-option { display: grid; place-items: center; flex: 1 1 0; min-width: 0; min-height: 0; padding: 0 8px; touch-action: manipulation; }
+      #songToggle .song-label { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #songToggle.has-icons { width: 76px; flex: 0 0 76px; }
+      #songToggle.has-icons .pill-option { padding: 0; }
+      #songToggle .song-icon { display: block; width: 1.2em; height: 1em; font: 20px/1 "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", emoji; letter-spacing: 0; text-align: center; }
+      select#songSelect { width: 154px; max-width: 28vw; height: 34px; min-width: 0; text-overflow: ellipsis; }
+      @media (max-width: 600px) { .transport-primary { column-gap: 6px; } #songToggle { max-width: 150px; } }
+    </style>
+  </template>
+  <main id="player" aria-label="Practice score">
+    <div class="loading" id="loading" role="status">Loading score...</div>
+  </main>
+  <script id="melete-collection-data" type="application/json">__COLLECTION_DATA__</script>
+  <script id="melete-collection-inflater">__COLLECTION_INFLATER__</script>
+  <script>__COLLECTION_RUNTIME__</script>
+</body>
+</html>

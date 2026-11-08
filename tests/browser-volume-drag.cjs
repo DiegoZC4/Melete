@@ -26,7 +26,9 @@ async function checkNumericClicks(surface, page, mobile, probe) {
 async function checkVolumeDrag(surface, page, mobile, probe, screenshot) {
   const controls = surface.locator('#mixer [data-volume-index]');
   const count = await controls.count();
-  const values = () => controls.evaluateAll(nodes => nodes.map(node => Number(node.dataset.value)));
+  // The mixer lists parts in voice order (The Seed's S2 soloist sits after S2), so read levels by channel index, as settings store them.
+  const values = () => controls.evaluateAll(nodes => nodes.map(node => [Number(node.dataset.volumeIndex), Number(node.dataset.value)])
+    .sort((a, b) => a[0] - b[0]).map(([, value]) => value));
   const original = await surface.evaluate(probe => window[probe].pitchbar.captureSettingsState(), probe);
   const setVolumes = volumes => surface.evaluate(({probe, volumes}) => {
     const api = window[probe].pitchbar, state = api.captureSettingsState();
@@ -61,8 +63,8 @@ async function checkVolumeDrag(surface, page, mobile, probe, screenshot) {
           if (session) await session.send('Input.dispatchTouchEvent', {type: 'touchMove', touchPoints: [{x, y: y + dy}]});
           else await page.mouse.move(x, y + dy);
           const expected = start.map(value => clamp(value - dy / 4 * 5));
-          await surface.waitForFunction(expected => JSON.stringify([...document.querySelectorAll('[data-volume-index]')]
-            .map(node => Number(node.dataset.value))) === JSON.stringify(expected), expected);
+          await surface.waitForFunction(expected => expected.every((value, index) =>
+            Number(document.querySelector(`#mixer [data-volume-index="${index}"]`)?.dataset.value) === value), expected);
           assert.deepEqual(await values(), expected, `group drag at ${dy}px remembers individual limits`);
         }
       } finally {
@@ -114,7 +116,9 @@ async function checkBoostedAudio(surface, probe) {
         window.AudioContext = function() { return context; };
         player.ensureAudio();
       } finally { window.AudioContext = Audio; }
-      player.updateMix(new Set(Array.from({length: count}, (_, i) => i)), Array(count).fill(percent), Array(count).fill(0), true);
+      // A divided part has several mixer channels, so mix every strip, not every part.
+      const strips = player.trackStrips.length;
+      player.updateMix(new Set(Array.from({length: strips}, (_, i) => i)), Array(strips).fill(percent), Array(strips).fill(0), true);
       for (const note of player.notes) player.scheduleNote(note, 0, .028);
       const buffer = await context.startRendering();
       const gains = player.trackStrips.map(strip => strip.gain.gain.value);

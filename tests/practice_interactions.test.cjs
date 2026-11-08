@@ -18,6 +18,7 @@ test('restoring a collection position bypasses chapter magnets and validates the
     seekTickFor: milliseconds => milliseconds * .96,
     previewSeek() { assert.fail('restoration must not snap'); },
     snapSeekMilliseconds() { assert.fail('restoration must not snap'); }});
+  vm.runInContext(source('seekPlaybackTick'), c);
   vm.runInContext(source('restorePlaybackPosition'), c);
   assert.equal(c.restorePlaybackPosition(2000), true);
   assert.deepEqual(positions, [1920]);
@@ -30,6 +31,7 @@ test('restoring a collection position bypasses chapter magnets and validates the
 function mixFixture() {
   const c = vm.createContext({
     parts: ['S', 'A', 'T', 'B'].map(name => ({name})), practicePartIndex: 0,
+    visibleChannels:new Set([0]), visibleTracks:new Set([0]),
     pitchCaptureWorker: null,
     sequence: {}, pitchTraceBaseKey: '', pitchTraceKey: '',
     activePracticeMix: null, practiceMixPartIndex: null, practiceMixUndo: null,
@@ -42,7 +44,10 @@ function mixFixture() {
   });
   for (const name of ['practiceMixMatches', 'normalizePracticeMixUndo', 'cancelPracticeMixSession',
     'snapshotPracticeMix', 'restorePracticeMix', 'currentPracticeMix', 'applyPracticeMix', 'nextPartVolumeMix', 'cyclePartVolumeMix',
-    'roleTraceKey', 'assignPracticePart', 'setPracticePart', 'setTrackAudible']) vm.runInContext(source(name), c);
+    'roleTraceKey', 'assignPracticePart', 'syncPracticeFromSee', 'setPracticePart', 'setTrackAudible']) vm.runInContext(source(name), c);
+  Object.defineProperty(c, 'mixerParts', {get: () => c.parts.map((p,source) => ({...p,source,line:null}))});
+  c.practiceMixerIndex = () => c.practicePartIndex;
+  c.practiceDivisi = c.parts.map(() => null);
   return c;
 }
 
@@ -243,11 +248,12 @@ test('loop endpoints include their selected measure and preserve complete measur
   const c = vm.createContext({
     sequence: {measures: [[0, 960], [960, 1440], [2400, 960]], endTick: 3360}, takePreviewId: null,
     loopStartMeasure: null, loopEndMeasure: null, loopStartTick: null, loopEndTick: null, scoreView: 'standard',
-    engine: {tickAtSeconds: s => s, currentSeconds: () => tick, setLoop: (...values) => {loop = values;}},
+    engine: {duration:3360, secondsAtTick:t=>t, tickAtSeconds: s => s, currentSeconds: () => tick, setLoop: (...values) => {loop = values;}},
+    pitchTraceOriginTick:()=>-960,
     elements: Object.fromEntries(['loopToggle', 'loopStart', 'loopEnd', 'loopClear', 'loopControls', 'loopBand'].map(k => [k, element()])),
     clamp: (v, min, max) => Math.min(max, Math.max(min, v)), savePreferences() {}, showToast() {},
   });
-  for (const name of ['measureIndexAtTick', 'currentMeasureIndex', 'loopTickRange', 'updateLoopState', 'setLoopPoint', 'clearLoop']) {
+  for (const name of ['timelineFraction', 'measureIndexAtTick', 'currentMeasureIndex', 'loopTickRange', 'updateLoopState', 'setLoopPoint', 'clearLoop']) {
     vm.runInContext(source(name), c);
   }
   c.setLoopPoint('end');
@@ -319,28 +325,23 @@ test('pitchbar hyphens respect italic ink bearings and leave a readable gap', ()
   assert.equal(words[2].getAttribute('x'), '845.092', 'packing must not move the lyric off its note');
 });
 
-test('pitchbar visibility always keeps the lyric part, including See solo gestures', () => {
+test('See alone selects practice; the practice part is never forced visible', () => {
   const c = vm.createContext({scoreView: 'bars', practicePartIndex: 1, parts: [{}, {}, {}, {}],
+    mixerParts:[0,1,2,3].map(source=>({source,line:null})),visibleChannels:new Set([0]),practiceDivisi:[],
     visibleTracks: new Set([0]), updateMixerAppearance() {}, updateNoteActionLabel() {},
-    savePreferences() {}, scheduleRender() {}, showToast() {}});
-  for (const name of ['ensurePracticePartVisible', 'setTrackVisibility', 'aloneOnItsRow', 'turnOnEveryPart', 'soloRow']) {
+    assignPracticePart(i){c.practicePartIndex=i;},renderTakePanel(){},savePreferences() {}, scheduleRender() {}, showToast() {}});
+  for (const name of ['syncPracticeFromSee', 'setTrackVisibility', 'aloneOnItsRow', 'turnOnEveryPart', 'soloRow','pressRow']) {
     vm.runInContext(source(name), c);
   }
-  c.ensurePracticePartVisible();
-  assert.deepEqual([...c.visibleTracks], [0, 1]);
-  c.setTrackVisibility(1, false);
-  assert.ok(c.visibleTracks.has(1), 'cannot hide the lyric part');
-  const row = {index: 2, required: 1, on: i => c.visibleTracks.has(i), set: c.setTrackVisibility};
+  c.syncPracticeFromSee();
+  assert.equal(c.practicePartIndex,0);
+  c.setTrackVisibility(0,false);
+  assert.equal(c.practicePartIndex,null);assert.equal(c.visibleTracks.size,0);
+  const row = {index: 2, on: i => c.visibleChannels.has(i), set: c.setTrackVisibility};
   c.soloRow(row, 4);
-  assert.deepEqual([...c.visibleTracks].sort(), [1, 2]);
+  assert.deepEqual([...c.visibleTracks].sort(), [2]);assert.equal(c.practicePartIndex,2);
   c.soloRow(row, 4);
   assert.equal(c.visibleTracks.size, 4, 'a second hold restores the full row');
-  c.scoreView = 'standard';
-  c.setTrackVisibility(1, false);
-  c.ensurePracticePartVisible();
-  assert.equal(c.visibleTracks.has(1), false, 'standard notation remains unrestricted');
-  c.scoreView = 'bars';
-  c.practicePartIndex = null;
-  c.ensurePracticePartVisible();
-  assert.equal(c.visibleTracks.has(null), false);
+  c.soloRow(row,4);c.pressRow(row,4);
+  assert.equal(c.visibleTracks.size,0,'plain click can hide the final part');
 });

@@ -92,8 +92,6 @@ function updateHiddenLyrics() {
       group.setAttribute("aria-label", hidden ? "Show hidden lyric" : `Hide lyric: ${words[0]?.text || ""}`);
     });
   }
-  const reset = document.getElementById("showAllLyrics");
-  if (reset) reset.disabled = hiddenLyricWords.size === 0;
   document.getElementById("lyricEditing")?.setAttribute("aria-pressed", String(lyricEditing));
 }
 
@@ -223,13 +221,16 @@ function installSelectiveLyrics(lyricEffect) {
     }, true);
   }
   const editingToggle = document.getElementById("lyricEditing");
-  editingToggle?.addEventListener("click", () => setLyricEditing(!lyricEditing));
-  registerResetTarget(editingToggle, "word hiding", (state, defaults) => {
-    state.lyricEditing = defaults.lyricEditing;
-  });
-  document.getElementById("showAllLyrics")?.addEventListener("click", () => {
-    restoreHiddenLyrics([]);
+  const toggleAll = () => {
+    restoreHiddenLyrics(hiddenLyricWords.size ? [] : [...lyricWordIndex.keys]);
     savePreferences();
+  };
+  attachHoldReset(editingToggle, () => setLyricEditing(!lyricEditing), toggleAll, "lyrics", {contextReset: true});
+  editingToggle.setAttribute("aria-description", "Hold, right-click or Shift+Enter to show all hidden lyrics, or hide all when none are hidden");
+  editingToggle.addEventListener("keydown", event => {
+    if ((event.key === "Enter" && event.shiftKey) || (event.key === "F10" && event.shiftKey)) {
+      event.preventDefault(); event.stopPropagation(); toggleAll();
+    }
   });
   updateHiddenLyrics();
 }

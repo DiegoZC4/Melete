@@ -21,7 +21,7 @@ const {recordingProbe, checkLoopRecorder} = require('./browser-loop-recorder.cjs
 const {checkTakePitch} = require('./browser-take-pitch.cjs');
 const {checkComp} = require('./browser-comp.cjs');
 const {checkMicrophone} = require('./browser-microphone-check.cjs');
-const {staffFollowProbe, checkStaffFollow} = require('./browser-staff-follow.cjs');
+const {staffFollowProbe, checkStaffFollow, checkHorizontalFollow} = require('./browser-staff-follow.cjs');
 const {checkPlaybackTiming} = require('./browser-playback-timing.cjs');
 const {singPreferenceProbe, checkSingPreferences} = require('./browser-sing-preferences.cjs');
 const {expandSettingsFixture, checkSettingsSections} = require('./browser-settings-sections.cjs');
@@ -31,6 +31,12 @@ const {checkLayeredTakes,checkNoteHitAreas} = require('./browser-layered-takes.c
 const {checkSelectiveLyrics, checkLyricNotePriority} = require('./browser-selective-lyrics.cjs');
 const {checkUiImports} = require('./browser-ui-import.cjs');
 const {checkReferenceMix} = require('./browser-reference-mix.cjs');
+const {checkRecordingMix} = require('./browser-recording-mix.cjs');
+const {checkRecordEdits} = require('./browser-record-edits.cjs');
+const {checkCollections} = require('./browser-collection.cjs');
+const {checkStation} = require('./browser-station.cjs');
+const {checkCompMetrics} = require('./browser-comp-metrics.cjs');
+const {checkEnsembleContours} = require('./browser-ensemble-contours.cjs');
 
 async function main() {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'melete-shared-smoke-'));
@@ -71,6 +77,9 @@ async function main() {
     const newContext = async (mobile, expanded = true) => {
       const context = await browser.newContext({viewport: mobile ? {width:393,height:852} : {width:1440,height:900},
         isMobile: mobile, hasTouch: mobile, deviceScaleFactor: 1, colorScheme: 'dark', permissions: ['microphone']});
+      context.on('page', page => page.on('console', message => {
+        if (message.type() === 'error') console.error('Player console:', message.text());
+      }));
       if (expanded) await expandSettingsFixture(context);
       await context.route('**/*', route => {
           // A ?part= link asks for the same document.
@@ -80,10 +89,67 @@ async function main() {
       return context;
     };
     const focused = Object.keys(process.env).some(key => /^QA_.*_ONLY$/.test(key) && process.env[key]);
+    if (!focused || process.env.QA_COLLECTION_ONLY) results.push({collections:await checkCollections(browser,temporary,output)});
     if (!focused || process.env.QA_REFERENCE_ONLY) results.push({referenceMix:await checkReferenceMix(browser,temporary,output)});
     if (!focused || process.env.QA_ROUTES_ONLY) results.push({practiceRoutes:await checkPracticeRoutes(browser,temporary,output)});
     for (const mobile of [false, true]) {
-      if (process.env.QA_ROUTES_ONLY || process.env.QA_REFERENCE_ONLY) continue;
+      if (!focused || process.env.QA_STATION_MIX_ONLY) {
+        const context=await newContext(mobile);
+        try{results.push({stationMix:await require('./browser-station-mix.cjs').run(context,origin)});}
+        finally{await context.close();}
+        if(process.env.QA_STATION_MIX_ONLY)continue;
+      }
+      if (!focused || process.env.QA_PRACTICE_PRESETS_ONLY) {
+        const context=await newContext(mobile);
+        try{results.push({practicePresets:await require('./browser-practice-presets.cjs').run(context,origin,mobile)});}
+        finally{await context.close();}
+        if(process.env.QA_PRACTICE_PRESETS_ONLY)continue;
+      }
+      if (!focused || process.env.QA_ENSEMBLE_CONTOURS_ONLY) {
+        const context = await newContext(mobile);
+        try {
+          const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
+          await page.goto(origin);
+          await page.waitForFunction(() => window.__qa && !__qa.busy && document.querySelector('#playPause:not(:disabled)'));
+          results.push({ensembleContours:await checkEnsembleContours(page,page,{output,label:mobile?'mobile':'desktop'})});
+        } finally {await context.close();}
+        if (process.env.QA_ENSEMBLE_CONTOURS_ONLY) continue;
+      }
+      if (!focused || process.env.QA_COMP_METRICS_ONLY) {
+        const context = await newContext(mobile);
+        try {
+          const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
+          await page.goto(origin);
+          await page.waitForFunction(() => window.__qa && !__qa.busy && document.querySelector('#playPause:not(:disabled)'));
+          results.push({compMetrics:await checkCompMetrics(page,page,{output,label:mobile?'mobile':'desktop'})});
+        } finally {await context.close();}
+        if (process.env.QA_COMP_METRICS_ONLY) continue;
+      }
+      if (!focused || process.env.QA_RECORD_EDITS_ONLY) {
+        const context=await newContext(mobile);
+        try {
+          const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
+          await page.goto(origin);
+          await page.waitForFunction(()=>window.__qa&&!__qa.busy&&document.querySelector('#playPause:not(:disabled)'));
+          results.push({recordEdits:await checkRecordEdits(page,page,{output,label:mobile?'mobile':'desktop'})});
+        } finally {await context.close();}
+        if(process.env.QA_RECORD_EDITS_ONLY)continue;
+      }
+      if (!focused || process.env.QA_RECORDING_MIX_ONLY) {
+        const context = await newContext(mobile);
+        try {
+          const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
+          await page.goto(origin);
+          await page.waitForFunction(()=>window.__qa&&!__qa.busy&&document.querySelector('#playPause:not(:disabled)'));
+          results.push({recordingMix:await checkRecordingMix(page,page,{output,label:mobile?'mobile':'desktop'})});
+        } finally {await context.close();}
+        if(process.env.QA_RECORDING_MIX_ONLY)continue;
+      }
+      if (!focused || process.env.QA_STATION_ONLY) {
+        results.push({station:await checkStation(newContext,origin,html,{output,label:mobile?'mobile':'desktop',mobile,errors})});
+        if(process.env.QA_STATION_ONLY)continue;
+      }
+      if (process.env.QA_ROUTES_ONLY || process.env.QA_REFERENCE_ONLY || process.env.QA_COLLECTION_ONLY) continue;
       if (!focused || process.env.QA_SECTIONS_ONLY) {
         const compactContext = await newContext(mobile, false);
         try {
@@ -165,12 +231,20 @@ async function main() {
           results.push({viewport:mobile?'mobile':'desktop',staffFollow:await checkStaffFollow(page,page,{output,label:mobile?'mobile':'desktop'})});
           continue;
         }
+        if (process.env.QA_HORIZONTAL_FOLLOW_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',horizontalFollow:await checkHorizontalFollow(page)});
+          continue;
+        }
         if (process.env.QA_MIC_CHECK_ONLY) {
           results.push({viewport:mobile?'mobile':'desktop',microphone:await checkMicrophone(page,page,{output,label:mobile?'mobile':'desktop'})});
           continue;
         }
         if (process.env.QA_COMP_ONLY) {
           results.push({viewport:mobile?'mobile':'desktop',comp:await compCheck()});
+          continue;
+        }
+        if (process.env.QA_HISTORY_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',history:await require('./browser-comp-history.cjs').checkCompHistory(page)});
           continue;
         }
         if (process.env.QA_LOOP_RELOAD_ONLY) {
@@ -190,6 +264,7 @@ async function main() {
           continue;
         }
         if (process.env.QA_PITCH_ONLY) {
+          if (process.env.QA_PITCH_AFTER_TAKES) await takePitchCheck();
           results.push({viewport:mobile?'mobile':'desktop',pitchResolution:await pitchCheck()});
           continue;
         }
@@ -199,7 +274,7 @@ async function main() {
           continue;
         }
         assert.equal(await page.locator('#verticalScale').getAttribute('data-value'), mobile ? '70' : '100');
-        assert.equal(await page.locator('#annotationLayout').getAttribute('aria-pressed'), String(mobile));
+        assert.equal(await page.locator('#annotationLayout').count(), 0);
         const names = ['Soprano', 'Alto', 'Bass'];
         const firstVisit = await checkFirstVisit(page, page, {mobile, names});
         if (mobile) await page.locator('#settingsToggle').click();
@@ -235,7 +310,13 @@ async function main() {
           }
           await page.waitForFunction(selected => JSON.stringify(__qa.api.tracks.map(track => track.index)) === JSON.stringify(selected), selected);
           await settled();
+          await page.waitForFunction(()=>[...document.querySelectorAll('#score svg text')].some(n=>n.textContent.trim()==='Intro'));
           const labels = await page.locator('#score svg text').allTextContents();
+          if (!labels.some(label => label.trim() === 'Intro')) {
+            await page.screenshot({path:path.join(output,'missing-engraving.png')});
+            console.error(JSON.stringify(await page.evaluate(()=>({labels:[...document.querySelectorAll('#score svg text')].map(n=>n.textContent),
+              settings:__qa.savedPractice,errors:document.querySelector('#scoreLoading')?.textContent,busy:__qa.busy}))));
+          }
           for (const text of ['Intro', 'Verse', 'Chorus', 'Lightly', 'rit.', 'a tempo']) {
             assert.equal(labels.filter(label => label.trim() === text).length, 1, `${selected}: ${text}`);
           }
@@ -327,6 +408,7 @@ async function main() {
           [-100, 100, -100], 'separation is active before the persistence check');
         await page.locator('#verticalScale').press('ArrowUp');
         const saved = await page.locator('#verticalScale').getAttribute('data-value');
+        const savedPractice = await page.evaluate(() => __qa.savedPractice.practicePart);
         const storedMixes = await page.evaluate(() => Object.values(localStorage).flatMap(value => {
           try { const data = JSON.parse(value); return Array.isArray(data?.pans) ? [data.pans] : []; }
           catch { return []; }
@@ -343,7 +425,7 @@ async function main() {
         }, savedVolumes);
         assert.equal(await page.locator('#verticalScale').getAttribute('data-value'), saved);
         assert.equal(await page.locator('#partChooser').isVisible(), false, 'an answered chooser is not asked again');
-        assert.equal(await page.locator('#practicePart').getAttribute('data-value'), '1');
+        assert.equal(await page.evaluate(() => __qa.savedPractice.practicePart), savedPractice);
         assert.equal(await page.locator('#horizontalScale').getAttribute('data-value'), '400');
         assert.deepEqual(await page.locator('[data-pan-index]').evaluateAll(nodes => nodes.map(node => Number(node.dataset.value))),
           [-100, 100, -100], 'pan separation survives reload');
@@ -370,6 +452,7 @@ async function main() {
           const compSettled = () => compPage.waitForFunction(() => window.__qa && !__qa.busy && document.querySelector('#playPause:not(:disabled)'));
           await compPage.goto(origin);
           await compSettled();
+          results.push({viewport:mobile?'mobile':'desktop',horizontalFollow:await checkHorizontalFollow(compPage)});
           results.push({viewport:mobile?'mobile':'desktop',microphone:await checkMicrophone(compPage,compPage,{output,label:mobile?'mobile':'desktop'})});
           results.push({viewport:mobile?'mobile':'desktop',staffFollow:await checkStaffFollow(compPage,compPage,{output,label:mobile?'mobile':'desktop'})});
           results.push({viewport:mobile?'mobile':'desktop',comp:await checkComp(compPage,compPage,{
@@ -399,7 +482,8 @@ async function main() {
     assert.deepEqual(requests, []);
     const report = {passed: true, freshGenericBuild: true, results, errors, externalRequests: requests};
     const reportName = process.env.QA_MIC_CHECK_ONLY ? 'microphone-check.json' : process.env.QA_COMP_ONLY ? 'comp-smoke.json' : process.env.QA_SECTIONS_ONLY ? 'settings-sections.json' : process.env.QA_LOOP_RELOAD_ONLY ? 'loop-reload.json' : process.env.QA_SING_ONLY ? 'sing-preferences.json' : process.env.QA_TIMING_ONLY ? 'playback-timing.json' : process.env.QA_TAKE_PITCH_ONLY ? 'take-pitch.json' : process.env.QA_PITCH_ONLY ? 'pitch-resolution.json' : process.env.QA_FILE_ORIGIN ? 'recorder-file-smoke.json' : process.env.QA_RECORDER_ONLY ? 'recorder-smoke.json' : 'shared-smoke.json';
-    await fs.writeFile(path.join(output, process.env.QA_LYRICS_ONLY ? 'selective-lyrics.json'
+    await fs.writeFile(path.join(output, process.env.QA_HORIZONTAL_FOLLOW_ONLY ? 'horizontal-follow.json'
+      : process.env.QA_LYRICS_ONLY ? 'selective-lyrics.json'
       : process.env.QA_STAFF_FOLLOW_ONLY ? 'staff-follow.json' : reportName), JSON.stringify(report, null, 2) + '\n');
     console.log(JSON.stringify(report, null, 2));
   } catch (error) {

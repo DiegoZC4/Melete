@@ -1,0 +1,66 @@
+{
+  "name": "bravoh-loudness",
+  "version": "0.1.0",
+  "description": "ITU-R BS.1770-4 / EBU R128 loudness meter in pure TypeScript. Integrated LUFS, loudness range, momentary & short-term, true peak. Zero dependencies, streaming or one-shot, browser + Node + CLI.",
+  "keywords": [
+    "loudness",
+    "lufs",
+    "ebu-r128",
+    "bs1770",
+    "true-peak",
+    "dbtp",
+    "loudness-range",
+    "normalization",
+    "audio",
+    "mastering",
+    "k-weighting",
+    "dsp",
+    "typescript",
+    "zero-dependencies"
+  ],
+  "homepage": "https://github.com/ozzaii/bravoh-loudness#readme",
+  "bugs": "https://github.com/ozzaii/bravoh-loudness/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ozzaii/bravoh-loudness.git"
+  },
+  "license": "MIT",
+  "author": "BRAVOH (https://bravoh.ai)",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "bravoh-loudness": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "assets"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "fixtures": "node scripts/make-fixtures.mjs",
+    "verify:ffmpeg": "node scripts/verify-ffmpeg.mjs",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

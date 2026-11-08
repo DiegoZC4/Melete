@@ -17,9 +17,10 @@ async function checkPitchbarResize(frame, page) {
         width: Number(bars.querySelector('.bar-note').getAttribute('width'))});
     });
     scale.addEventListener('input', proof.listen);
-    return {scale: Number(scale.dataset.value), edges: proof.edges};
+    return {scale: Number(scale.dataset.value), edges: proof.edges,
+      pathLength:[...document.querySelectorAll('#barScore .take-pitch-trace-edge')].reduce((n,p)=>n+(p.getAttribute('d')||'').length,0)};
   });
-  assert.ok(before.edges > 20, 'exercise an existing live/saved contour, not an empty score');
+  assert.ok(before.edges > 0 && before.pathLength > 100, 'exercise a nonempty saved contour, batched by color');
   try {
     const control = frame.locator('#horizontalScale');
     const box = await control.boundingBox(), direction = before.scale < 350 ? -1 : 1;

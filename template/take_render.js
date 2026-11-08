@@ -25,7 +25,9 @@
       const point = pointAt(frame);
       if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) { previous = null; continue; }
       if (previous && previous.point.track === point.track && frame.takeId === previous.frame.takeId
-        && frame.start - previous.frame.end < 1e-6) {
+        && frame.start - previous.frame.end < (frame.live && previous.frame.live ? .025 : 1e-6)) {
+        // Live delivery jitters inside overlapping detector windows. Join those
+        // display points, never an explicit unvoiced frame or a capture dropout.
         // Separate subpaths retain every edge, including gaps and source changes.
         const edge = `M${previous.point.x.toFixed(3)} ${previous.point.y.toFixed(3)}L${point.x.toFixed(3)} ${point.y.toFixed(3)}`;
         const color = colorAt(point.error);

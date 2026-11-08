@@ -119,10 +119,35 @@ test('manual scroll detachment is evaluated against the selected staff and respe
   c.frame();
 });
 
-test('Sing describes combined local recording and pitch feedback with headphone guidance', () => {
+test('Sing distinguishes audio recording from local pitch-only practice with headphone guidance', () => {
   assert.match(source('activateCachedPitchCapture'), /recordings stay in this browser/);
-  assert.match(source('updatePitchCaptureAppearance'), /Recording locally and tracing pitch/);
+  assert.match(source('updatePitchCaptureAppearance'), /Saving microphone audio and pitch locally/);
+  assert.match(source('updatePitchCaptureAppearance'), /Saving pitch only; no audio is kept/);
   assert.match(source('updatePitchCaptureAppearance'), /Use headphones\./);
-  assert.match(source('updatePitchCaptureAppearance'), /No sign-in needed/);
+  assert.match(source('reviewPracticeTrace'), /inspectedTakeId=explicit/);
   assert.doesNotMatch(app.slice(app.indexOf('  async function scoreNextTake()'), app.indexOf('  function takePitchLabel')), /settingsSectionCollapsed|settingsPanel/);
+});
+
+test('horizontal Score follows the moving beat, clamps at the ends, and respects gestures and reduced motion', () => {
+  const score = {clientWidth: 500, scrollWidth: 2000, scrollLeft: 0, getBoundingClientRect: () => ({left: 10, right: 510})};
+  let beat;
+  const c = vm.createContext({elements: {score}, visibleTracks: new Set([0]), window: {innerWidth: 520},
+    notationBeatLine: () => ({left: 10 + beat - score.scrollLeft}), notationRenderInFlight: false, pinchActive: false,
+    reducedFollowMotion: {matches: false}, HORIZONTAL_READING_FRACTION: .4, horizontalGestureUntil: 0,
+    followedScoreLeft: null, clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v))});
+  vm.runInContext(source('followHorizontalScore'), c);
+  const at = x => { beat = x; c.followHorizontalScore(1000); return score.scrollLeft; };
+  assert.equal(at(90), 0, 'show the opening margin');
+  assert.equal(at(280), 80);
+  assert.equal(at(300), 100);
+  assert.equal(at(1990), 1500, 'do not scroll past the end');
+  assert.equal(at(600), 400, 'a backward loop puts the sounding beat back in view');
+  c.horizontalGestureUntil = 1100;
+  assert.equal(at(900), 400);
+  c.horizontalGestureUntil = 0;
+  c.reducedFollowMotion.matches = true;
+  assert.equal(at(790), 400, 'leave the page still while there is room ahead');
+  assert.equal(at(840), 640, 'turn before the beat leaves the visible page');
+  c.visibleTracks.clear();
+  assert.equal(at(1300), 640, 'never chase hidden music');
 });

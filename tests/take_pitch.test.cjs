@@ -281,6 +281,37 @@ test('reference snapshots exact tempo/speed mapping, clipped entry, and divisi p
   assert.equal(pitch.scoreFrames([frame(0, 4, 6700)], reference({line: 0, notes: [[0, 4, [72]]]}), 4).meanAbsCents, 500);
 });
 
+test('fractional recording boundaries do not create phantom notes before or after the passage', () => {
+  const spans = [{start: 96000, end: 98880, pitches: [54]},
+    {start: 98880, end: 99840, pitches: [50]}, {start: 99840, end: 100800, pitches: [52]}];
+  for (const rate of [.75, 1, 1.3]) {
+    const args = {spans, secondsAtTick: tick => tick / 768, start: 98879.99999999997,
+      end: 99840.00000000003, rate, fingerprint: 'boundary', part: 2, line: 1};
+    const ref = pitch.reference(args);
+    assert.deepEqual(ref.notes.map(n => n[2]), [[50]]);
+    assert.ok(Math.abs(ref.notes[0][1] - ref.notes[0][0] - 1.25 / rate) < 1e-9);
+    assert.equal(ref.start, args.start, 'capture position and tempo mapping are not quantized');
+    const longer = pitch.reference({...args, end: 100800});
+    const trimmed = pitch.trimReference(longer, args.end, ref.seconds);
+    assert.deepEqual(trimmed.notes, ref.notes, 'stopping just after a boundary drops the same phantom');
+  }
+  const ref = pitch.reference({spans, secondsAtTick: tick => tick / 768, start: 98879.9,
+    end: 98880.1, rate: 1, fingerprint: 'short', part: 2, line: 1});
+  assert.deepEqual(ref.notes.map(n => n[2]), [[54], [50]], 'real sub-millisecond overlaps remain');
+});
+
+test('legacy phantom fragments do not invalidate review or rewrite saved observations', () => {
+  const fragment = 2.842170943040401e-14;
+  const current = reference({notes: [[fragment, 4, [69]]]});
+  const saved = {...current, notes: [[0, fragment, [54]], ...current.notes]};
+  const before = JSON.stringify(saved);
+  assert.equal(pitch.samePassage(saved, current), true);
+  assert.equal(pitch.sameTimeline(saved, current), true);
+  assert.equal(JSON.stringify(saved), before);
+  assert.equal(pitch.samePassage(saved, {...current, notes: [[fragment, 4, [70]]]}), false);
+  assert.equal(pitch.samePassage(reference({notes: [[0, .0001, [54]], [.0001, 4, [69]]]}), current), false);
+});
+
 test('review returns the exact scoring frames, including silence, without modifying audio', () => {
   const sr = 16000, pcm = new Int16Array(sr * 4).fill(5000);
   pcm.fill(0, sr, sr * 2);
