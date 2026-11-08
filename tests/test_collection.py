@@ -73,7 +73,7 @@ class CollectionTests(unittest.TestCase):
         self.assertNotIn("<script>alert(1)", document)
 
     def test_inflater_is_not_stored_twice(self):
-        inflater = (ROOT / "vendor/fflate/fflate.js").read_text()
+        inflater = (ROOT / "vendor/fflate/fflate.js").read_text(encoding="utf-8")
         document = '<html><head></head><body><script>\n' + inflater + '\nconst done=true;</script></body></html>'
         packed, _ = pack_players([{"id": "a", "title": "A", "html": document}])
         self.assertIsNone(packed["assets"][packed["inflater"]])
@@ -115,7 +115,7 @@ class CollectionTests(unittest.TestCase):
                 result = builder.build(builder.parse_args(argv))
                 self.assertEqual(exporter.call_count, 2)
             self.assertEqual([song["slug"] for song in result["songs"]], ["song-1", "song-2"])
-            bundle, assets, pages = unpack(output.read_text())
+            bundle, assets, pages = unpack(output.read_text(encoding="utf-8"))
             self.assertEqual(len(pages), 2)
             libraries = [Scripts(page).values["alphatab-runtime"] for page in pages]
             self.assertEqual(libraries[0], libraries[1])
@@ -157,14 +157,14 @@ class CollectionTests(unittest.TestCase):
             with mock.patch.object(builder, "conductor_assets", wraps=builder.conductor_assets) as extension:
                 built = builder.build(builder.parse_args(argv))
             self.assertNotIn("conductorScore", extension.call_args.args[0])
-            saved = json.loads(Scripts(Path(built["output"]).read_text()).values["trainer-config"])
+            saved = json.loads(Scripts(Path(built["output"]).read_text(encoding="utf-8")).values["trainer-config"])
             self.assertEqual(base64.b64decode(saved["partsPdf"]), pdf.read_bytes())
             self.assertNotIn("partsPdfUrl", saved)
             self.assertNotIn("conductorScore", saved)
             with mock.patch.object(builder, "conductor_assets", return_value=("/* optional conductor */", "")) as extension:
                 private = builder.build(builder.parse_args(argv + ["--with-conductor"]))
             self.assertEqual(extension.call_args.args[0]["conductorScore"]["version"], 1)
-            self.assertIn("optional conductor", Path(private["output"]).read_text())
+            self.assertIn("optional conductor", Path(private["output"]).read_text(encoding="utf-8"))
             self.assertEqual(config.read_bytes(), original)
             pdf.write_bytes(b"not a PDF")
             with self.assertRaisesRegex(builder.BuildError, "PDF document"):

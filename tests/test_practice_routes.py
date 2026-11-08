@@ -13,8 +13,8 @@ import practice_routes as routes
 
 class PracticeRoutesTests(unittest.TestCase):
     def setUp(self):
-        self.xml = (ROOT / "tests/fixtures/handoffs.musicxml").read_text()
-        self.spec = json.loads((ROOT / "tests/fixtures/handoffs.config.json").read_text())["practiceRoutes"]
+        self.xml = (ROOT / "tests/fixtures/handoffs.musicxml").read_text(encoding="utf-8")
+        self.spec = json.loads((ROOT / "tests/fixtures/handoffs.config.json").read_text(encoding="utf-8"))["practiceRoutes"]
 
     def test_handoff_notes_lyrics_ties_and_source_preserved(self):
         xml, roles = routes.materialize(self.xml, self.spec)
@@ -53,14 +53,14 @@ class PracticeRoutesTests(unittest.TestCase):
                             str(ROOT / "tests/fixtures/handoffs.musicxml"),
                             "--config", str(ROOT / "tests/fixtures/handoffs.config.json"),
                             "--project-dir", str(project)], check=True, capture_output=True, timeout=60)
-            data = json.loads((project / "assets/playback.json").read_text())
+            data = json.loads((project / "assets/playback.json").read_text(encoding="utf-8"))
             self.assertEqual(len(data["parts"]), 3)
             self.assertEqual(data["practiceRoles"][0]["soloist"], 2)
             self.assertEqual(len(ET.parse(project / "assets/score.musicxml").getroot().findall("part")), 2)
             self.assertEqual(len(ET.parse(project / "assets/practice.musicxml").getroot().findall("part")), 3)
-            metadata = json.loads((project / "assets/build-metadata.json").read_text())["build"]
+            metadata = json.loads((project / "assets/build-metadata.json").read_text(encoding="utf-8"))["build"]
             self.assertEqual(set(metadata["practiceReferenceFingerprints"]), {"1", "2"})
-            self.assertIn("MeletePracticeRoutes", (project / "dist/index.html").read_text())
+            self.assertIn("MeletePracticeRoutes", (project / "dist/index.html").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

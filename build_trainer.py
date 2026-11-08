@@ -1324,7 +1324,7 @@ def decorate_head(
 
 def install_system_annotations(app: str) -> str:
     app = replace_once(app, "  function createSvgElement(name, attributes = {}) {",
-                       (TEMPLATE_DIR / "system_annotations.js").read_text()
+                       (TEMPLATE_DIR / "system_annotations.js").read_text(encoding="utf-8")
                        + "\n  function createSvgElement(name, attributes = {}) {")
     if app.count("prepareSharedNotation();") != 2:
         raise BuildError("System-annotation render hooks changed")
@@ -1334,8 +1334,8 @@ def install_system_annotations(app: str) -> str:
 def install_compact_lyrics(app: str, template: str, styles: str) -> tuple[str, str, str]:
     """One display preference for shared annotations and syllable changes."""
     app = replace_once(app, "  function createSvgElement(name, attributes = {}) {",
-                       (TEMPLATE_DIR / "selective_lyrics.js").read_text() + "\n"
-                       + replace_once((TEMPLATE_DIR / "shared_notation.js").read_text(),
+                       (TEMPLATE_DIR / "selective_lyrics.js").read_text(encoding="utf-8") + "\n"
+                       + replace_once((TEMPLATE_DIR / "shared_notation.js").read_text(encoding="utf-8"),
                                       'require("./lyric_breath.json")', json.dumps(LYRIC_BREATH))
                        + "\n  function createSvgElement(name, attributes = {}) {")
     for old, new in [
