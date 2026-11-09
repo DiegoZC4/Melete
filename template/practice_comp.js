@@ -87,7 +87,8 @@
       const frames = decoded.get(s.takeId);
       if (!frames) throw new Error("A comp contour is missing or outdated");
       return frames.flatMap(f => {
-        const start = Math.max(s.from, take.origin + f.start), end = Math.min(s.to, take.origin + f.end);
+        const origin=take.origin-(take.playbackAdvance || 0);
+        const start = Math.max(s.from, origin + f.start), end = Math.min(s.to, origin + f.end);
         return end - start > EPS ? [{start, end, cents: f.cents, takeId: s.takeId, ...(f.live ? {live:true} : {})}] : [];
       });
     }).sort((a, b) => a.start - b.start);
@@ -262,7 +263,7 @@
     const kept = new Map(), whole = new Set(), checked = new Map();
     const trusted = (t, stateKey) => {
       const id = JSON.stringify([stateKey, t.id]);
-      if (!checked.has(id)) checked.set(id, states.has(stateKey) && !t.favorite && eligible(t, states.get(stateKey).descriptor));
+      if (!checked.has(id)) checked.set(id, states.has(stateKey) && !t.favorite && !t.playbackAdvance && eligible(t, states.get(stateKey).descriptor));
       return checked.get(id);
     };
     const use = (segments, stateKey) => {

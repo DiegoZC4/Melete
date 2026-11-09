@@ -20,6 +20,14 @@ test('a saved singer does not erase the roster voice part', () => {
   assert.deepEqual(merged, [{id: 'demon', name: 'demon', voice: 'Alto'}]);
 });
 
+test('a private Discord handle remains searchable after song assignments and saved names merge', () => {
+  const directory={singers:[{name:'Example One',discord:'@demo.handle'}, {name:'Another'}], assignments:{piece:{T2:['Example One']}}};
+  const choices=station.merge(station.songRoster(directory,'piece'),[{name:'Example One'}]);
+  for(const query of ['@DEMO.HANDLE','demo.hand','tenor @demo']) assert.deepEqual(station.search(choices,query).map(x=>[x.name,x.voice]),[['Example One','T2']]);
+  assert.deepEqual(station.search(choices,'@another'),[]);
+  assert.deepEqual(station.search(choices,'@').map(x=>x.name),['Example One']);
+});
+
 test('song assignments override generic roles only in that song; abbreviations and names search the same list', () => {
   const roster = {singers:[{name:'Demo',voice:'Alto'}, {name:'Unassigned'}],
     assignments:{one:{S2:['Demo'], A1:['Visitor'], A2:['Another']}}};
@@ -174,4 +182,14 @@ test('personal comp attribution follows its audible sources without changing sta
   assert.equal(station.trackSinger(state,src),null);
   src.delete('b');assert.equal(station.trackSinger(state,src),null);
   state.descriptor.station={id:'lead',name:'Lead'};assert.equal(station.trackSinger(state,src).id,'lead');
+});
+test('a named comp containing another credited or unknown source cannot monitor during a named pass',()=>{
+  const s=require('../template/station.js'), owner={id:'one',name:'One'}, other={id:'two',name:'Two'};
+  const state={descriptor:{station:owner},segments:[{takeId:'a'},{takeId:'b'}]};
+  const sources=new Map([['a',{station:owner}],['b',{station:owner}]]);
+  assert.equal(s.playbackSingerId(state,sources),'one');
+  sources.get('b').performer=other;
+  assert.equal(s.playbackSingerId(state,sources),null);
+  sources.set('b',{});
+  assert.equal(s.playbackSingerId(state,sources),null);
 });

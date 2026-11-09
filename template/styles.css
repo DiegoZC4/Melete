@@ -430,6 +430,28 @@ button { color: inherit; }
 
 .settings-section-content { display: contents; }
 .settings-section-toggle { display: none; }
+.desktop-sections .control-group > .group-label { display: none; }
+.desktop-sections .settings-section-toggle {
+  position: absolute; z-index: 2; top: -8px; left: 5px; display: inline-flex;
+  align-items: center; gap: 2px; height: 15px; padding: 0 4px; border: 0;
+  border-radius: 3px; background: var(--panel-solid); color: var(--muted);
+  font: inherit; font-size: .6rem; font-weight: 760; text-transform: uppercase; cursor: pointer;
+}
+.desktop-sections .settings-section-toggle:is(:hover, :focus-visible) { color: var(--ink); }
+.desktop-sections .settings-section-toggle svg {
+  width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.desktop-sections .control-group.is-collapsed {
+  display: block; flex: 0 0 28px; width: 28px; min-width: 0; height: 104px; padding: 0;
+}
+.desktop-sections .is-collapsed > .settings-section-content { display: none; }
+.desktop-sections .is-collapsed > .settings-section-toggle {
+  position: static; width: 100%; height: 100%; padding: 6px 0; gap: 5px;
+  writing-mode: vertical-rl; background: transparent; justify-content: center;
+}
+.desktop-sections .is-collapsed > .settings-section-toggle svg { transform: rotate(-90deg); }
+.desktop-sections .take-panel.has-recording > .settings-section-toggle { color: #d84e4e; }
 
 [data-resettable="true"] { -webkit-touch-callout: none; }
 
@@ -599,12 +621,17 @@ button { color: inherit; }
   container-type: inline-size; font-size: 11px;
 }
 /* Keep the desktop controls on one row; large choirs scroll within Parts. */
+.desktop-sections .settings-strip:has(> .practice-group.is-collapsed):has(> .display-group.is-collapsed):has(> .tools-group.is-collapsed) {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) repeat(3, max-content) var(--take-column, minmax(303px, 1fr));
+}
+.desktop-sections .settings-strip:has(> .take-panel.is-collapsed) { --take-column: max-content; }
 @media (min-width: 1280px) and (hover: hover) and (pointer: fine) {
   body:not(.conductor-mode) .settings-strip {
     display: grid;
-    grid-template-columns: minmax(0, max-content) repeat(3, max-content) minmax(303px, 1fr);
+    grid-template-columns: minmax(0, max-content) repeat(3, max-content) var(--take-column, minmax(303px, 1fr));
   }
-  body:not(.conductor-mode) :is(.practice-group, .display-group) {
+  body:not(.conductor-mode) :is(.practice-group, .display-group):not(.is-collapsed) {
     width: calc(3 * var(--toolbar-unit-width) + 2 * var(--toolbar-row-gap) + 2 * var(--toolbar-group-padding) + 2px);
   }
 }
@@ -872,6 +899,16 @@ button { color: inherit; }
   background: var(--panel-solid); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 18px rgba(0, 0, 0, .25);
 }
 .station-list[hidden] { display: none; }
+.practice-group:has(.station-list:not([hidden])) { z-index: 4; }
+.station-empty { padding: 6px 8px; color: var(--muted); white-space: normal; }
+#stationLogDialog { width: min(540px, 94vw); max-height: 85vh; background: var(--panel-solid); color: var(--ink); border: 1px solid var(--line); border-radius: 7px; }
+#stationLogDialog h2 { margin: 0 0 .75em; }
+.station-log-scroll { max-height: 55vh; overflow: auto; }
+.station-log-scroll table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.station-log-scroll :is(th,td) { text-align: left; padding: 4px; }
+.station-log-scroll input { max-width: 100%; width: 12em; box-sizing: border-box; }
+.station-log-scroll input[type=number] { width: 5em; }
+.take-table-tools #stationTakeLog { font-size: 9px; }
 .station-option { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 25px; padding: 0 7px; color: var(--ink); font-size: 11px; cursor: pointer; }
 .station-option span:first-child { color: var(--muted); border-right: 1px solid var(--line); font-weight: 650; }
 .station-option span:last-child { white-space: normal; overflow-wrap: anywhere; }

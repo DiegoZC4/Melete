@@ -4,7 +4,15 @@
   async function create(context, buffer) {
     factory ||= (async () => {
       const url = URL.createObjectURL(new Blob([root.MeleteStretchSource], {type: "text/javascript"}));
-      try { return (await import(url)).default; }
+      try {
+        const createNode = (await import(url)).default;
+        if (new URL(document.baseURI).protocol === "file:") {
+          // Chrome rejects blob:null worklets from a downloaded collection.
+          // This self-contained module also registers the processor in worklet scope.
+          createNode.moduleUrl = "data:text/javascript;charset=utf-8," + encodeURIComponent(root.MeleteStretchSource);
+        }
+        return createNode;
+      }
       finally { URL.revokeObjectURL(url); }
     })().catch(error => { factory = null; throw error; });
     const node = await (await factory)(context, {numberOfInputs: 1, numberOfOutputs: 1,

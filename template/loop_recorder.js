@@ -462,6 +462,22 @@
       });
     }
 
+    creditTake(song, id, previous, person, advanceMs, previousAdvance) {
+      return this.transaction(['takes'], 'readwrite', (tx, done, fail) => {
+        const takes=tx.objectStore('takes');
+        takes.get(id).onsuccess=({target})=>{
+          const take=target.result;
+          if (!take || take.song!==song || !take.finalized || take.active || !person?.id || !person.name
+              || (take.performer?.id ?? null)!==previous || take.playbackAdvanceMs!==previousAdvance
+              || !Number.isInteger(advanceMs) || Math.abs(advanceMs)>500) {
+            fail(new Error('This take changed. Reopen the singer log to credit the saved take.')); return;
+          }
+          const updated={...take,performer:{id:person.id,name:person.name},playbackAdvanceMs:advanceMs};
+          takes.put(updated); done(updated);
+        };
+      });
+    }
+
     reassignStationTrack(key, revision, person, keyFor) {
       return this.transaction(["comps","takes","counters"], "readwrite", (tx, done, fail) => {
         const comps = tx.objectStore("comps"), takes = tx.objectStore("takes");
@@ -548,7 +564,7 @@
       });
     }
 
-    pruneCompHistory(maxBytes = COMP_HISTORY_BYTES) {
+    pruneCompHistory(maxBytes = COMP_HISTORY_BYTES, keepOriginals = () => false) {
       return this.transaction(["comps", "takes", "chunks", "counters"], "readwrite", (tx, done, fail) => {
         tx.objectStore("comps").getAll().onsuccess = compEvent => {
           tx.objectStore("takes").getAll().onsuccess = takeEvent => {
@@ -565,6 +581,7 @@
               for (const {song, history} of result.histories) {
                 if (history.revision !== histories.find(h => h.song === song).history.revision) counters.put(history, historyKey(song));
               }
+              result.removed = result.removed.filter(take => !keepOriginals(take.song));
               for (const {id} of result.removed) {
                 tx.objectStore("takes").delete(id);
                 tx.objectStore("chunks").index("takeId").openCursor(id).onsuccess = event => {

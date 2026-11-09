@@ -1,5 +1,15 @@
 (() => {
   "use strict";
+  // The optional desktop station copies this file's own Melete storage before
+  // opening the same player at a stable, microphone-permission-capable origin.
+  if (globalThis.location?.protocol==="file:" && new URLSearchParams(location.search).has("stationTransfer")
+      && /^#[a-f0-9]{64}$/.test(location.hash)) {
+    document.body.replaceChildren(); const msg=document.createElement("p"); msg.id="stationProgress";
+    msg.textContent="Opening the local Melete recording station…"; document.body.append(msg);
+    const script=document.createElement("script"); script.src="./melete-station-transfer.js";
+    script.onerror=()=>{msg.textContent="The station transfer helper is missing. Your original takes are still here.";};
+    document.head.append(script); return;
+  }
   const source = "<!doctype html>\n" + document.documentElement.outerHTML;
   const loading = document.getElementById("loading");
   let bundle;

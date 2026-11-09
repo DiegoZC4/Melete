@@ -17,6 +17,9 @@
 !/vendor/
 !/tests/
 !/examples/
+!/tools/
+/tools/*
+!/tools/local_station/
 !/.github/
 
 # Private extensions remain local; ordinary conversions do not load them.
@@ -54,5 +57,7 @@ auditions/scores/
 *.mp3
 *.wav
 *.flac
+station-roster.json
+station-roster.js
 *-practice-web/
 tests/test_local_*.py

@@ -177,3 +177,17 @@ test('cancelling an inline permission request leaves the selector usable and no 
   assert.equal(f.fields.select.disabled,false);
   assert.equal(f.connections.size,0);
 });
+test('three quiet chirps recover an acoustic delay and reject silence or inconsistent detections', () => {
+  const {timingChirp, measuredLatency}=require('../template/microphone_check.js');
+  const rate=48000, starts=[.08,.8,1.52], chirp=timingChirp(rate), length=Math.ceil(2.3*rate);
+  let seed=17;
+  const capture=delays=>{
+    const samples=Float32Array.from({length},()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return .001*(seed/2**32-.5);});
+    delays.forEach((delay,i)=>{if(delay===null)return;const first=Math.round((starts[i]+delay)*rate);
+      chirp.forEach((v,j)=>{samples[first+j]+=.7*v;});}); return samples;
+  };
+  assert.ok(Math.abs(measuredLatency(capture([.137,.137,.137]),rate,starts)-.137)<.002);
+  assert.equal(measuredLatency(capture([.137,null,.137]),rate,starts),.137);
+  assert.equal(measuredLatency(capture([null,null,null]),rate,starts),null);
+  assert.equal(measuredLatency(capture([.1,.19,.28]),rate,starts),null);
+});

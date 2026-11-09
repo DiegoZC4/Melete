@@ -4,6 +4,7 @@
   "use strict";
   const STAGES = [["start", "Start"], ["scratchpad", "Scratchpad"], ["final", "Final"]];
   const COLUMN_KEY = "melete:station:column";
+  const PEOPLE_KEY = "melete:station:people:v1";
   const COLUMNS = ["singer", "voice_part", "stage", "song", "part", "layer", "speed_percent", "bars", "recordings",
     "segments", "filled_percent", "sung_seconds", "tracked_seconds", "tracked_percent", "tracked_of_passage_percent",
     "mean_cents", "median_cents", "within_50_cents_percent", "created", "modified"];
@@ -19,14 +20,42 @@
     .replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, "");
   function clean(entry) {
     const name = String(entry?.name || "").trim(), id = singerId(name);
-    return id ? {id, name, voice: String(entry?.voice || "").trim(), ...(entry?.guide ? {guide:String(entry.guide)} : {})} : null;
+    const discord = String(entry?.discord || entry?.discordUsername || '').trim().replace(/^@/, '');
+    return id ? {id, name, voice: String(entry?.voice || "").trim(), ...(entry?.guide ? {guide:String(entry.guide)} : {}), ...(discord ? {discord} : {})} : null;
   }
   function merge(...lists) {
     const singers = new Map();
     for (const singer of lists.flat().map(clean).filter(Boolean)) {
-      if (!singers.get(singer.id)?.voice) singers.set(singer.id, singer);
+      const prior = singers.get(singer.id), chosen = prior?.voice ? prior : singer;
+      const discord = prior?.discord || singer.discord;
+      singers.set(singer.id, discord ? {...chosen, discord} : chosen);
     }
     return [...singers.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, {sensitivity: "base", numeric: true}));
+  }
+  function rememberedPeople() {
+    try { const people=JSON.parse(read(PEOPLE_KEY)); return Array.isArray(people) ? people : []; }
+    catch { return []; }
+  }
+  function rememberPerson(person) {
+    if (person?.name) write(PEOPLE_KEY, JSON.stringify(merge(rememberedPeople(), [{name:person.name}])));
+  }
+  function localRoster() {
+    // Opening a station from disk supports a private sibling file. Chrome
+    // blocks fetch(file:), but can load a classic script beside a local page.
+    return new Promise(resolve => {
+      const script=document.createElement('script');
+      script.src=new URL('station-roster.js',document.baseURI).href;
+      script.onload=script.onerror=()=>{script.remove();resolve(root.MeleteLocalStationRoster || null);};
+      document.head.append(script);
+    });
+  }
+  function sourceSinger(take) {
+    if (!take) return null;
+    return take.performer || take.station || clean({name:root.MeleteLocalStationRoster?.credits?.[take.id]});
+  }
+  function advanceMs(take) {
+    const value=take?.playbackAdvanceMs ?? root.MeleteLocalStationRoster?.playbackAdvanceMs?.[take?.id] ?? 0;
+    return Number.isFinite(value) ? Math.max(-500,Math.min(500,value)) : 0;
   }
   const families = {S:"Soprano", A:"Alto", T:"Tenor", B:"Bass"};
   function partCode(voice) {
@@ -80,11 +109,13 @@
   }
   function search(singers, query) {
     const exact = partCode(query);
-    const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+    const normalize = value => String(value || '').normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase();
+    const words = normalize(query).trim().split(/\s+/).filter(Boolean);
     return singers.filter(s => {
       const code = partCode(s.voice), spelled = [families[code[0]], code.slice(1)].filter(Boolean).join(" ");
       if (/^[SATB][12]?$/u.test(exact)) return exact.length === 1 ? code.startsWith(exact) : code === exact;
-      return words.every(word => `${s.name} ${s.voice} ${code} ${spelled}`.toLowerCase().includes(word));
+      const handle = normalize(s.discord), fields = normalize(`${s.name} ${s.voice} ${code} ${spelled} ${handle}`);
+      return words.every(word => word.startsWith('@') ? !!handle && handle.includes(word.slice(1)) : fields.includes(word));
     }).sort((a,b) => partOrder(a.voice) - partOrder(b.voice) || a.name.localeCompare(b.name, undefined, {sensitivity:"base"}));
   }
   const slotFor = (id, stage) => `station:${id}:${stage}`;
@@ -106,11 +137,20 @@
     if (state.descriptor.station) return state.descriptor.station;
     let singer=null;
     for (const segment of state.segments) {
-      const p=sources?.get(segment.takeId)?.performer;
+      const p=sourceSinger(sources?.get(segment.takeId));
       if (!p?.id || singer && p.id!==singer.id) return null;
       singer=p;
     }
     return singer;
+  }
+  function playbackSingerId(state, sources) {
+    let owner = state.descriptor.station?.id;
+    for (const segment of state.segments) {
+      const singer = sourceSinger(sources.get(segment.takeId));
+      if (!singer?.id || (owner && singer.id !== owner)) return null;
+      owner = singer.id;
+    }
+    return owner || null;
   }
 
   const number = (value, digits = 3) => Number.isFinite(value) ? value.toFixed(digits) : "";
@@ -136,6 +176,12 @@
   }
   const csv = rows => [COLUMNS, ...rows.map(row => COLUMNS.map(column => row[column] ?? ""))]
     .map(cells => cells.map(csvCell).join(",")).join("\r\n") + "\r\n";
+  function takeLogCsv(takes) {
+    const rows = takes.map(t=>[t.song,t.number,new Date(t.createdAt).toISOString(),t.part,
+      sourceSinger(t)?.name || '',t.label,Math.round(t.frames/t.sampleRate*10)/10,t.id]);
+    return [['song','take','recorded_at','part','singer','passage','seconds','take_id'],...rows]
+      .map(row=>row.map(csvCell).join(',')).join('\r\n')+'\r\n';
+  }
 
   function create({song, allowed = true, stageFor, changed, playback = null}) {
     const byId = id => document.getElementById(id);
@@ -153,6 +199,9 @@
     let roster = [], known = [], singer = null, stage = "start", query = null, active = -1, items = [], columnOn = false;
     let settled = false, owner = "", applying = false, lastMix = "", rosterReady = false, handoff = 0, guidePreset;
     let handoffReady = Promise.resolve();
+    const choices = () => merge(roster, known, rememberedPeople());
+    const protectsAudio = id => read(`melete:station:keep-originals:${id}`)==='true'
+      || root.MeleteLocalStationRoster?.keepOriginals===true || (enabled && !rosterReady);
     const profileKey = id => `${mixKey}:${id ? "singer:" + id : "ordinary"}`;
     const profile = () => JSON.stringify({...playback.capture(), ...(owner ? {guideVersion:2,guidePreset} : {})});
     function storedMix(id) {
@@ -199,15 +248,16 @@
       write(stateKey, value);
     }
     function paint() {
-      const singers = merge(roster, known), typed = clean({name: query});
+      const singers = choices(), typed = clean({name: query});
       const partQuery = /^[SATB][12]?$/u.test(partCode(query));
-      items = [...search(singers, query), ...(typed && !partQuery && !singers.some(s => s.id === typed.id) ? [{...typed, add: true}] : [])];
+      const byHandle = String(query || '').trim().startsWith('@');
+      items = [...search(singers, query), ...(typed && !partQuery && !byHandle && !singers.some(s => s.id === typed.id) ? [{...typed, add: true}] : [])];
       active = Math.min(active, items.length - 1);
       list.replaceChildren(...items.map((item, index) => {
         const option = document.createElement("div"), name = document.createElement("span"), voice = document.createElement("span");
         option.id = `stationOption${index}`; option.className = "station-option"; option.dataset.index = String(index);
         option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(index === active));
-        name.textContent = item.add ? `Add “${item.name}”` : item.name;
+        name.textContent = item.add ? `Add “${item.name}”` : item.name + (item.discord ? ` · @${item.discord}` : '');
         voice.textContent = partCode(item.voice) || "\u2013"; voice.title = item.voice || "No part listed";
         option.setAttribute("aria-label", [item.voice, name.textContent].filter(Boolean).join(", "));
         option.append(voice, name);
@@ -215,7 +265,20 @@
       }));
       if (active >= 0) input.setAttribute("aria-activedescendant", `stationOption${active}`);
       else input.removeAttribute("aria-activedescendant");
-      list.children[active]?.scrollIntoView({block: "nearest"});
+      if (!items.length) {
+        const hint=document.createElement('div');hint.className='station-empty';
+        hint.textContent='Type a singer’s name to add them.';list.append(hint);
+      }
+      const info = document.createElement('div'); info.className = 'station-empty'; info.setAttribute('role','presentation');
+      const handles = roster.filter(person => person.discord).length;
+      info.textContent = !rosterReady ? 'Loading singer directory…' : !roster.length ? 'No singer directory loaded. You can still type a name.' : `Directory: ${roster.length} ${roster.length===1?'singer':'singers'} · ${handles} Discord ${handles===1?'handle':'handles'}`;
+      list.append(info);
+      const highlighted=active>=0 && list.children[active];
+      if(highlighted && !list.hidden){
+        if(highlighted.offsetTop < list.scrollTop) list.scrollTop=highlighted.offsetTop;
+        else if(highlighted.offsetTop+highlighted.offsetHeight > list.scrollTop+list.clientHeight)
+          list.scrollTop=highlighted.offsetTop+highlighted.offsetHeight-list.clientHeight;
+      }
     }
     function open(text = null) {
       query = text; active = String(text || "").trim() ? 0 : -1;
@@ -234,6 +297,7 @@
       close();
       if (!same || next) {
         singer = next;
+        rememberPerson(singer);
         // Their mix first: it can change the part and speed the stage is read from.
         const alreadySettled = settled;
         settle(preservePart);
@@ -250,9 +314,18 @@
     input.addEventListener("click", () => { if (list.hidden) open(); if (query === null) input.select(); });
     input.addEventListener("input", () => open(input.value));
     input.addEventListener("blur", () => {
-      const cleared = !input.value.trim();
+      const edited = query !== null, typed = clean({name:input.value});
       close();
-      if (cleared && singer) pick(null); else sync();
+      if (edited && typed) {
+        const people=choices(), exact=people.find(person=>person.id===typed.id);
+        const matches=search(people,input.value);
+        const partQuery=/^[SATB][12]?$/.test(partCode(input.value));
+        if (input.value.trim().startsWith('@')) { if (matches.length===1) pick(matches[0]); else sync(); }
+        else if (exact || !partQuery) pick(exact || (matches.length===1 ? matches[0] : typed));
+        else sync();
+      }
+      else if (edited && !typed && singer) pick(null);
+      else sync();
     });
     input.addEventListener("keydown", event => {
       if (["ArrowDown", "ArrowUp"].includes(event.key)) {
@@ -284,15 +357,18 @@
       singer = clean(saved);
       if (saved?.stage === "scratchpad" || saved?.stage === "final") stage = "scratchpad";
       try { sessionStorage.setItem(stateKey, JSON.stringify(singer ? {...singer, stage} : null)); } catch {}
-      // The roster stays beside the local build; it is never part of a player.
-      const loaded = handoffReady = fetch(new URL("station-roster.json", document.baseURI), {cache: "no-store"})
-        .then(response => response.ok ? response.json() : null)
+      // The roster stays beside the build and is never bundled into a player.
+      const rosterUrl = new URL('station-roster.json',document.baseURI);
+      const load = rosterUrl.protocol==='file:' ? localRoster() : fetch(rosterUrl,{cache:'no-store'}).then(r=>r.ok?r.json():null);
+      const loaded = handoffReady = load
         .then(data => {
+          if (data) root.MeleteLocalStationRoster=data;
           roster = songRoster(data, song());
+          if (data?.keepOriginals===true) write(`melete:station:keep-originals:${song()}`, 'true');
           const updated = singer && roster.find(s => s.id === singer.id);
           if (updated?.voice) { singer = updated; remember(); sync(); }
           if (!list.hidden) paint();
-        }).catch(() => {}).finally(()=>{ rosterReady=true; settle(); });
+        }).catch(() => {}).finally(()=>{ rosterReady=true; if (!list.hidden) paint(); settle(); });
       document.addEventListener("melete:station-visit", event => {
         const {name, linkedPart} = event.detail, ticket = ++handoff;
         if (name === undefined) { settle(); announce(); return; }
@@ -322,7 +398,8 @@
       remember(); sync();
       return true;
     }
-    return {render, advance, settle, playbackChanged, pick, choices:()=>merge(roster, known), enabled,
+    return {render, advance, settle, playbackChanged, pick, choices, rememberPerson, protectsAudio, enabled,
+      needsSinger:()=>enabled && !singer && root.MeleteLocalStationRoster?.requireSinger===true,
       refreshMix:()=>{if(enabled && settled && owner)own(owner);},
       handoffReady:()=>handoffReady,
       verifyStage() {
@@ -334,7 +411,7 @@
       current: () => enabled && singer ? {...singer, stage} : null,
       descriptor: base => enabled && singer ? descriptor(base, singer, stage) : null};
   }
-  const api = {STAGES, COLUMNS, stageLabel, requested, singerId, clean, merge, partCode, songRoster, guideChannel, guideMix, untouchedFirstPreset, followsOldDefault, search, descriptor, recordingPlan, sortName, trackSinger, summary, csv, create};
+  const api = {STAGES, COLUMNS, stageLabel, requested, singerId, clean, merge, partCode, songRoster, guideChannel, guideMix, untouchedFirstPreset, followsOldDefault, search, descriptor, recordingPlan, sortName, trackSinger, playbackSingerId, sourceSinger, advanceMs, takeLogCsv, summary, csv, create};
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.MeleteStation = api;
 })(globalThis);

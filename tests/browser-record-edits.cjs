@@ -58,6 +58,24 @@ async function checkRecordEdits(page,frame,{output,label}) {
     }));
     throw error;
   }
+  assert.deepEqual(await frame.evaluate(()=>{
+    const q=window.__qa||window.__probe, previous=q.engine.takeLayers.get('comp:'+q.compState.key);
+    return {present:!!previous, playing:!!previous?.source};
+  }),{present:true,playing:false},'the selected comp is silent during its overdub and retains its Hear selection');
+  const frozen=await frame.evaluate(async()=>{
+    const q=window.__qa||window.__probe, systems=()=>q.pitchbar.systems.map(s=>[
+      s.startTick,s.endTick,s.minPitch,s.maxPitch,s.shell.getBoundingClientRect().height,s.shell.querySelectorAll('.pitch-guide').length]);
+    const before=systems(), first=q.pitchbar.systems[0], svg=first.shell.querySelector('svg');
+    const tick=q.engine.tickAtSeconds(q.engine.currentSeconds()),system=q.pitchbar.systems.find(s=>s.startTick<=tick && tick<s.endTick);
+    const high=q.pitchResolution.seedReviewOutlier(tick,(system.maxPitch+20)*100,true);
+    await new Promise(ok=>requestAnimationFrame(()=>requestAnimationFrame(ok)));
+    const sameSvg=q.pitchbar.systems[0].shell.querySelector('svg')===svg;
+    const low=q.pitchResolution.seedReviewOutlier(tick,Math.max(1,system.minPitch-20)*100);
+    const after=systems(); q.pitchResolution.restoreReviewOutlier(low); q.pitchResolution.restoreReviewOutlier(high);
+    return {before,after,sameSvg};
+  });
+  assert.ok(frozen.sameSvg,'a live outlier does not schedule a score redraw');
+  assert.deepEqual(frozen.after,frozen.before,'even an explicit repaint keeps every recording system and pitch guide in place');
   await frame.evaluate(()=>{
     __editProbe.svg=document.querySelector('#barScore svg');__editProbe.started=performance.now();
     const sample=()=>{

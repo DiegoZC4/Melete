@@ -5,17 +5,18 @@
 })(typeof window === "object" ? window : globalThis, function() {
   "use strict";
 
-  function mediaDevicesFor(view) {
+  function microphoneNavigator(view) {
     // Firefox Android rejects microphone requests from about:srcdoc. Let our
     // same-origin collection page request permission; the player owns the stream.
     try {
       if (view.frameElement?.hasAttribute("data-melete-collection-player")
         && view.parent !== view && view.parent.origin === view.origin) {
-        return view.parent.navigator.mediaDevices;
+        return view.parent.navigator;
       }
     } catch { /* Unrelated cross-origin embeds use their own permission policy. */ }
-    return view.navigator.mediaDevices;
+    return view.navigator;
   }
+  const mediaDevicesFor = view => microphoneNavigator(view).mediaDevices;
 
   class Level {
     constructor(now = 0) {
@@ -185,5 +186,33 @@
       }
     }
   }
-  return {Level, Check, mediaDevicesFor};
+  // A short, windowed sweep stays quiet and has an unambiguous matched-filter peak.
+  function timingChirp(rate) {
+    const duration=.042, data=new Float32Array(Math.round(duration*rate));
+    for(let i=0;i<data.length;i++){const t=i/rate;data[i]=.032*Math.sin(Math.PI*i/data.length)**2*
+      Math.sin(2*Math.PI*(720*t+0.5*(2840-720)/duration*t*t));}
+    return data;
+  }
+  function measuredLatency(samples,rate,starts) {
+    const analysisRate=8000, pattern=timingChirp(analysisRate), energy=pattern.reduce((s,v)=>s+v*v,0);
+    const input=Float32Array.from({length:Math.floor(samples.length*analysisRate/rate)},(_,i)=>{
+      const at=i*rate/analysisRate, ix=Math.floor(at), f=at-ix;return samples[ix]*(1-f)+(samples[ix+1]||0)*f;
+    });
+    const peaks=[];
+    for(const time of starts){
+      const first=Math.round(time*analysisRate), n=Math.min(Math.round(.55*analysisRate),input.length-first-pattern.length);
+      if(first<0||n<1)continue;
+      const scores=new Float32Array(n);let best=0, second=0;
+      for(let j=0;j<n;j++){let dot=0,power=0;for(let i=0;i<pattern.length;i++){const v=input[first+j+i];dot+=pattern[i]*v;power+=v*v;}
+        scores[j]=power>1e-9?Math.abs(dot)/Math.sqrt(energy*power):0;if(scores[j]>scores[best])best=j;}
+      for(let j=0;j<n;j++)if(Math.abs(j-best)>analysisRate*.014)second=Math.max(second,scores[j]);
+      if(scores[best]>.27&&scores[best]>second*1.32)peaks.push(best/analysisRate);
+    }
+    if(peaks.length<2)return null;
+    peaks.sort((a,b)=>a-b);
+    const consistent=peaks.map(p=>peaks.filter(q=>Math.abs(p-q)<=.012)).sort((a,b)=>b.length-a.length)[0];
+    if(consistent.length<2)return null;
+    return Math.round(1000*consistent.reduce((s,v)=>s+v,0)/consistent.length)/1000;
+  }
+  return {Level, Check, mediaDevicesFor, microphoneNavigator, timingChirp, measuredLatency};
 });

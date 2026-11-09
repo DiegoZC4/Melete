@@ -72,6 +72,14 @@ contains only `autumn.musicxml` and `the-seed.musicxml`; the builder verifies
 both against the player. This avoids even the initial MuseScore installation.
 The repository licenses the software, not the musical material.
 
+For a choir station, keep the real `station-roster.json`, private scores and recordings in the choir owner's private Drive. Download the rehearsal folder before leaving Wi-Fi. The directory has a `singers` list, for example `{"singers":[{"name":"Example Singer","discord":"example.handle","voice":"T2"}]}`. Missing handles can stay blank. Install the directory beside the built player on either computer:
+
+```sh
+python3 tools/local_station/directory.py --directory "/path/to/Station setup/station-roster.json" --player "/path/to/index.html"
+```
+
+On Windows, use `py -3` instead of `python3`. The command reports the counts and keeps existing take credits and timing edits. Use `--check` for a dry run. To recover the original directory from an older Mac or Windows installation, add `--import-roster "/path/to/old/station-roster.json"` (a Melete `.js` sidecar works too). This merges the private names and handles locally without executing roster files; it stops on conflicting handles. Sync or upload the updated JSON to the same private Drive file so the other computer gets it. Do not sync a running Chrome profile. Use the verified session export or the lossless WAVs to move recorded takes.
+
 Edit the shared code in `template/` or the song configurations in
 `Melete-Rehearsal`, then repeat the command. It builds
 `Melete-Rehearsal/index.html` using local inputs; it does not fetch the songs again.
@@ -114,6 +122,15 @@ Links select a song with `?song=its-slug`. For a station drill, use
 `?song=the-seed&mode=station&part=B2&loop=19-24`. A shared part or loop
 stays in the address until you change it or switch songs. Old links such as
 `?station#the-seed` and `?loop=19-24#the-seed` still work.
+
+On Windows, an existing two-song collection can use a local address where Chrome
+remembers microphone permission across reloads. Run
+`python tools/local_station/station.py "path/to/player.html" "path/to/station-state"`
+with the Chrome Default profile that holds the recordings. The first launch
+copies that file's takes, tracks, edit history and Melete preferences, then checks
+the copy against the source. The station binds to 127.0.0.1 and works offline.
+Choose **Allow while visiting the site** on the first microphone prompt.
+Use the same launcher for subsequent recording sessions.
 The default collection folder is `FIRST-FILENAME-collection-web`,
 with verified native-export caches under `players/`. Failed builds leave the last
 good collection in place. The download button saves the whole collection, not
@@ -283,11 +300,20 @@ optional and is not installed or needed on other machines.
   cloud upload. **Rec** arms audio in addition to pitch; it never starts
   playback. **Space** (or Play on a phone) starts the pass at the cursor;
   Space again saves it. Rec stays armed for the next overdub. Arming it
-  mid-pass takes effect on the next Play; disarming during an audio pass stops
-  keeping audio immediately. Turning Sing off, changing singer, part or song,
+  mid-pass starts recording at the current playhead. Turning Rec off ends the
+  audio edit immediately and lets the previous comp play. The track being
+  recorded is silent during the pass; the other Hear-enabled tracks provide backing.
+  Melete can reuse the same microphone grant while the song is open. A Rec-only
+  session disables the microphone track between passes. Turning Sing off, changing singer, part or song,
   leaving the tab, or reloading clears the audio arm.
   **Score** stays clear while recording. Select a saved take to see its contour
-  on the staff; select it again to hide it. **Pitchbar** shows live pitch.
+  on the staff; select it again to hide it. **Pitchbar** shows live pitch within
+  each system's range at the start of the pass. During capture, out-of-range
+  samples leave gaps without resizing the score. Drag previews and chord
+  previews in Pitchbar use only the voice lines selected in **See**.
+  On a laptop, click a Settings heading to fold or reopen it. Right-click the
+  **Record** heading to keep just **Parts** and **Record** expanded. Melete
+  remembers the layout on this device.
   Switching views mid-phrase keeps recording and scoring the same take.
   Changing the isolated part selects its most recently edited track. Column
   sorting remains in control, without pinning the selected row or scrolling to

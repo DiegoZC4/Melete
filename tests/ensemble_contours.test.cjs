@@ -69,7 +69,7 @@ test('saved contours grade and filter rests against their recorded division, nev
     frames:[{start:0,end:.01,cents:6500},{start:.01,end:.02,cents:6500}]};
   const node = (tag, attrs = {}) => ({tag, attrs, children:[], append(...children) {this.children.push(...children);}, addEventListener() {}});
   const system = {startTick:0,endTick:100,traceLayer:node('g'),xAtTick:t=>t,yAtPitch:p=>p};
-  const c = vm.createContext({practiceWriter:null,window:{MeleteTakeRender:require('../template/take_render.js')},
+  const c = vm.createContext({practiceWriter:null,recordingBarRanges:null,window:{MeleteTakeRender:require('../template/take_render.js')},
     engine:{secondsAtTick:t=>t/100,tickAtSeconds:s=>s*100}, pendingCaptureTrace:null,
     visibleChannels:new Set([0,1]), takeReview:r, createSvgElement:node, trackLabel:()=> 'A2',
     pitchRestState:(tick,part,line)=>{calls.push(['rest',part,line]);return 'sing';},

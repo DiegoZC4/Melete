@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 
 const singPreferenceProbe = `singPreferences: {
   snapshot() { return {
-    wanted: wantsPitchCapture, state: pitchCaptureState, preferences: currentPreferenceState(),
+    wanted: wantsPitchCapture(), state: pitchCaptureState, preferences: currentPreferenceState(),
     saved: JSON.parse(localStorage.getItem(preferenceKey)), help: settingsHelpEnabled,
     input: pitchCaptureStream?.getAudioTracks()[0]?.enabled || false,
     hasStream: !!pitchCaptureStream, audioState: pitchCaptureContext?.state,

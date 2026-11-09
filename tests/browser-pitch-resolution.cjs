@@ -42,12 +42,13 @@ const pitchTraceProbe = `pitchResolution: {
     return {values:lane?Array.from(lane.pitches.slice(20,42)):[],split:lane?.breaks[29],
       stored:localStorage.getItem(pitchTraceKey)};
   },
-  seedReviewOutlier(tick) {
+  seedReviewOutlier(tick, cents = 10800, incremental = false) {
     const lane=pitchTraceLane(0,{create:true}),bin=pitchTraceBinAtTick(tick);
     const previous=lane.pitches[bin];
-    lane.pitches[bin]=10800;
+    lane.pitches[bin]=cents;
     if(!previous)pitchTraceCount++;
-    renderBarScore();
+    if(incremental) updatePitchTraceIncrementally(new Map([[0,new Set([bin])]]));
+    else renderBarScore();
     return {bin,previous,tick};
   },
   reviewRange(tick) {

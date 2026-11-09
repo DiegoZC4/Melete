@@ -69,9 +69,9 @@ async function run(context,origin,mobile) {
     await page.waitForFunction(()=>__qa.recording.state==='recording' && !__qa.recording.takes.some(t=>t.active));
     assert.ok(await page.evaluate(t=>__qa.engine.playing&&__qa.engine.currentSeconds()>=t,mid));
     await rec.click();const afterArm=await page.evaluate(()=>__qa.engine.currentSeconds());
-    await page.waitForFunction(t=>__qa.engine.currentSeconds()>t+.25,afterArm);
-    assert.equal(await page.evaluate(()=>window.pcmStarts),2,'arming during a pitch-only pass cannot start PCM');
-    assert.equal(await rec.getAttribute('data-state'),'armed');await transport();
+    await page.waitForFunction(t=>__qa.engine.currentSeconds()>t+.25 && window.pcmStarts===3 && __qa.recording.takes.some(t=>t.active),afterArm);
+    assert.equal(await rec.getAttribute('data-state'),'recording','Rec punches into a moving pitch-only pass');
+    await transport();
     await page.waitForFunction(()=>__qa.recording.state==='off');
     await rec.click();assert.equal(await rec.getAttribute('data-state'),'off');
     await page.waitForFunction(()=>__qa.tracksSettled(),null,{polling:250});
@@ -100,8 +100,33 @@ async function run(context,origin,mobile) {
     await page.locator('#playPause').click();
     await page.waitForFunction(()=>__qa.recording.state==='off' && __qa.recording.notice.includes('last saved point'));
     assert.equal((await storage()).audio,afterDelete.audio);
+    await page.reload(); await wait(); await settings(page,'practice');
+    const sing=page.locator('#pitchCapture');
+    if(await sing.getAttribute('aria-pressed')==='true') await sing.click();
+    await page.evaluate(()=>{
+      const request=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      window.punchInputs=[];
+      navigator.mediaDevices.getUserMedia=async constraints=>{
+        const stream=await request(constraints); punchInputs.push(stream.getAudioTracks()[0]); return stream;
+      };
+      __qa.engine.seek(.2);
+    });
+    await transport();
+    for(let pass=0;pass<2;pass++) {
+      const tick=await page.evaluate(()=>__qa.engine.currentSeconds());
+      await rec.click();
+      await page.waitForFunction(t=>__qa.engine.currentSeconds()>t+.4 && __qa.recording.takes.some(t=>t.active),tick);
+      await rec.click();
+      await page.waitForFunction(()=>__qa.recording.state==='off' && punchInputs.length && !punchInputs[0].enabled);
+      assert.equal(await sing.getAttribute('aria-pressed'),'false');
+      assert.deepEqual(await page.evaluate(()=>[__qa.engine.playing,punchInputs.length,punchInputs[0].readyState]),[true,1,'live']);
+      const checkpoint=await audioSnapshot();
+      await page.waitForFunction(t=>__qa.engine.currentSeconds()>t+.25,await page.evaluate(()=>__qa.engine.currentSeconds()));
+      assert.deepEqual((await audioSnapshot()).sources,checkpoint.sources,'listening writes no additional audio frames');
+    }
+    await transport();
     return {mobile,copy:true,relative:true,nonuniformBacking:true,refreshKeepsEdits:true,pitchOnly:{audio:0,chunks:0,traces:1},explicitAudio:result,
-      armDoesNotPlay:true,spaceRepeatsOverdub:true,noAudioUntilNextPlay:true,disarmDuringPassStopsPcm:true,
+      armDoesNotPlay:true,spaceRepeatsOverdub:true,punchInAtPlayhead:true,disarmDuringPassStopsPcm:true,repeatedPunchesReuseOneMicrophone:true,
       pitchOnlyLeavesCompIntact:true,deletingTraceKeepsAudio:true,pitchQuotaStopsWithoutAudio:true};
   } finally {await page.close();}
 }

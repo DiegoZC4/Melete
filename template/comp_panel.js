@@ -8,13 +8,15 @@
     const byId = id => document.getElementById(id);
     const layerId = state => `comp:${state.key}`;
     // Audio depends only on the passages; Undo bookkeeping never mutes a layer.
-    const audioKey = state => JSON.stringify(state.segments);
+    const audioKey = (state,sources) => JSON.stringify([state.segments,
+      [...new Set((state.segments || []).map(s=>s.takeId))].map(id=>sources?.get(id)?.playbackAdvance || 0)]);
     // Every reconciled target by comp key, the displayed keys in score order,
     // and the current practice part's key, which receives new recordings.
     let tracks = new Map(), shown = [], armed = null, saved = [], used = new Set(), garbage = new Set();
     let signature = "", pending = null, dirty = false, recording = false, busy = false, cloud = null, ready = false, listed = "", cloudKey = null;
     let practiceIdentity = null, autoReview = null, landedStartSlot = null;
     let revealSinger = false, checkSingerRoute = false, correcting = null;
+    let singerRevision=0;
     let history = {past: [], future: [], revision: 0};
     let historyBudgetStamp = "", usedAudioStamp = "";
     const prepared = new Map(), preparing = new Map(), rows = new Map(), statsCache = new WeakMap();
@@ -24,7 +26,7 @@
     function sourceVersion(take) {
       const contour = take.pitchContour;
       if (contour && !contourVersions.has(contour)) contourVersions.set(contour, ++contourVersion);
-      return [take.id, take.frames, take.updatedAt, contourVersions.get(contour), take.pitchScore?.scoringVersion,take.performer?.id];
+      return [take.id, take.frames, take.updatedAt, contourVersions.get(contour), take.pitchScore?.scoringVersion,take.performer?.id,take.playbackAdvance];
     }
     const slotKey = `melete:track-slots:${adapter.song()}`;
     let slots = {};
@@ -36,12 +38,17 @@
     // row, or loading without ?station, must never move recordings onto it.
     const station = stations.create({song: adapter.song, allowed: !adapter.audition?.(), stageFor, changed: stationChanged,
       playback: adapter.playback || null});
+    void station.handoffReady().then(()=>{ if (ready) void refresh({force:true}); });
     root.MeleteTakeControls.tablePreferences(byId("takePanel"), !adapter.audition?.() && stations.requested());
     function currentDescriptor() {
       const d = adapter.descriptor();
       const named = d && station.descriptor(d);
       if (named) return named;
       return d && slots[identity(d)] ? {...d, slot: slots[identity(d)]} : d;
+    }
+    function recordingKey() {
+      const descriptor = currentDescriptor();
+      return descriptor ? model.key(descriptor) : null;
     }
     const error = e => adapter.toast(e.message || String(e), "error");
     const label = state => adapter.trackLabel(state.descriptor.reference.part, state.descriptor.reference.line ?? null)
@@ -123,7 +130,7 @@
       row.querySelector(".take-part").textContent = named ? adapter.trackLabel(state.descriptor.reference.part, state.descriptor.reference.line ?? null) : label(state);
       row.style.setProperty("--take-part-color",adapter.trackPaint(state.descriptor.reference.part,state.descriptor.reference.line ?? null));
       const credit=row.querySelector(".edit-take-singer");
-      credit.hidden=!station.enabled || !performer;
+      credit.hidden=!station.enabled;
       credit.disabled=busy || recording;
       credit.title=`${performer?.name || ""} · ${label(state)}. Double-click to change singer.`;
       credit.setAttribute("aria-label",`Change singer for ${name}`);
@@ -195,6 +202,9 @@
       byId("compView").classList.toggle("has-singers", station.render({disabled: busy || recording,
         named: singers.length>0, singers}));
       byId("stationExport").disabled = busy || recording;
+      byId('stationTakeLog').hidden = !station.enabled;
+      byId('stationNewSinger').hidden = !station.enabled;
+      byId('stationNewSinger').disabled = busy || recording;
       const configured = Boolean(adapter.cloudConfig?.api) && /^https?:$/.test(new URL(document.baseURI).protocol);
       if (configured) makeCloud();
       const table = byId("takePanel").querySelector(".take-review");
@@ -265,7 +275,7 @@
       const stamp = JSON.stringify([[...targets(current, takes).keys()], saved.map(s => [s.key, s.revision]),
         practiceIdentity, current && model.key(current), recording,
         takes.map(t => [t.id, t.frames, t.finalized, t.deleteAfter, t.restAudioVersion, t.updatedAt,
-          t.pitchContour?.analysisVersion, t.pitchScore?.meanAbsCents,t.performer?.id])]);
+          t.pitchContour?.analysisVersion, t.pitchScore?.meanAbsCents,t.performer?.id,t.playbackAdvance])]);
       if (signature === stamp && !checkSingerRoute) { render(); return; }
       saved = await adapter.store.comps(adapter.song());
       if (checkSingerRoute && !recording && !busy) {
@@ -302,14 +312,15 @@
       history = await adapter.store.compHistory(adapter.song());
       const budgetStamp = JSON.stringify([history.revision, saved.map(s => [s.key, s.revision])]);
       if (!adapter.audition?.() && budgetStamp !== historyBudgetStamp) {
-        const cleanup = await adapter.store.pruneCompHistory();
+        const cleanup = await adapter.store.pruneCompHistory(undefined,station.protectsAudio);
         if (cleanup.removed.length) { adapter.evicted?.(cleanup.removed); dirty = true; }
         history = await adapter.store.compHistory(adapter.song());
         historyBudgetStamp = JSON.stringify([history.revision, saved.map(s => [s.key, s.revision])]);
       }
       // Recording waits: its source is still growing and the writes must not stall.
       const audioStamp = JSON.stringify([history.revision, saved.map(s => [s.key, s.revision])]);
-      if (!adapter.audition?.() && !recording && audioStamp !== usedAudioStamp) {
+      const keepOriginals=station.protectsAudio(adapter.song());
+      if (!adapter.audition?.() && !keepOriginals && !recording && audioStamp !== usedAudioStamp) {
         usedAudioStamp = audioStamp;
         // Housekeeping: a failed cleanup is reported but never stops the tracks updating.
         const trimmed = await adapter.store.trimAudio(adapter.song(), (records, comps, edits) =>
@@ -320,7 +331,7 @@
       if ((latest && model.key(latest)) !== (current && model.key(current))) { dirty = true; return; }
       const updates = [];
       for (const [key, old] of tracks) {
-        if (next.has(key) && audioKey(next.get(key).state) === audioKey(old.state)) continue;
+        if (next.has(key) && audioKey(next.get(key).state,next.get(key).sources) === audioKey(old.state,old.sources)) continue;
         preparing.get(key)?.controller.abort(); prepared.delete(key);
         if (next.get(key)?.state.segments.length) updates.push(key);
         else {
@@ -335,7 +346,7 @@
         if (!previous) { metricChanges.delete(key); continue; }
         const before = statsFor(previous), after = statsFor(track);
         if (before.scoringVersion !== after.scoringVersion || before.version !== after.version) metricChanges.delete(key);
-        else if (audioKey(previous.state) !== audioKey(track.state)) {
+        else if (audioKey(previous.state,previous.sources) !== audioKey(track.state,track.sources)) {
           metricChanges.set(key, controls.metricDeltas(before, after));
         } else if (JSON.stringify(controls.metricValues(before)) !== JSON.stringify(controls.metricValues(after))) {
           // Rescoring identical audio is not a singing improvement.
@@ -351,7 +362,7 @@
         || (a.state.descriptor.reference.line ?? -1) - (b.state.descriptor.reference.line ?? -1)).map(t => t.state.key);
       const historyIds = root.MeleteRecording.historySources(history);
       used = new Set([...saved.flatMap(model.protectedIds), ...historyIds]);
-      garbage = new Set(adapter.audition?.() ? [] : model.discardable(saved, takes, historyIds));
+      garbage = new Set(adapter.audition?.() || keepOriginals ? [] : model.discardable(saved, takes, historyIds));
       ready = true;
       signature = stamp;
       render();
@@ -370,8 +381,10 @@
       }
       if (autoReview && !recording && !busy) {
         const {key, selection} = autoReview; autoReview = null;
-        if (selection === adapter.selectionRevision() && tracks.get(key)?.state.segments.length
-          && adapter.selected() !== layerId(tracks.get(key).state)) await play(key, "review", selection);
+        const track = tracks.get(key), singer = station.current();
+        const reviewAllowed = !station.needsSinger() && (!singer || track && stations.playbackSingerId(track.state,track.sources)===singer.id);
+        if (reviewAllowed && selection === adapter.selectionRevision() && track?.state.segments.length
+          && adapter.selected() !== layerId(track.state)) await play(key, "review", selection);
       }
       // Track membership decides which takes the loose list shows.
       const membership = JSON.stringify([[...used], [...garbage],
@@ -499,7 +512,7 @@
     function visualReview(track) {
       const {state, sources} = track, rate = state.descriptor.reference.rate;
       const origin = Math.min(0, state.segments[0]?.from || 0);
-      return {id: layerId(state), label: `${trackName(state)} track`, ref: state.descriptor.reference,
+      return {id: layerId(state), singerId:stations.playbackSingerId(state,sources), label: `${trackName(state)} track`, ref: state.descriptor.reference,
         frames: track.frames.map(f => ({...f, start:f.start - origin, end:f.end - origin})),
         track: state.descriptor.reference.part, rate, start: origin * rate,
         end: state.descriptor.reference.seconds * rate, latency: 0,
@@ -513,14 +526,15 @@
       // do not own table selection or block the next transport action.
       const job = preparing.get(track.state.key);
       if (job?.background && !job.controller.signal.aborted) return;
-      void prepare(track).then(review => adapter.replaceAudio(review)).catch(e => {
+      const ownerRevision=singerRevision;
+      void prepare(track).then(review => {if(ownerRevision===singerRevision)adapter.replaceAudio(review);}).catch(e => {
         if (e.name !== "AbortError") error(e);
       }).finally(render);
       const pending = preparing.get(track.state.key);
       if (pending) pending.background = true;
     }
     async function prepare(track) {
-      const {state, sources} = track, context = adapter.context(), cacheKey = `${audioKey(state)}:${context.sampleRate}`;
+      const {state, sources} = track, context = adapter.context(), cacheKey = `${audioKey(state,sources)}:${context.sampleRate}`;
       if (prepared.get(state.key)?.cacheKey === cacheKey) return {...prepared.get(state.key).review};
       const current = preparing.get(state.key);
       if (current?.cacheKey === cacheKey && !current.controller.signal.aborted) return {...await current.promise};
@@ -532,7 +546,8 @@
         try {
           const audio = await root.MeleteCompAudio.prepare(context, state, takes, adapter.wav, controller.signal);
           controller.signal.throwIfAborted();
-          if (audioKey(tracks.get(state.key)?.state || {}) !== audioKey(state)) throw new DOMException("Cancelled", "AbortError");
+          const latest=tracks.get(state.key);
+          if (!latest || audioKey(latest.state,latest.sources) !== audioKey(state,sources)) throw new DOMException("Cancelled", "AbortError");
           const review = {...visualReview(track), ...audio};
           prepared.set(state.key, {cacheKey, review});
           return review;
@@ -578,7 +593,9 @@
       }
       busy = true; render();
       try {
+        const ownerRevision=singerRevision;
         const ready = await prepare(track);
+        if (mode!=='download' && ownerRevision!==singerRevision) return;
         if (expectedSelection !== null && expectedSelection !== adapter.selectionRevision()) return;
         if (mode === "download") adapter.downloadBlob(ready.blob, `${state.song}-${trackName(state)}-track.wav`);
         else if (["hear", "enable"].includes(mode)) adapter.hearReview(ready);
@@ -596,24 +613,75 @@
       return landing || saved.some(s => s.key === key && s.segments.length) ? "scratchpad" : "start";
     }
     function stationChanged(personChanged) {
+      if(personChanged){singerRevision++;adapter.clearSingerMix?.();}
       revealSinger = Boolean(station.current());
       checkSingerRoute = revealSinger;
       adapter.clear();
       adapter.practicePersonChanged?.(personChanged);
       const current = currentDescriptor();
-      autoReview = {initial: false, selection: adapter.selectionRevision(), key: current ? model.key(current) : null};
+      autoReview = personChanged && !station.current() ? null :
+        {initial: false, selection: adapter.selectionRevision(), key: current ? model.key(current) : null};
       void refresh({force: true});
     }
     const creditDialog=byId("takeSingerDialog"), creditInput=byId("takeSingerName");
+    const logDialog=byId('stationLogDialog'), logStatus=byId('stationLogStatus');
+    let logTakes=[];
+    async function openSingerLog(ids=null) {
+      if (!station.enabled || logDialog.open) return;
+      try {
+        await station.handoffReady();
+        const takes=await adapter.store.list(adapter.song());
+        logTakes=takes.filter(t=>!ids || ids.has(t.id)).sort((a,b)=>a.createdAt-b.createdAt || a.number-b.number);
+        byId('stationLogNames').replaceChildren(...station.choices().map(person=>new Option(person.name)));
+        const rows=logTakes.map((take,index)=>{
+          const row=document.createElement('tr');
+          let name=stations.sourceSinger(take)?.name || '';
+          const time=new Date(take.createdAt).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+          for(const value of [time,take.number,take.part]) row.insertCell().textContent=value;
+          const input=document.createElement('input');input.value=name;input.placeholder='Unassigned';
+          input.setAttribute('list','stationLogNames');input.setAttribute('aria-label',`Singer for take ${take.number}`);
+          const timing=document.createElement('input');timing.type='number';timing.min=-500;timing.max=500;timing.step=1;
+          timing.value=String(stations.advanceMs(take));timing.setAttribute('aria-label',`Play take ${take.number} earlier in milliseconds`);
+          const save=document.createElement('button');save.type='button';save.textContent='Save';save.className='take-command';
+          save.disabled=true;input.disabled=!take.finalized || Boolean(take.active);
+          timing.disabled=input.disabled;
+          input.oninput=timing.oninput=()=>{save.disabled=!input.value.trim() || !timing.validity.valid || !Number.isInteger(timing.valueAsNumber)
+            || input.value.trim()===name && timing.valueAsNumber===stations.advanceMs(logTakes[index]);};
+          input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();if(!save.disabled)save.click();}};
+          save.onclick=async()=>{
+            const person=stations.clean({name:input.value});if(!person)return;
+            save.disabled=true;input.disabled=true;
+            try {
+              const updated=await adapter.store.creditTake(take.song,take.id,logTakes[index].performer?.id ?? null,person,timing.valueAsNumber,logTakes[index].playbackAdvanceMs);
+              logTakes[index]=updated;station.rememberPerson(person);name=person.name;input.value=name;
+              logStatus.textContent=`Saved ${person.name} for take ${take.number}.`;
+              await adapter.reload();adapter.changed();signature='';void refresh({force:true});
+            } catch(e){logStatus.textContent=e.message || String(e);save.disabled=false;}
+            finally{input.disabled=false;}
+          };
+          row.insertCell().append(input);row.insertCell().append(timing);row.insertCell().append(save);return row;
+        });
+        byId('stationLogRows').replaceChildren(...rows);logStatus.textContent=rows.length?'':'No recordings saved for this song yet.';
+        byId('stationLogDownload').disabled=!rows.length;
+        if(!logDialog.open)logDialog.showModal();
+      } catch(e){error(e);}
+    }
+    byId('stationTakeLog').onclick=()=>{void openSingerLog();};
+    byId('stationNewSinger').onclick=()=>{station.pick(null);adapter.showSingerPicker();};
+    byId('stationLogClose').onclick=()=>logDialog.close();
+    byId('stationLogDownload').onclick=()=>adapter.downloadBlob(new Blob([stations.takeLogCsv(logTakes)],{type:'text/csv'}),`${adapter.song()}-singer-log.csv`);
     function correctSinger(key) {
       const track=tracks.get(key), state=track?.state, singer=track && stations.trackSinger(state,track.sources);
-      if (!station.enabled || !singer || recording || busy || creditDialog.open) return;
-      correcting={key,revision:state.revision,person:singer.id};
+      if (!station.enabled || !state || recording || busy || creditDialog.open) return;
+      if (!state.descriptor.station && state.segments.length && (!singer || state.segments.some(s=>!track.sources.get(s.takeId)?.performer))) {
+        void openSingerLog(new Set(state.segments.map(s=>s.takeId)));return;
+      }
+      correcting={key,revision:state.revision,person:singer?.id ?? null};
       byId("takeSingerPart").textContent=`${state.segments.length ? "Take "+state.firstTakeNumber : "New take"} · ${label(state)}`;
       byId("takeSingerOptions").replaceChildren(...station.choices().map(person=>{
         const option=document.createElement("option"); option.value=person.name; option.label=stations.partCode(person.voice); return option;
       }));
-      creditInput.value=singer.name; creditInput.setCustomValidity(""); creditDialog.showModal(); creditInput.select();
+      creditInput.value=singer?.name || ''; creditInput.setCustomValidity(""); creditDialog.showModal(); creditInput.select();
     }
     byId("takeSingerCancel").onclick=()=>creditDialog.close();
     creditDialog.addEventListener("close",()=>{correcting=null;});
@@ -687,15 +755,17 @@
     render();
     return {refresh, loose, stepHistory, noteExplicitSelection, slot: () => currentDescriptor()?.slot || null, selected: render,
       stationPerson: () => station.current(),
-      prepareStation:station.enabled ? async () => {
+      requireSinger:()=>{if(!station.needsSinger())return false;adapter.showSingerPicker();return true;},
+      prepareStation:station.enabled ? async (audio=false) => {
         await station.handoffReady();
+        if (audio && station.needsSinger()) {adapter.showSingerPicker();throw new Error('Choose a singer before recording.');}
         if (!station.current()) return;
         await refresh();
         saved=await adapter.store.comps(adapter.song());
         if (station.verifyStage()) await refresh({force:true});
       } : null,
-      recordingPlan: spec => stations.recordingPlan(spec, station.current()),
-      advanceStart: slot => station.advance(slot) ? model.key(currentDescriptor()) : null,
+      recordingPlan: spec => stations.recordingPlan(spec, station.current()), recordingKey,
+      advanceStart: slot => station.advance(slot) ? recordingKey() : null,
       settleStation: station.settle, playbackChanged: station.playbackChanged, refreshStationMix: station.refreshMix,
       layers: () => shown.filter(key => tracks.get(key).state.segments.length)
         .map(key => ({id:layerId(tracks.get(key).state), prepare: () => prepare(tracks.get(key))})), invalidate() {

@@ -1409,12 +1409,13 @@ console.log(JSON.stringify(sweepSupersededStorage("autumn")));
         styles = (ROOT / "template" / "styles.css").read_text(encoding="utf-8")
         # The microphone is remembered as a wish, and restored once the engine
         # exists. Runtime cleanup must never overwrite the saved choice.
-        self.assertIn("      sing: wantsPitchCapture,\n", app)
-        self.assertIn("wantsPitchCapture = stored.sing === true;", app)
+        self.assertIn("      sing: singEnabled,\n", app)
+        self.assertIn("singEnabled = stored.sing === true;", app)
         self.assertIn("engine.beforeStart = () =>", app)
         self.assertIn("disablePitchCapture(false, { preservePreference: true });", app)
-        restoration = app.split("  function restorePitchCapture() {", 1)[1].split("  async function ", 1)[0]
+        restoration = app.split("function restorePitchCapture() {", 1)[1].split("\n  }", 1)[0]
         self.assertIn("armMicrophone()", restoration)
+        self.assertIn("state==='granted'", restoration)
         self.assertNotIn("startTakeRecording", restoration)
         self.assertIn("preferences: { ...currentPreferenceState(), sing: false },", app)
         self.assertIn("""    updatePitchCaptureAppearance();
@@ -2086,19 +2087,21 @@ console.log(JSON.stringify({{
 
         start = app.index("  function barNoteAt")
         end = app.index("\n  }", start) + len("\n  }")
+        visible_start = app.index("  function visiblePitchNotes(")
+        visible_end = app.index("\n  }", visible_start) + len("\n  }")
         script = f"""
 let selected = 1;
 const currentScorePartIndex = () => selected;
-const visibleTracks = new Set([0, 1, 2]);
-const sequence = {{ notes: [
-  [0, 0, 960, 72, 80],      // soprano, high
-  [1, 0, 960, 64, 80],      // alto
-  [2, 0, 960, 52, 80],      // tenor, far below
-  [1, 960, 1920, 65, 80],   // alto, later in time
-  [3, 0, 960, 64, 80],      // a part that is not shown
-] }};
+const visibleChannels = new Set([0, 1, 2]);
+const mixerParts = [
+  {{source: 0, barNotes: [[0, 960, 72]]}},
+  {{source: 1, barNotes: [[0, 960, 64], [960, 1920, 65]]}},
+  {{source: 2, barNotes: [[0, 960, 52]]}},
+  {{source: 1, barNotes: [[0, 960, 66]]}}, // hidden line on the same track
+];
+{app[visible_start:visible_end]}
 {app[start:end]}
-const at = (tick, pitch) => barNoteAt(tick, pitch);
+const at = (tick, pitch) => barNoteAt(visiblePitchNotes(), tick, pitch);
 console.log(JSON.stringify({{
   onTheCentre: at(0, 64),
   oneSemitoneAbove: at(0, 65),
@@ -2109,7 +2112,7 @@ console.log(JSON.stringify({{
   whereTheNextNoteTakesOver: at(960, 64),
   afterEverythingEnds: at(1920, 64),
   theNextNoteInTime: at(1000, 65),
-  hiddenPartIsNotHeard: at(0, 64).track,
+  hiddenPartIsNotHeard: at(0, 66),
   tieGoesToTheFollowedPart: at(0, 63.5),
 }}));
 """
@@ -2135,15 +2138,14 @@ console.log(JSON.stringify({{
         self.assertEqual(got["whereTheNextNoteTakesOver"], {"key": 65, "track": 1})
         self.assertIsNone(got["afterEverythingEnds"])
         self.assertEqual(got["theNextNoteInTime"], {"key": 65, "track": 1})
-        # Track 3 shares the alto's pitch but is not shown, so it never sounds.
-        self.assertEqual(got["hiddenPartIsNotHeard"], 1)
+        self.assertIsNone(got["hiddenPartIsNotHeard"])
         self.assertEqual(got["tieGoesToTheFollowedPart"]["track"], 1)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
     def test_pressing_a_pitch_bar_sounds_it_and_holding_stops_the_seek(self) -> None:
         app = (ROOT / "template" / "app.js").read_text(encoding="utf-8")
         self.assertIn("beginPitchAudition(event, preview, follow, scrubTarget)", app)
-        self.assertIn("holdNote(key, track, { fullChord = false } = {}) {", app)
+        self.assertIn("holdNote(key, track, { fullChord = false, channel } = {}) {", app)
         # The audition is its own voice, so pausing or seeking playback does not
         # cut it off and stopVoices() does not sweep it up.
         self.assertIn("this.held = new Set();", app)

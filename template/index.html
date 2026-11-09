@@ -160,7 +160,7 @@
             <button class="icon-button binary-icon-button audio-record-control" id="recordAudio" type="button" aria-label="Arm audio recording" aria-pressed="false" data-state="off" data-help="Arm audio for the next Play." disabled><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="currentColor" stroke="none"/></svg><span>Rec</span></button>
             <div class="station-picker" id="stationPicker" hidden>
               <label for="stationSinger">Singer</label>
-              <input id="stationSinger" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="stationSingerList" autocomplete="off" spellcheck="false" placeholder="Name or voice part">
+              <input id="stationSinger" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="stationSingerList" autocomplete="off" spellcheck="false" placeholder="Name, @handle or part">
               <div class="station-list" id="stationSingerList" role="listbox" aria-label="Singers" hidden></div>
             </div>
             <div class="loop-setting" id="loopControls" role="group" aria-label="Measure loop">
@@ -252,6 +252,11 @@
                 <label class="number-control take-reverb"><span>Reverb</span><button class="drag-number" id="takeReverb" type="button" data-value="0" aria-label="Recording mix reverb" data-help="Reverb for audible recordings and the mix download.">0%</button></label>
                 <div class="take-microphone">
                   <select id="takeMicrophone" aria-label="Microphone for Sing and recording"><option value="">System default</option></select>
+                  <button id="openTimingCheck" class="take-command" type="button" title="Measure recording alignment for these headphones and microphone">Timing…</button>
+                  <dialog id="timingCheckDialog" class="comp-cloud-dialog" aria-labelledby="timingCheckTitle"><h2 id="timingCheckTitle">Recording timing</h2>
+                    <p>Pause playback and hold one headphone earpiece next to the microphone. Measure plays three quiet chirps. The result aligns future recordings on this device.</p>
+                    <p id="timingCheckStatus" role="status"></p><button type="button" class="take-command" id="measureTiming">Measure · 3 quiet chirps</button> <button class="take-command" id="closeTimingCheck" type="button">Close</button>
+                  </dialog>
                   <div id="microphoneCheck" class="mic-check-inline" data-state="idle">
                     <div class="mic-check-meter" role="meter" aria-label="Microphone input level" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60"><div class="mic-check-fill"></div></div>
                     <div id="checkMicrophone" aria-label="Microphone input" title="Input level while Sing is on"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"></path></svg><span role="status" aria-live="polite">Mic off</span><output></output></div>
@@ -314,11 +319,19 @@
                   </div>
                 </div></div>
                 <div class="take-table-tools">
+                  <button class="icon-button" id="stationNewSinger" type="button" hidden title="New singer" aria-label="New singer"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"></circle><path d="M3 20v-2a6 6 0 0 1 12 0v2M19 7v8m-4-4h8"></path></svg></button>
+                  <button class="icon-button" id="stationTakeLog" type="button" hidden title="Open singer log for individual recordings" aria-label="Open singer log">Log</button>
                   <button class="icon-button" id="expandTakes" type="button" aria-label="Expand takes table" title="Expand takes table" aria-controls="takeReviewTable" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 6 5 5 5-5m-10 7 5 5 5-5"></path></svg></button>
                   <button class="icon-button" id="takeFields" type="button" aria-label="Choose visible columns" title="Choose visible columns" popovertarget="takeFieldMenu"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M9 3v18m6-18v18"></path></svg></button>
                   <div id="takeFieldMenu" popover="auto" role="group" aria-label="Visible columns"><strong>Columns</strong><div class="take-field-options"></div><div class="take-field-actions"><button type="button" id="fitTakeFields">Fit to width</button><button type="button" id="allTakeFields">Show all</button></div></div>
                 </div>
                 </div>
+                <dialog id="stationLogDialog" aria-labelledby="stationLogTitle">
+                  <h2 id="stationLogTitle">Singer log</h2>
+                  <div class="station-log-scroll"><table><thead><tr><th>Time</th><th>Take</th><th>Part</th><th>Singer</th><th title="Positive values play the recording earlier. Zero restores its original alignment.">Earlier (ms)</th><th></th></tr></thead><tbody id="stationLogRows"></tbody></table></div>
+                  <p id="stationLogStatus" role="status"></p><datalist id="stationLogNames"></datalist>
+                  <div><button class="take-command" type="button" id="stationLogDownload">Download CSV</button> <button class="take-command" type="button" id="stationLogClose">Close</button></div>
+                </dialog>
                 <dialog id="takeSingerDialog" aria-labelledby="takeSingerTitle"><form>
                   <strong id="takeSingerTitle">Change singer</strong><output id="takeSingerPart"></output>
                   <label>Singer <input id="takeSingerName" list="takeSingerOptions" required autocomplete="off"></label><datalist id="takeSingerOptions"></datalist>

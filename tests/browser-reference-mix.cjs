@@ -1,6 +1,7 @@
 const assert=require('node:assert/strict');
 const fs=require('node:fs/promises');
 const path=require('node:path');
+const {pathToFileURL}=require('node:url');
 const {execFileSync}=require('node:child_process');
 const {wavBytes}=require('../template/loop_recorder.js');
 const {timing}=require('../template/reference_audio.js');
@@ -18,6 +19,8 @@ async function checkReferenceMix(browser,temporary,output) {
   const html=(await fs.readFile(path.join(project,'dist/index.html'),'utf8')).replace('engine = new GuideEngine(sequence);',
     'engine = new GuideEngine(sequence);window.__refQA={engine,get state(){return currentPreferenceState();}};');
   const report=[];
+  const offlineFile=path.join(temporary,'reference-offline.html');
+  await fs.writeFile(offlineFile,html);
   for(const width of [1440,393]) {
     const context=await browser.newContext({viewport:{width,height:900},isMobile:width<600,hasTouch:width<600});
     try {
@@ -25,7 +28,11 @@ async function checkReferenceMix(browser,temporary,output) {
       await context.route('**/*',route=>route.request().url().startsWith('http://127.0.0.1:8809/reference-fixture')
         ?route.fulfill({contentType:'text/html',body:html}):route.abort());
       const page=await context.newPage(), errors=[];page.on('pageerror',e=>errors.push(e.message));
-      await page.goto('http://127.0.0.1:8809/reference-fixture');
+      if(width===1440) {
+        await context.unroute('**/*');
+        await context.setOffline(true);
+        await page.goto(pathToFileURL(offlineFile).href);
+      } else await page.goto('http://127.0.0.1:8809/reference-fixture');
       await page.waitForSelector('#playPause:not(:disabled)');
       if(await page.locator('#partChooser').isVisible())await page.locator('#partChooserDismiss').click();
       if(await page.locator('#settingsToggle').getAttribute('aria-expanded')!=='true')await page.locator('#settingsToggle').click();
