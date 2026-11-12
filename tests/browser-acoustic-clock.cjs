@@ -5,6 +5,41 @@ const assert = require('node:assert/strict');
 async function checkAcousticClock(context, origin) {
   const page=await context.newPage();
   try {
+    await page.addInitScript(() => {
+      // Fake-device IDs can rotate on reload. Keep this virtual cable's route
+      // stable while retaining real Web Audio clocks, capture and PCM analysis.
+      const enumerate = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
+      const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      const virtual = device => {
+        const match = device.label.match(/^Fake Audio (Input|Output) (\d+)$/);
+        return match ? {kind:device.kind, label:device.label,
+          groupId:'cable-group-'+match[1].toLowerCase()+'-'+match[2],
+          deviceId:'cable-'+match[1].toLowerCase()+'-'+match[2]} : device;
+      };
+      navigator.mediaDevices.enumerateDevices = async () => (await enumerate()).map(virtual);
+      navigator.mediaDevices.getUserMedia = async constraints => {
+        const selected = constraints.audio?.deviceId?.exact;
+        const device = selected?.startsWith('cable-input-')
+          ? (await enumerate()).find(item => virtual(item).deviceId === selected) : null;
+        if(selected?.startsWith('cable-input-') && !device)throw new DOMException('Unknown virtual input','NotFoundError');
+        const stream = await capture(device
+          ? {...constraints,audio:{...constraints.audio,deviceId:{exact:device.deviceId}}} : constraints);
+        if(device)for(const track of stream.getAudioTracks()) {
+          const settings = track.getSettings.bind(track), route = virtual(device);
+          track.getSettings = () => ({...settings(),deviceId:route.deviceId,groupId:route.groupId});
+        }
+        return stream;
+      };
+      const outputs = new WeakMap();
+      Object.defineProperty(AudioContext.prototype, 'sinkId', {configurable:true,
+        get() {return outputs.get(this)||'';}});
+      AudioContext.prototype.setSinkId = async function(id) {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        if(id && !devices.some(device => device.kind === 'audiooutput' && device.deviceId === id))
+          throw new DOMException('Unknown virtual output', 'NotFoundError');
+        outputs.set(this,id);
+      };
+    });
     await page.goto(origin);await page.waitForFunction(()=>window.__qa?.engine && !__qa.busy);
     if(await page.locator('#partChooser').isVisible())await page.locator('#partChooserDismiss').click();
     if(await page.locator('#settingsToggle').getAttribute('aria-expanded')!=='true')await page.locator('#settingsToggle').click();
@@ -94,7 +129,7 @@ async function checkAcousticClock(context, origin) {
     assert.equal(take.timing.seconds,results[1].saved.seconds);
     [-60,0,70].forEach((v,i)=>assert.ok(take.residualsMs[i]!==null && Math.abs(take.residualsMs[i]-v)<=16,JSON.stringify(take)));
     assert.ok(Date.now()-take.timing.measuredAt>=60*86400000,'reloaded take really used the two-month-old correction');
-    return {addedMs:115,observedMs:deltaMs,reloadedCalibrationAgeDays:60,checks:results.map(r=>r.text),expectedEntrancesMs:[-60,0,70],recordedEntrancesMs:take.residualsMs};
+    return {outputRouting:'virtual cable',addedMs:115,observedMs:deltaMs,reloadedCalibrationAgeDays:60,checks:results.map(r=>r.text),expectedEntrancesMs:[-60,0,70],recordedEntrancesMs:take.residualsMs};
   } finally {await page.close();}
 }
 module.exports={checkAcousticClock};
