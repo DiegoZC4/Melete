@@ -1,45 +1,12 @@
 const assert = require('node:assert/strict');
+const {stabilizeFakeMedia} = require('./browser-fake-media.cjs');
 
 // Isolated browser only. Send the real guide through a known delay into the
 // real capture worklet, crossing the independently running Web Audio clocks.
 async function checkAcousticClock(context, origin) {
   const page=await context.newPage();
   try {
-    await page.addInitScript(() => {
-      // Fake-device IDs can rotate on reload. Keep this virtual cable's route
-      // stable while retaining real Web Audio clocks, capture and PCM analysis.
-      const enumerate = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
-      const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-      const virtual = device => {
-        const match = device.label.match(/^Fake Audio (Input|Output) (\d+)$/);
-        return match ? {kind:device.kind, label:device.label,
-          groupId:'cable-group-'+match[1].toLowerCase()+'-'+match[2],
-          deviceId:'cable-'+match[1].toLowerCase()+'-'+match[2]} : device;
-      };
-      navigator.mediaDevices.enumerateDevices = async () => (await enumerate()).map(virtual);
-      navigator.mediaDevices.getUserMedia = async constraints => {
-        const selected = constraints.audio?.deviceId?.exact;
-        const device = selected?.startsWith('cable-input-')
-          ? (await enumerate()).find(item => virtual(item).deviceId === selected) : null;
-        if(selected?.startsWith('cable-input-') && !device)throw new DOMException('Unknown virtual input','NotFoundError');
-        const stream = await capture(device
-          ? {...constraints,audio:{...constraints.audio,deviceId:{exact:device.deviceId}}} : constraints);
-        if(device)for(const track of stream.getAudioTracks()) {
-          const settings = track.getSettings.bind(track), route = virtual(device);
-          track.getSettings = () => ({...settings(),deviceId:route.deviceId,groupId:route.groupId});
-        }
-        return stream;
-      };
-      const outputs = new WeakMap();
-      Object.defineProperty(AudioContext.prototype, 'sinkId', {configurable:true,
-        get() {return outputs.get(this)||'';}});
-      AudioContext.prototype.setSinkId = async function(id) {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        if(id && !devices.some(device => device.kind === 'audiooutput' && device.deviceId === id))
-          throw new DOMException('Unknown virtual output', 'NotFoundError');
-        outputs.set(this,id);
-      };
-    });
+    await stabilizeFakeMedia(page, {virtualOutput:true});
     await page.goto(origin);await page.waitForFunction(()=>window.__qa?.engine && !__qa.busy);
     if(await page.locator('#partChooser').isVisible())await page.locator('#partChooserDismiss').click();
     if(await page.locator('#settingsToggle').getAttribute('aria-expanded')!=='true')await page.locator('#settingsToggle').click();

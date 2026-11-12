@@ -171,7 +171,9 @@ async function checkMotionTransport(frame,page,probe) {
   await frame.waitForFunction(name=>window[name].recording.state==='off',probe);
   const samples=[];
   const sample=async label=>{
-    const result=await frame.evaluate(name=>{
+    // Read animation geometry at a presentation frame, not between frames
+    // while the audio clock keeps advancing beyond the last painted style.
+    const result=await frame.evaluate(name=>new Promise(resolve=>requestAnimationFrame(()=>{
       const qa=window[name],engine=qa.engine;
       const cursors=[...document.querySelectorAll('.bar-playhead')]
         .filter(node=>Number(getComputedStyle(node).opacity)>.5);
@@ -179,11 +181,11 @@ async function checkMotionTransport(frame,page,probe) {
       const x=cursor?new DOMMatrixReadOnly(getComputedStyle(cursor).transform).m41+1:NaN;
       const tick=row?Number(row.dataset.startTick)+(x-Number(plot.getAttribute('x')))
         /Number(plot.getAttribute('width'))*(Number(row.dataset.endTick)-Number(row.dataset.startTick)):NaN;
-      return {count:cursors.length,error:(engine.secondsAtTick(tick)-engine.presentationSeconds())/engine.rate*1000,
+      resolve({count:cursors.length,error:(engine.secondsAtTick(tick)-engine.presentationSeconds())/engine.rate*1000,
         seconds:engine.currentSeconds(),playing:engine.playing,loopArmed:engine.loopArmed,
         loopStart:engine.loopStartSeconds,loopEnd:engine.loopEndSeconds,timer:engine.timer,
-        animations:document.getAnimations().filter(a=>a.effect?.target?.classList.contains('bar-playhead')).length};
-    },probe);
+        animations:document.getAnimations().filter(a=>a.effect?.target?.classList.contains('bar-playhead')).length});
+    })),probe);
     assert.equal(result.count,1,`${label}: exactly one cursor`);
     assert.equal(result.playing,label!=='pause',`${label}: expected transport state`);
     assert.ok(Math.abs(result.error)<35,`${label}: ${JSON.stringify(result)}`);

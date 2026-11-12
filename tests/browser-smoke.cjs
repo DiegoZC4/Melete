@@ -38,6 +38,7 @@ const {checkCollections} = require('./browser-collection.cjs');
 const {checkStation} = require('./browser-station.cjs');
 const {checkCompMetrics} = require('./browser-comp-metrics.cjs');
 const {checkEnsembleContours} = require('./browser-ensemble-contours.cjs');
+const {stabilizeFakeMedia} = require('./browser-fake-media.cjs');
 
 async function main() {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'melete-shared-smoke-'));
@@ -78,6 +79,7 @@ async function main() {
     const newContext = async (mobile, expanded = true) => {
       const context = await browser.newContext({viewport: mobile ? {width:393,height:852} : {width:1440,height:900},
         isMobile: mobile, hasTouch: mobile, deviceScaleFactor: 1, colorScheme: 'dark', permissions: ['microphone']});
+      await stabilizeFakeMedia(context);
       context.on('page', page => page.on('console', message => {
         if (message.type() === 'error') console.error('Player console:', message.text());
       }));
