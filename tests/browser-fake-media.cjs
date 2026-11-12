@@ -2,13 +2,14 @@
 // Only named fake devices are aliased; real device routing is never changed.
 async function stabilizeFakeMedia(surface, {virtualOutput = false} = {}) {
   await surface.addInitScript(({virtualOutput}) => {
+    window.__qaVirtualOutput = window.__qaVirtualOutput || virtualOutput;
     if (!window.__qaFakeMediaAliases) {
       window.__qaFakeMediaAliases = true;
       const enumerate = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
       const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       const virtual = device => {
         const match = device.label.match(/^Fake Audio (Input|Output) (\d+)$/);
-        return match ? {kind:device.kind, label:device.label,
+        return match && (match[1] === 'Input' || window.__qaVirtualOutput) ? {kind:device.kind, label:device.label,
           groupId:'cable-group-'+match[1].toLowerCase()+'-'+match[2],
           deviceId:'cable-'+match[1].toLowerCase()+'-'+match[2]} : device;
       };
