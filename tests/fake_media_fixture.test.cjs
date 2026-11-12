@@ -53,3 +53,10 @@ test('virtual acoustic outputs are explicit, idempotent, and reject unknown rout
   await assert.rejects(audio.setSinkId('missing-output'), {name:'NotFoundError'});
   assert.equal(audio.sinkId, 'cable-output-1');
 });
+
+test('blank or insecure test pages without media devices are left untouched', async () => {
+  const context = vm.createContext({window:{}, navigator:{}});
+  await stabilizeFakeMedia({addInitScript: (fn, options) =>
+    vm.runInContext(`(${fn})(${JSON.stringify(options)})`, context)});
+  assert.equal(context.window.__qaFakeMediaAliases, undefined);
+});

@@ -2,6 +2,7 @@
 // Only named fake devices are aliased; real device routing is never changed.
 async function stabilizeFakeMedia(surface, {virtualOutput = false} = {}) {
   await surface.addInitScript(({virtualOutput}) => {
+    if (!navigator.mediaDevices?.enumerateDevices || !navigator.mediaDevices?.getUserMedia) return;
     window.__qaVirtualOutput = window.__qaVirtualOutput || virtualOutput;
     if (!window.__qaFakeMediaAliases) {
       window.__qaFakeMediaAliases = true;
