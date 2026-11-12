@@ -340,6 +340,13 @@ async function main() {
           continue;
         }
         if (process.env.QA_LOOP_RELOAD_ONLY) {
+          // Match the single-part state reached by the complete smoke suite.
+          await page.evaluate(() => {
+            const state = __qa.pitchbar.captureSettingsState();
+            __qa.pitchbar.applySettingsState({...state, practicePart: 1,
+              visible: [false, true, false], visibleChannels: [false, true, false]});
+          });
+          await settled();
           results.push({viewport:mobile?'mobile':'desktop',loopReload:await loopReloadCheck()});
           continue;
         }

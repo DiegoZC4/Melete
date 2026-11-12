@@ -33,6 +33,9 @@ async function checkLoopReload(frame, page, {probe = '__qa', reload, output, lab
         return q && !q.busy && q.loopReload.restored && q.loopReload.pending === null
           && Math.abs(q.engine.tickAtSeconds(q.engine.currentSeconds()) - tick) < .01;
       }, {name: probe, tick: expected});
+      // renderFinished schedules overflow sizing and cursor placement on the
+      // next frame; inspect painted geometry, not just the cleared render flag.
+      await frame.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       const actual = await frame.evaluate(name => {
         const q = window[name], bounds = q.loopReload.bounds();
         const settings = q.pitchbar.captureSettingsState();
