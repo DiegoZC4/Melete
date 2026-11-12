@@ -2,7 +2,26 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 
 const loopReloadProbe = `loopReload: { get pending() { return pendingLoopRevealTick; },
-  get restored() { return initialLoopRestored; }, bounds: playbackCursorBounds, scheduleRender },`;
+  get restored() { return initialLoopRestored; }, bounds: playbackCursorBounds, scheduleRender,
+  trace: (() => {
+    const log = [], sample = phase => {
+      const surface = scoreView === 'bars' ? elements.barScore : elements.score;
+      log.push({phase, pending: pendingLoopRevealTick, flow, view: scoreView,
+        width: surface.scrollWidth, client: surface.clientWidth, left: surface.scrollLeft,
+        classes: surface.className, overflow: getComputedStyle(surface).overflowX,
+        bounds: playbackCursorBounds(), inflight: notationRenderInFlight,
+        queued: notationRenderQueued, timer: Boolean(renderTimer)});
+      if (log.length > 12) log.shift();
+    };
+    const reveal = revealPendingLoopStart, overflow = syncNotationOverflow;
+    revealPendingLoopStart = () => {
+      if (pendingLoopRevealTick === null) return reveal();
+      sample('reveal-before'); reveal(); sample('reveal-after');
+    };
+    syncNotationOverflow = () => { overflow(); sample('overflow'); };
+    elements.score.addEventListener('scroll', () => sample('scroll'));
+    return log;
+  })() },`;
 
 async function checkLoopReload(frame, page, {probe = '__qa', reload, output, label}) {
   if (await frame.locator('#partChooser').isVisible()) await frame.locator('#partChooserDismiss').click();
@@ -44,7 +63,7 @@ async function checkLoopReload(frame, page, {probe = '__qa', reload, output, lab
           height: innerHeight, width: innerWidth, scrollY, scoreX: document.getElementById('score').scrollLeft,
           barsX: document.getElementById('barScore').scrollLeft, playing: q.engine.playing,
           surfaceLeft: surface.getBoundingClientRect().left, maxScroll: surface.scrollWidth - surface.clientWidth,
-          settings};
+          settings, trace: q.loopReload.trace};
       }, probe);
       assert.equal(actual.playing, false, 'restore never starts audio');
       assert.ok(actual.bounds.top >= actual.top - 2 && actual.bounds.top < actual.height - 20,

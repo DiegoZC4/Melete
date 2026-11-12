@@ -3,6 +3,13 @@ name: Shared pipeline
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      browser_suite:
+        description: Browser regression suite
+        type: choice
+        default: full
+        options: [full, loop]
 
 permissions:
   contents: read
@@ -28,6 +35,8 @@ jobs:
 
   browser:
     runs-on: ubuntu-latest
+    env:
+      QA_LOOP_RELOAD_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.browser_suite == 'loop' && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
