@@ -66,9 +66,11 @@ async function checkReferenceMix(browser,temporary,output) {
       const after=await page.evaluate(()=>__refQA.state);
       for(const key of ['audible','visible','volumes','pans','practicePart','scoreView'])assert.deepEqual(after[key],before[key],key);
       await page.reload();await page.waitForSelector('#playPause:not(:disabled)');
+      // Score readiness precedes asynchronous reference-audio restoration.
+      await page.waitForFunction(()=>__refQA.engine.referenceLayers.size===1
+        && document.querySelector('.reference-hear').getAttribute('aria-pressed')==='true');
       assert.equal(await hear.getAttribute('aria-pressed'),'true');
       assert.equal(await page.locator('.reference-volume').getAttribute('data-value'),volume);
-      await page.waitForFunction(()=>__refQA.engine.referenceLayers.size===1);
       await page.evaluate(()=>document.dispatchEvent(new Event('melete:deactivate')));
       assert.equal(await page.evaluate(()=>__refQA.engine.referenceLayers.size),0,'switching songs releases reference audio');
       await page.evaluate(()=>document.dispatchEvent(new Event('melete:activate')));
