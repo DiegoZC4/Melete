@@ -121,6 +121,19 @@ test('loop reveal synchronizes extent and paused cursor before reading scroll ge
   assert.equal(c.pendingLoopRevealTick, null);
 });
 
+test('loop reveal retains its target until notation cursor objects are attached', () => {
+  const {c, scrolls} = fixture();
+  c.playbackCursorBounds = () => ({width: 3, height: 200});
+  c.api.customCursorHandler = {sync: () => false, release() {}};
+  c.applyLoopLink('2-4');
+  assert.equal(c.pendingLoopRevealTick, 3840);
+  assert.equal(scrolls.length, 0);
+  c.api.customCursorHandler.sync = () => true;
+  c.revealPendingLoopStart();
+  assert.equal(c.pendingLoopRevealTick, null);
+  assert.equal(scrolls.length, 1);
+});
+
 test('URL endpoints are exclusive positions with optional beat and fraction precision', () => {
   const {c} = fixture();
   for (const link of ['2-4', '2.1.0-4.1.0', '2.1-4.1', ' 2 - 4 ']) {

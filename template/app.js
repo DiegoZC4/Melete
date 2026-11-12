@@ -1926,10 +1926,10 @@
       onDetach() { beatTarget = barTarget = null; clockDriven = false; },
       release() { clockDriven = false; },
       sync(tick) {
-        if (!beatTarget || !barTarget || !player.tickCache || !player.boundsLookup) return;
+        if (!beatTarget || !barTarget || !player.tickCache || !player.boundsLookup) return false;
         const found = player.tickCache.findBeat(new Set(player.tracks.map(track => track.index)), tick);
         const bounds = found && player.boundsLookup.findBeat(found.beat);
-        if (!bounds) return;
+        if (!bounds) return false;
         clockDriven = true;
         const master = bounds.barBounds.masterBarBounds;
         const box = master.visualBounds;
@@ -1943,6 +1943,7 @@
         beatTarget.transitionToX(0, x);
         beatTarget.setBounds(x, box.y, 1, box.h);
         barTarget.setBounds(box.x, box.y, box.w, box.h);
+        return true;
       },
       placeBarCursor(cursor, bounds) {
         // AlphaTab 1.8.4 calls onDetach on the new handler when replacing one.
@@ -5238,8 +5239,9 @@
       // The engine can seek before AlphaTab paints its paused cursor or final
       // scroll extent. Position both before consuming this one-time reveal.
       syncNotationOverflow();
-      api?.customCursorHandler?.sync?.(pendingLoopRevealTick);
+      const placed = api?.customCursorHandler?.sync?.(pendingLoopRevealTick);
       api?.customCursorHandler?.release?.();
+      if (placed === false) return;
     }
     const bounds = playbackCursorBounds();
     if (!bounds || bounds.width <= 0 || bounds.height <= 0) return;
