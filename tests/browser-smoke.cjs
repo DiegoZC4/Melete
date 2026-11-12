@@ -1,6 +1,7 @@
 // Starts an isolated browser and cleans its build on exit. Use heavy-run where installed.
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
@@ -11,7 +12,7 @@ const {checkMeasureRests} = require('./browser-rest-layout.cjs');
 const {checkWrittenAccidentals} = require('./browser-written-accidentals.cjs');
 const {checkCursorEdges} = require('./browser-cursor-layout.cjs');
 const {checkPanHolds} = require('./browser-pan-hold.cjs');
-const {checkNumericClicks, checkVolumeDrag, checkBoostedAudio} = require('./browser-volume-drag.cjs');
+const {checkNumericClicks, checkNumericWheel, checkVolumeDrag, checkBoostedAudio} = require('./browser-volume-drag.cjs');
 const {checkFirstVisit, checkTouchVolumeTip, checkPartLinks, checkTouchRows, checkScrubLabel} = require('./browser-onboarding.cjs');
 const {pitchbarProbe, checkPitchbarSpacing} = require('./browser-pitchbar-spacing.cjs');
 const {pitchTraceProbe, checkPitchTraceResolution} = require('./browser-pitch-resolution.cjs');
@@ -89,10 +90,48 @@ async function main() {
       return context;
     };
     const focused = Object.keys(process.env).some(key => /^QA_.*_ONLY$/.test(key) && process.env[key]);
+    if(!focused || process.env.QA_LIBRARY_ONLY) results.push({libraryMerge:await require('./browser-library-merge.cjs').checkLibraryMerge(browser)});
+    if(!focused || process.env.QA_ICONS_ONLY){
+      const context=await newContext(false);
+      try{
+        const page=await context.newPage();await page.goto(origin);
+        await page.waitForFunction(()=>window.__qa&&!__qa.busy);
+        if(await page.locator('#partChooser').isVisible())await page.locator('#partChooserDismiss').click();
+        results.push({recordingIcons:await require('./browser-recording-icons.cjs').checkRecordingIcons(page,output)});
+      }finally{await context.close();}
+    }
+    if(!focused || process.env.QA_ACOUSTIC_ONLY){
+      const context=await newContext(false);
+      try{results.push({acousticClock:await require('./browser-acoustic-clock.cjs').checkAcousticClock(context,origin)});}
+      finally{await context.close();}
+    }
     if (!focused || process.env.QA_COLLECTION_ONLY) results.push({collections:await checkCollections(browser,temporary,output)});
+    if ((!focused || process.env.QA_SINGER_REVIEW_ONLY) && fsSync.existsSync(path.join(__dirname,'browser-singer-review.cjs')))
+      results.push({singerReview:await require('./browser-singer-review.cjs').checkSingerCollections(browser,temporary,output)});
     if (!focused || process.env.QA_REFERENCE_ONLY) results.push({referenceMix:await checkReferenceMix(browser,temporary,output)});
     if (!focused || process.env.QA_ROUTES_ONLY) results.push({practiceRoutes:await checkPracticeRoutes(browser,temporary,output)});
     for (const mobile of [false, true]) {
+      if(process.env.QA_ACOUSTIC_ONLY||process.env.QA_ICONS_ONLY||process.env.QA_LIBRARY_ONLY||process.env.QA_SINGER_REVIEW_ONLY)continue;
+      if ((!focused || process.env.QA_CLOUD_TABLE_ONLY) && fsSync.existsSync(path.join(__dirname,'browser-cloud-table.cjs'))) {
+        const context=await newContext(mobile);
+        try {results.push({cloudTable:await require('./browser-cloud-table.cjs').checkCloudTable(context,origin,{output,label:mobile?'mobile':'desktop'})});}
+        finally {await context.close();}
+        if(process.env.QA_CLOUD_TABLE_ONLY)continue;
+      }
+      if(!focused || process.env.QA_NOTATION_INK_ONLY){
+        const context=await newContext(mobile);
+        try{
+          const page=await context.newPage();await page.goto(origin);
+          await page.waitForFunction(()=>window.__qa&&!__qa.busy);
+          if(await page.locator('#partChooser').isVisible())await page.locator('#partChooserOptions button').first().click();
+          const probe=require('./browser-notation-ink.cjs').checkNotationInk;
+          const dark=await probe(page,page,'dark');
+          await page.evaluate(()=>document.documentElement.dataset.theme='light');
+          const light=await probe(page,page,'light');
+          results.push({notationInk:{mobile,dark,light}});
+        }finally{await context.close();}
+        if(process.env.QA_NOTATION_INK_ONLY)continue;
+      }
       if (!focused || process.env.QA_STATION_MIX_ONLY) {
         const context=await newContext(mobile);
         try{results.push({stationMix:await require('./browser-station-mix.cjs').run(context,origin)});}
@@ -149,6 +188,47 @@ async function main() {
         results.push({station:await checkStation(newContext,origin,html,{output,label:mobile?'mobile':'desktop',mobile,errors})});
         if(process.env.QA_STATION_ONLY)continue;
       }
+      if (!focused || process.env.QA_STATION_REVIEW_ONLY) {
+        const context=await newContext(mobile);
+        try {
+          const {roster,checkStationReview}=require('./browser-station-review.cjs');
+          await context.route('**/station-roster.json',r=>r.fulfill({json:roster}));
+          const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
+          await page.goto(origin+'?mode=station');
+          const reviewResult=await checkStationReview(page,page,{output,label:mobile?'mobile':'desktop'});
+          results.push({stationReview:reviewResult});
+          const loadErrors=[];
+          page.on('console',m=>{if(m.type()==='error')loadErrors.push(m.text());});
+          const delayed=html.replace('await takeStore.backfillRecordingTime();',
+            'await new Promise(resolve=>setTimeout(resolve,1200)); await takeStore.backfillRecordingTime();');
+          assert.notEqual(delayed,html);
+          await context.route(address=>address.href.split('?')[0]===origin,r=>r.fulfill({contentType:'text/html',body:delayed}));
+          const ids=await page.evaluate(async()=> (await __qa.takeStore.list(__qa.takeSong)).map(t=>t.id));
+          const sourceRow=page.locator('#compRows .comp-row').filter({has:page.locator('.take-singer',{hasText:'Review Source'})})
+            .filter({has:page.locator('.comp-review:not(:disabled)')}).first();
+          await sourceRow.locator('.take-number').click();
+          await page.waitForFunction(part=>__qa.takeReview?.track===part,reviewResult.sourcePart);
+          await page.reload();
+          await page.waitForFunction(()=>window.__qa && document.querySelectorAll('#compRows .comp-row').length>=2);
+          assert.deepEqual(await page.evaluate(async()=> (await __qa.takeStore.list(__qa.takeSong)).map(t=>t.id)),ids);
+          assert.deepEqual(loadErrors,[],'station restore waits for its saved recording sources');
+          assert.equal(await page.locator('#stationSinger').inputValue(),'Review Target');
+          for(const key of ['audible','volumes','pans','metronome','takeVolume','takeReverb'])
+            assert.deepEqual(await page.evaluate(key=>__qa.pitchbar.captureSettingsState()[key],key),reviewResult.recordingSettings[key],key+' recording mix survives reload');
+          await page.locator('#compRows .comp-row').filter({has:page.locator('.take-singer',{hasText:'Review Source'})})
+            .filter({has:page.locator('.comp-review:not(:disabled)')}).first().locator('.take-number').click();
+          await page.waitForFunction(part=>__qa.takeReview?.track===part,reviewResult.sourcePart);
+          assert.deepEqual(await page.evaluate(()=>__qa.pitchbar.captureSettingsState().volumes),reviewResult.reviewVolumes,'separate review mix survives reload');
+          results.push({stationDelayedLibrary:{mobile,loaded:true,recordingsPreserved:true}});
+        } finally {await context.close();}
+        const ordinary=await newContext(mobile);
+        try {
+          const page=await ordinary.newPage();page.on('pageerror',e=>errors.push(e.message));
+          await page.goto(origin);
+          results.push({ordinaryReviewMix:{mobile,...await require('./browser-station-review.cjs').checkOrdinaryReviewMix(page)}});
+        } finally {await ordinary.close();}
+        if(process.env.QA_STATION_REVIEW_ONLY)continue;
+      }
       if (process.env.QA_ROUTES_ONLY || process.env.QA_REFERENCE_ONLY || process.env.QA_COLLECTION_ONLY) continue;
       if (!focused || process.env.QA_SECTIONS_ONLY) {
         const compactContext = await newContext(mobile, false);
@@ -191,6 +271,18 @@ async function main() {
           document.querySelector('#playPause:not(:disabled)') && document.querySelector('#score svg, #barScore svg'));
         await page.goto(origin);
         await settled();
+        if(process.env.QA_NUMBER_CLICKS_ONLY) {
+          if(await page.locator('#partChooser').isVisible())await page.locator('#partChooserDismiss').click();
+          if(await page.locator('#settingsToggle').getAttribute('aria-expanded')!=='true')await page.locator('#settingsToggle').click();
+          for(const toggle of await page.locator('.settings-section-toggle').all())
+            if(await toggle.getAttribute('aria-expanded')==='false')await toggle.click();
+          results.push({viewport:mobile?'mobile':'desktop',numericClicks:await checkNumericClicks(page,page,mobile,'__qa')});
+          continue;
+        }
+        if(!focused || process.env.QA_NUMBER_WHEEL_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',numericWheel:await checkNumericWheel(page,page)});
+          if(process.env.QA_NUMBER_WHEEL_ONLY)continue;
+        }
         if (!focused || process.env.QA_UI_IMPORT_ONLY) {
           results.push({viewport:mobile?'mobile':'desktop',uiImports:await checkUiImports(page,page,{mobile,output,label:mobile?'mobile':'desktop'})});
           if (process.env.QA_UI_IMPORT_ONLY) continue;

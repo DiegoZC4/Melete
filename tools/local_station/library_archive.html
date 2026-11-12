@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Melete Library Transfer</title>
+<style>
+  body{font:14px system-ui;margin:24px;color:#202924;background:#f9faf9;letter-spacing:0}
+  main{max-width:960px;margin:auto}h1{font-size:22px}nav{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  button,input{font:inherit;padding:8px}button{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+  #status{display:block;margin:16px 0}a{color:#205e91}
+</style>
+<main>
+<h1>Melete Library</h1>
+<nav><button id="backup">Back Up Library</button><button id="metadata">Export Diagnostic Metadata</button><label>Destination Backup <input id="destination" type="file" accept=".melete"></label><label>Incoming Archive <input id="archive" type="file" accept=".melete,.pack"></label><button id="merge" disabled>Merge Library</button></nav>
+<output id="status" role="status">Ready</output><pre id="report"></pre>
+</main>
+<script src="/local-library/archive.js"></script>
+<script>
+const statusEl=document.getElementById('status'), reportEl=document.getElementById('report'), lib=MeleteLibraryArchive;
+let backupHash=null, incoming=null, sourceHash=null;
+async function current(){const db=await lib.open();try{return await lib.snapshot(db);}finally{db.close();}}
+function report(data){reportEl.textContent=JSON.stringify(data,null,2);}
+async function run(task){try{await task();}catch(e){statusEl.textContent=e.message;}}
+document.getElementById('metadata').onclick=()=>run(async()=>{
+  const db=await lib.open(), names=['takes','comps','counters'], stores={chunks:[]};
+  try{await new Promise((resolve,reject)=>{
+    const tx=db.transaction(names,'readonly');tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+    for(const name of names){stores[name]=[];const q=tx.objectStore(name).openCursor();q.onsuccess=()=>{
+      const cursor=q.result;if(cursor){stores[name].push([cursor.key,cursor.value]);cursor.continue();}
+    };}
+  });}finally{db.close();}
+  const blob=lib.pack({stores,preferences:{},diagnostic:true}), link=document.createElement('a');link.href=URL.createObjectURL(blob);
+  link.download='melete-metadata-'+new Date().toISOString().replace(/[:.]/g,'-')+'.melete-diagnostic';link.click();
+  setTimeout(()=>URL.revokeObjectURL(link.href),60000);
+  report({bytes:blob.size,counts:Object.fromEntries(names.map(n=>[n,stores[n].length]))});
+  statusEl.textContent='Diagnostic metadata exported. No audio copied; library unchanged.';
+});
+document.getElementById('backup').onclick=()=>run(async()=>{
+  statusEl.textContent='Backing up...';const data=await current(), blob=lib.pack(data);backupHash=await lib.hash(blob);
+  const link=document.createElement('a');link.href=URL.createObjectURL(blob);
+  link.download='melete-'+location.port+'-'+new Date().toISOString().replace(/[:.]/g,'-')+'.melete';link.click();
+  setTimeout(()=>URL.revokeObjectURL(link.href),60000);
+  report({sha256:backupHash,bytes:blob.size,...lib.summary(data)});statusEl.textContent='Backup prepared. Source unchanged.';
+});
+document.getElementById('archive').onchange=()=>run(async()=>{
+  const file=document.getElementById('archive').files[0];if(!file)return;
+  incoming=lib.unpack(await file.arrayBuffer());sourceHash=await lib.hash(file);
+  report({source:lib.summary(incoming),destination:lib.summary(await current())});
+  statusEl.textContent='Archive inspected. Nothing changed.';
+  document.getElementById('merge').disabled=!backupHash;
+});
+document.getElementById('destination').onchange=()=>run(async()=>{
+  const file=document.getElementById('destination').files[0];if(!file)return;
+  const expected=await lib.hash(file), actual=await lib.hash(lib.pack(await current()));
+  if(expected!==actual)throw Error('Destination backup does not match this library. Nothing changed.');
+  backupHash=actual;statusEl.textContent='Destination backup verified.';
+  document.getElementById('merge').disabled=!incoming;
+});
+document.getElementById('merge').onclick=()=>run(async()=>{
+  document.getElementById('merge').disabled=true;statusEl.textContent='Verifying and merging locally...';
+  const data=await current();
+  if(!backupHash || await lib.hash(lib.pack(data))!==backupHash)throw Error('Destination changed after backup. Nothing changed.');
+  const changes=lib.plan(data,incoming,sourceHash), prior={};
+  for(const [key,value] of Object.entries(changes.preferences)){prior[key]=localStorage.getItem(key);localStorage.setItem(key,value);}
+  const db=await lib.open();
+  try{await lib.apply(db,data,changes);}catch(error){
+    for(const [key,value] of Object.entries(prior))value===null?localStorage.removeItem(key):localStorage.setItem(key,value);
+    throw error;
+  }finally{db.close();}
+  const result=await current();
+  report({sourceHash,counts:lib.summary(result).counts,added:Object.fromEntries(lib.names.map(n=>[n,changes.adds[n]?.length||0])),
+    protectedTracks:JSON.parse(localStorage.getItem('melete:cloud:local-only:v1')||'[]').length});
+  statusEl.textContent=changes.alreadyMerged?'This archive was already merged.':'Merged locally. No recordings uploaded. Source library unchanged.';
+});
+run(async()=>report(lib.summary(await current())));
+</script>
+</html>

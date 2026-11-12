@@ -15,9 +15,24 @@ test('the picker searches names and voice parts', () => {
   assert.equal(station.search(singers, '').length, singers.length);
 });
 
+test('only an unambiguous directory singer can be selected or credited', () => {
+  const roster=station.merge(singers,[{name:'Known',discord:'known.handle',voice:'S2'}]);
+  assert.equal(station.directorySinger(roster,'@KNOWN.HANDLE').name,'Known');
+  assert.equal(station.directorySinger(roster,'aliasb').name,'DemoB (AliasB)');
+  for(const query of ['New Guest','sample','Alto','S2','']) assert.equal(station.directorySinger(roster,query),null,query);
+});
+
 test('a saved singer does not erase the roster voice part', () => {
   const merged = station.merge([{name: 'DemoN', voice: ''}], [{name: 'demon', voice: 'Alto'}, {name: '!!!'}]);
   assert.deepEqual(merged, [{id: 'demon', name: 'demon', voice: 'Alto'}]);
+});
+
+test('a private Discord handle remains searchable after song assignments and saved names merge', () => {
+  const directory={singers:[{name:'Example One',discord:'@demo.handle'}, {name:'Another'}], assignments:{piece:{T2:['Example One']}}};
+  const choices=station.merge(station.songRoster(directory,'piece'),[{name:'Example One'}]);
+  for(const query of ['@DEMO.HANDLE','demo.hand','tenor @demo']) assert.deepEqual(station.search(choices,query).map(x=>[x.name,x.voice]),[['Example One','T2']]);
+  assert.deepEqual(station.search(choices,'@another'),[]);
+  assert.deepEqual(station.search(choices,'@').map(x=>x.name),['Example One']);
 });
 
 test('song assignments override generic roles only in that song; abbreviations and names search the same list', () => {
@@ -48,8 +63,8 @@ test('station guide isolates the assigned recording channel, handles folded sect
   const mix=station.guideMix(channels,2);
   assert.deepEqual(mix.visibleChannels,[false,false,true,false,false,false,false]);
   assert.ok(mix.audible.every(Boolean));
-  assert.deepEqual(mix.volumes,[35,35,150,35,35,35,35]); assert.deepEqual(mix.pans,[-35,-35,50,-35,-35,-35,-35]);
-  const first={...station.guideMix(channels,2,100),guideVersion:1};
+  assert.deepEqual(mix.volumes,[35,35,150,35,35,35,35]); assert.deepEqual(mix.pans,[-35,-35,100,-35,-35,-35,-35]);
+  const first={...station.guideMix(channels,2,{myVol:100,myPan:50}),guideVersion:1};
   assert.ok(station.untouchedFirstPreset(first,channels,2));
   first.volumes[2]=115; assert.ok(!station.untouchedFirstPreset(first,channels,2),'manual gain is not overwritten');
 });
@@ -174,4 +189,14 @@ test('personal comp attribution follows its audible sources without changing sta
   assert.equal(station.trackSinger(state,src),null);
   src.delete('b');assert.equal(station.trackSinger(state,src),null);
   state.descriptor.station={id:'lead',name:'Lead'};assert.equal(station.trackSinger(state,src).id,'lead');
+});
+test('a named comp containing another credited or unknown source cannot monitor during a named pass',()=>{
+  const s=require('../template/station.js'), owner={id:'one',name:'One'}, other={id:'two',name:'Two'};
+  const state={descriptor:{station:owner},segments:[{takeId:'a'},{takeId:'b'}]};
+  const sources=new Map([['a',{station:owner}],['b',{station:owner}]]);
+  assert.equal(s.playbackSingerId(state,sources),'one');
+  sources.get('b').performer=other;
+  assert.equal(s.playbackSingerId(state,sources),null);
+  sources.set('b',{});
+  assert.equal(s.playbackSingerId(state,sources),null);
 });

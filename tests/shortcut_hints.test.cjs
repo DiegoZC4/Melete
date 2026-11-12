@@ -445,6 +445,35 @@ test('click increments are independent of fine drag steps, with explicit cycling
   rate.setValue(2);speed.emit('click',{detail:0});assert.equal(rate.value(),.5);
 });
 
+test('numeric wheel accumulates fine trackpad motion, clamps without debt and preserves native zoom',()=>{
+  const button=new Button(100),calls=[];
+  let inputs=0,time=0;
+  button.addEventListener('input',()=>inputs++);
+  const control=controls.createDragNumber(button,{
+    values:Array.from({length:41},(_,i)=>i*5),defaultValue:100,format:String,aria:String,
+    onManualChange:(...args)=>calls.push(args),
+  });
+  const wheel=(deltaY,extra={})=>{
+    let prevented=false;
+    button.emit('wheel',{deltaY,deltaX:0,deltaMode:0,timeStamp:time+=10,
+      preventDefault(){prevented=true;},stopPropagation(){},...extra});
+    return prevented;
+  };
+  for(let i=0;i<3;i++)assert.equal(wheel(-6),true);
+  assert.equal(control.value(),100);assert.equal(inputs,0);
+  wheel(-6);assert.equal(control.value(),105);assert.deepEqual(calls,[[100,105,'wheel']]);
+  wheel(1,{deltaMode:1});assert.equal(control.value(),100);
+  wheel(-1,{deltaMode:2});assert.equal(control.value(),150);
+  wheel(-99999);assert.equal(control.value(),200);
+  const count=inputs;wheel(-24);assert.equal(inputs,count,'no no-op renders at the limit');
+  wheel(24);assert.equal(control.value(),195,'reverse immediately after reaching the limit');
+  for(const extra of [{ctrlKey:true},{metaKey:true},{deltaX:100}])assert.equal(wheel(-24,extra),false);
+  button.disabled=true;assert.equal(wheel(-24),false);button.disabled=false;
+  assert.equal(control.value(),195);
+  wheel(-6);time+=300;wheel(-18);assert.equal(control.value(),195,'separate gestures do not inherit fractions');
+  wheel(-6);assert.equal(control.value(),200);
+});
+
 test('pan gestures track completion, ignore cancellations and preserve keyboard input', () => {
   const button = new Button(-50);
   const calls = [];

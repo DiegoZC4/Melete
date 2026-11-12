@@ -1,0 +1,2 @@
+numpy>=2,<3
+sounddevice==0.5.6

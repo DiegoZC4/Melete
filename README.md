@@ -72,6 +72,14 @@ contains only `autumn.musicxml` and `the-seed.musicxml`; the builder verifies
 both against the player. This avoids even the initial MuseScore installation.
 The repository licenses the software, not the musical material.
 
+For a choir station, keep the real `station-roster.json`, private scores and recordings in the choir owner's private Drive. Download the rehearsal folder before leaving Wi-Fi. The directory has a `singers` list, for example `{"singers":[{"name":"Example Singer","discord":"example.handle","voice":"T2"}]}`. Missing handles can stay blank. Install the directory beside the built player on either computer:
+
+```sh
+python3 tools/local_station/directory.py --directory "/path/to/Station setup/station-roster.json" --player "/path/to/index.html"
+```
+
+On Windows, use `py -3` instead of `python3`. The command reports the counts and keeps existing take credits and timing edits. Use `--check` for a dry run. To recover the original directory from an older Mac or Windows installation, add `--import-roster "/path/to/old/station-roster.json"` (a Melete `.js` sidecar works too). This merges the private names and handles locally without executing roster files; it stops on conflicting handles. Sync or upload the updated JSON to the same private Drive file so the other computer gets it. Do not sync a running Chrome profile. Use the verified session export or the lossless WAVs to move recorded takes.
+
 Edit the shared code in `template/` or the song configurations in
 `Melete-Rehearsal`, then repeat the command. It builds
 `Melete-Rehearsal/index.html` using local inputs; it does not fetch the songs again.
@@ -114,6 +122,67 @@ Links select a song with `?song=its-slug`. For a station drill, use
 `?song=the-seed&mode=station&part=B2&loop=19-24`. A shared part or loop
 stays in the address until you change it or switch songs. Old links such as
 `?station#the-seed` and `?loop=19-24#the-seed` still work.
+
+On Windows, an existing two-song collection can use a local address where Chrome
+remembers microphone permission across reloads. Run
+`python tools/local_station/station.py "path/to/player.html" "path/to/station-state"`
+with the Chrome Default profile that holds the recordings. The first launch
+copies that file's takes, tracks, edit history and Melete preferences, then checks
+the copy against the source. The station binds to 127.0.0.1 and works offline.
+Choose **Allow while visiting the site** on the first microphone prompt.
+Use the same launcher for subsequent recording sessions.
+
+For an installed station, update the **player file**, not the Chrome profile or
+station-state directory. A maintainer can publish `release.json` beside the HTML,
+using `tools/local_station/update_player.py`'s `release_manifest()` helper. Then:
+
+```sh
+python tools/local_station/update_player.py "path/to/player.html" --manifest "https://example.org/practice/release.json"
+```
+
+Run this explicitly while online, between rehearsals. It checks the release's
+SHA-256, size and native-host protocol, replaces the HTML atomically, and retains
+one `.previous.html` recovery copy. Offline or interrupted downloads leave the
+installed player available. It never reloads a running tab, updates native audio
+drivers/helpers, or changes recordings, calibration, singer credits or settings.
+Finish recording before reopening the player. Keep the same local URL and browser
+profile so the existing library remains available. This is independent of `git
+pull` and rebuilding custom scores; those are for pipeline/source updates.
+
+The optional Windows station audio host uses **native WASAPI exclusive** for
+both playback and capture. The browser still draws the same player and keeps
+the same take library. Ordinary builds, public pages, phones and stations without
+a private native configuration continue to use Web Audio; an Electron wrapper
+is not required. This is a local, device-calibrated option, not a zero-latency
+claim or a recommendation to change an audio driver.
+
+Install `tools/local_station/requirements-native.txt` in the station's Python
+environment (or its sibling `native-deps` directory). The station state directory
+needs a private `native-audio.json` naming the exact WASAPI input/output, measured
+round-trip `seconds`, `reportedLatencySeconds` pair, `callbackFrames`,
+`inputChannel`, and calibration date/spread. **Do not copy another computer's
+latency numbers.** The current host uses a stereo 48 kHz duplex stream and captures
+the configured input channel as mono. Audio setup's timing check updates this
+native profile separately from browser calibration. Put a headphone against the
+microphone with physical direct monitoring OFF for an acoustic check; remove it
+before turning direct monitoring back on.
+
+The host uses sample-frame positions, not HTTP arrival times, for capture and
+score alignment. Detected discontinuities or a changed native buffer configuration
+stop capture instead of silently grading a broken clock. Microphone audio is
+never digitally monitored or processed with browser speech cancellation. Active
+recordings also get local PCM recovery files in `native-recordings`; idle input
+is only a bounded in-memory ring. The host refuses recordings near a disk-space
+floor. Original browser takes and their timing are not rewritten.
+
+Exclusive mode temporarily reserves those endpoints, so other apps may not be
+able to play through them. Close the station to release them. Remove/rename its
+private native config and restart to use the existing browser path again.
+Keep the driver and sample rate stable. Recheck after changing the physical
+route, driver, buffer settings or after a timing fault. Calibration aligns
+recordings; it does not remove converter/USB/hardware latency, and brief lab
+tests cannot guarantee behavior throughout every rehearsal.
+
 The default collection folder is `FIRST-FILENAME-collection-web`,
 with verified native-export caches under `players/`. Failed builds leave the last
 good collection in place. The download button saves the whole collection, not
@@ -249,12 +318,19 @@ optional and is not installed or needed on other machines.
   a part code such as A2, or the full part name. The first audio take is the baseline;
   later passes go to the working track without a manual stage switch.
   The chosen singer follows song changes in the same tab. Their assigned part
-  is isolated in **See**. The beginner guide starts at **150% / 50% right**;
+  is isolated in **See**. The beginner guide starts at **150% / fully right**;
   each other MIDI voice stays audible at **35% / 35% left**. Volume is playback
   gain, not headphone SPL or mic gain. Adjust during a sung phrase; the station
   remembers each singer's mix separately for each song. An uncertain part is
   chosen explicitly instead of silently recording against the last singer's notes.
   Named recordings stay on the device. A roster is optional and is not embedded.
+- Clicking a saved take uses a separate **review mix**, remembered per song and
+  voice part on this browser. Initially its MIDI part is muted, the other MIDI
+  parts are centered at 35%, and the metronome is off. Adjust the ordinary Parts
+  controls, recorded-audio volume or reverb without changing the recording mix.
+  Tap the faded Practice part to return to recording. In station mode this also
+  restores the chosen singer, and review playback never records over their track.
+  Outside station mode, arming Sing or starting a pass restores the recording mix.
 - In station mode, the **link icon** opens **Practice mix**. **Guide split** puts
   your guide and the other voices at two pan positions. **Choir layout** centers
   your seat, with higher sections to your right and lower ones to your left;
@@ -277,17 +353,38 @@ optional and is not installed or needed on other machines.
   from the focused name button) to correct the credit. That cannot change the
   recorded part, audio, pitch data or score. Record against the right part for
   a wrong-part take. No final pass is required.
-- **Sing + Play** saves a scored, audio-free **Trace** for the isolated part
-  (and current station singer). Re-practising a passage updates that trace
-  without changing any audio take. Click Trace to review; it has no WAV or
-  cloud upload. **Rec** arms audio in addition to pitch; it never starts
-  playback. **Space** (or Play on a phone) starts the pass at the cursor;
-  Space again saves it. Rec stays armed for the next overdub. Arming it
-  mid-pass takes effect on the next Play; disarming during an audio pass stops
-  keeping audio immediately. Turning Sing off, changing singer, part or song,
-  leaving the tab, or reloading clears the audio arm.
+- **Sing** arms the microphone for both audio and scored pitch on the isolated part.
+  Press Play or Space to record from the cursor, and again to save. An ordinary
+  pause leaves Sing armed. During playback, turn Sing on to punch in or off
+  to finish that segment and continue listening. No sign-in is required.
+  The track being overdubbed stays silent; Hear-enabled backing still plays.
+  A new station singer starts with Sing off. An old pitch-only preference
+  cannot enable audio; existing Trace rows can still be reviewed or deleted.
+  With Sing off the input track is disabled; leaving the song releases it.
+  In **Record > Audio setup**, test the playback route without opening the
+  microphone, select an output on supported browsers, or measure the physical
+  headphone-to-microphone delay. **Audio log** exports recent audio interruptions
+  and calibration events locally; it contains no takes or singer identities.
+  To judge entrances, face one headphone cup toward the mic and choose
+  **Measure timing**. Three chirps establish the offset; a fourth must land
+  within 12 ms after correction. A failed check saves nothing. A successful
+  check applies to new takes on that microphone and output, in the same browser
+  profile and player origin. It does not expire by date. Changed devices,
+  sample rates, capture processing or substantially different reported latency
+  require a separate measurement. If a default device can't be identified,
+  the check lasts only for the current tab; choose both devices by name to save it.
+  Recording also checks the input and playback clocks for sustained divergence
+  and warns when entrance timing is unreliable. This cannot detect every
+  change inside an audio driver. It does not modify older takes.
+  It removes equipment delay, not an individual singer's early or late attack.
   **Score** stays clear while recording. Select a saved take to see its contour
-  on the staff; select it again to hide it. **Pitchbar** shows live pitch.
+  on the staff; select it again to hide it. **Pitchbar** shows live pitch within
+  each system's range at the start of the pass. During capture, out-of-range
+  samples leave gaps without resizing the score. Drag previews and chord
+  previews in Pitchbar use only the voice lines selected in **See**.
+  On a laptop, click a Settings heading to fold or reopen it. Right-click the
+  **Record** heading to keep just **Parts** and **Record** expanded. Melete
+  remembers the layout on this device.
   Switching views mid-phrase keeps recording and scoring the same take.
   Changing the isolated part selects its most recently edited track. Column
   sorting remains in control, without pinning the selected row or scrolling to

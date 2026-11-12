@@ -51,7 +51,10 @@
         gate.gain.linearRampToValueAtTime(gain, start + Math.min(.003, (end-start)/2));
         gate.gain.setValueAtTime(gain, Math.max(start, end-.003));
         gate.gain.linearRampToValueAtTime(0, end);
-        gate.connect(graph.input);
+        if (Number.isFinite(layer.pan)) {
+          const pan = context.createStereoPanner(); pan.pan.value = Math.max(-1, Math.min(1, layer.pan));
+          gate.connect(pan).connect(graph.input);
+        } else gate.connect(graph.input);
         if (layer.octave || Math.abs(window.ratio-1)>1e-6) {
           let buffer = layer.buffer;
           if (buffer.sampleRate !== sampleRate) {

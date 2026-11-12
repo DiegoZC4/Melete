@@ -62,7 +62,7 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
       restCleanup:{ignored,nonzeroIgnored,changedKept,version:cleaned.restAudioVersion},
       pcm:Array.from(new Uint8Array(await (await q.takeStore.wav(full)).arrayBuffer())).slice(0,80)};
   });
-  assert.equal(created.restCleanup.version,1,'existing source takes gain score-aware rest handling');
+  assert.equal(created.restCleanup.version,require('../template/take_pitch.js').REST_POLICY_VERSION,'existing source takes gain score-aware rest handling');
   assert.equal(created.restCleanup.nonzeroIgnored,0,'discarded rest audio is absent from stored WAV, not just muted');
   assert.equal(created.restCleanup.changedKept,0,'singing and the one-beat guards preserve original samples');
   assert.deepEqual(created.replaced,{listed:true,stored:true},'recent replaced audio is protected by multilevel Undo');
@@ -105,8 +105,10 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   await row.locator('.comp-review').click();
   await frame.waitForFunction(()=>(window.__qa||window.__probe).takeReview?.id.startsWith('comp:'));
   assert.deepEqual(await frame.evaluate(()=>(window.__qa||window.__probe).savedPractice),
-    {...created.preferences, audible: created.preferences.audible.map((_, i) => i !== created.state.descriptor.reference.part)},
-    'explicit review mutes its MIDI part; background comp updates do not change the mix');
+    created.preferences,'explicit review does not overwrite the saved recording mix');
+  const reviewMix=await frame.evaluate(()=>(window.__qa||window.__probe).pitchbar.captureSettingsState());
+  assert.deepEqual(reviewMix.audible,reviewMix.visibleChannels.map(on=>!on),
+    'explicit review mutes its MIDI part in the independent listening mix');
   const review=await frame.evaluate(() => {
     const q=window.__qa||window.__probe;
     return {id:q.takeReview.id,frames:q.takeReview.frames.length,duration:q.takeReview.duration,
@@ -270,7 +272,7 @@ async function checkReferenceRevision(frame,page,{output,label,reload}) {
     const old={...d,reference:ref},id=crypto.randomUUID(),sr=8000,n=Math.ceil(ref.seconds*sr);
     const part=d.label.split(' \u00b7 ')[0];
     const take=await q.takeStore.append({id,song:q.takeSong,createdAt:Date.now(),sampleRate:sr,part,
-      label:'revision-proof',rate:ref.rate,start:0,end:ref.end,restAudioVersion:1,pitchReference:ref},
+      label:'revision-proof',rate:ref.rate,start:0,end:ref.end,restAudioVersion:P.REST_POLICY_VERSION,pitchReference:ref},
       0,Int16Array.from({length:n},(_,i)=>Math.round(1000*Math.sin(i/7))),{finalized:true,complete:true});
     const frames=Array.from({length:Math.ceil(n/80)},(_,i)=>{
       const start=i*80/sr,end=Math.min((i+1)*80,n)/sr,note=d.reference.notes.find(n=>n[0]<=start&&n[1]>start);
@@ -394,7 +396,7 @@ async function checkPhraseMargins(frame,page,{output,label,reload}) {
     if (await frame.locator('[data-view="standard"]').getAttribute('aria-selected')==='true') {
       assert.equal(await review.getAttribute('aria-pressed'),'false');
       await review.click();
-      await frame.locator('#score .take-pitch-trace-group[data-selected="true"]').first().waitFor({state:'attached'});
+      assert.equal(await frame.locator('#score .take-pitch-trace-group').count(),0,'saved review never draws over notation');
       assert.equal(await review.getAttribute('aria-pressed'),'true');
     }
     await review.click();
@@ -520,6 +522,11 @@ async function checkAutoTrim(frame) {
 
 async function checkSegmentCapture(frame) {
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await frame.locator('#settingsToggle').click();
+  // After reload the score can be ready before the saved track library.
+  await frame.waitForFunction(()=>{
+    const q=window.__qa||window.__probe;
+    return q?.compState && q.compDescriptor && q.compState.key===MeleteComp.key(q.compDescriptor);
+  });
   const target = await frame.evaluate(() => {
     const q=window.__qa||window.__probe, ref=q.compDescriptor.reference;
     const note=ref.notes[Math.floor(ref.notes.length/3)];
@@ -527,7 +534,7 @@ async function checkSegmentCapture(frame) {
     q.engine.pauseTransport(); q.api.tickPosition=q.engine.tickAtSeconds(position);
     return {tick:q.engine.tickAtSeconds(position),position,end:ref.end,key:q.compState.key};
   });
-  assert.equal(await frame.locator('#recordAudio').count(),1,'audio saving is an explicit action');
+  assert.equal(await frame.locator('#recordAudio').count(),0,'Sing is the only recording control');
   await toggleRecording(frame);
   await frame.waitForFunction(() => (window.__qa||window.__probe).recording.state==='recording');
   await frame.waitForFunction(()=>['signal','quiet','clipping'].includes(document.getElementById('microphoneCheck').dataset.state));

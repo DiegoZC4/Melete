@@ -213,7 +213,7 @@ async function checkTakeReview(frame, page, {output, label}) {
   assert.equal(await frame.locator(`[data-visible-index="${cell}"]`).getAttribute('aria-pressed'), 'true',
     `${label}: explicitly show reviewed staff before notation`);
   await frame.locator('#scoreViewToggle').click();
-  try { await frame.waitForFunction(id => document.querySelectorAll(`#score .take-pitch-trace-edge[data-take-id="${id}"]`).length > 0,fixture.id); }
+  try { await frame.waitForFunction(() => !(window.__qa||window.__probe).busy && !document.querySelector('#score .take-pitch-trace-edge')); }
   catch(error) {
     await page.screenshot({path:path.join(output,`take-review-standard-failure-${label}.png`)});
     const state=await frame.evaluate(()=>(window.__qa||window.__probe).pitchResolution.traceState());
@@ -373,8 +373,7 @@ async function checkTakeReview(frame, page, {output, label}) {
   await frame.waitForFunction(id => (window.__qa || window.__probe).takeReview?.id === id, fixture.id);
   const singWasOn = await frame.evaluate(() => (window.__qa || window.__probe).savedPractice.sing);
   if (!singWasOn) await frame.locator('#pitchCapture').click();
-  await frame.waitForFunction(() => document.getElementById('pitchCapture').dataset.state === 'waiting');
-  if(await frame.locator('#recordAudio').getAttribute('aria-pressed')!=='true') await frame.locator('#recordAudio').click();
+  await frame.waitForFunction(() => document.getElementById('pitchCapture').dataset.state === 'armed');
   await frame.locator('#playPause').click();
   try {
     await frame.waitForFunction(id => {

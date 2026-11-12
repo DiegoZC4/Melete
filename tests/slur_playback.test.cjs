@@ -45,7 +45,7 @@ const data = {
 };
 function engine(sequence = data, config = {}) {
   const c = vm.createContext({config, parts:sequence.parts, clamp:(v,lo,hi)=>Math.max(lo,Math.min(hi,v)),
-    window: {clearInterval() {}, setInterval() { return 1; }, MeleteRecording: require('../template/loop_recorder.js')},
+    savedOutput:()=>'',window: {clearInterval() {}, setInterval() { return 1; }, MeleteStation:{requested:()=>config.station===true}, MeleteRecording: require('../template/loop_recorder.js')},
     requestAnimationFrame: () => 1, cancelAnimationFrame() {}, performance: {now: () => 1000},
     SCHEDULER_INTERVAL_MS:40, SCHEDULER_LEAD_SECONDS:.028, SCHEDULER_HORIZON_SECONDS:.34,
     showToast: message => assert.fail(message)});
@@ -86,6 +86,38 @@ test('configured grouping sounds a high click on each group without changing qua
     [...'HllHlllHllHllHllHllHllHll'].map(k=>k==='H'?1320:880));
   const truncated=e.buildMetronomeEvents([[0,1920,7,4]]).filter(c=>c.tick>=0);
   assert.deepEqual(plain(truncated.map(c=>c.tick)),[0,960]);
+});
+
+test('count-in and barline clicks are booked once on the transport clock, before slow record listeners', async()=>{
+  for(const beats of [3,4])for(const at of [-beats,0,4.001,4.24]){
+    const e=engine({...data,endTick:7680,measures:[[0,3840,4,4],[3840,3840,4,4]]},{recordingCountInBeats:beats});
+    e.metronomeVolume=1;e.seek(at);
+    const clicks=()=>e.context.nodes.filter(n=>n.type==='triangle');
+    e.onTransportChange=kind=>{if(kind==='play')e.context.currentTime+=.085;};
+    await e.play();e.update();e.update();
+    if(at===4.24)assert.equal(clicks().length,0,'a mid-beat start waits for the next real beat');
+    else {
+      assert.equal(clicks().length,1,`exactly one opening pulse at ${at}`);
+      assert.equal(clicks()[0].frequency.value,1320);
+      near(clicks()[0].starts[0],10);
+    }
+    e.pause();
+    if(clicks().length)assert.equal(clicks()[0].stops.length,1,'an already-started click keeps its natural release');
+  }
+  const e=engine({...data,endTick:7680,measures:[[0,3840,4,4],[3840,3840,4,4]]});
+  e.loopStartSeconds=1;e.loopEndSeconds=4;e.basePosition=1;e.metronomeVolume=1;
+  await e.play();
+  e.context.currentTime=12.89;e.update();
+  assert.equal(e.context.nodes.filter(n=>n.type==='triangle' && n.starts[0]>=13).length,0,'no click beyond exclusive loop end');
+  e.onTransportChange=kind=>{if(kind==='loop')e.context.currentTime+=.09;};
+  e.context.currentTime=13;e.update();e.update();
+  assert.equal(e.context.nodes.filter(n=>n.type==='triangle' && n.starts[0]===13).length,1);
+  e.metronomeVolume=0;e.seek(4);
+  assert.equal(e.scheduledClicks.size,0,'muted metronome stays silent');
+  e.metronomeVolume=1;e.seek(2.8);
+  const pending=e.context.nodes.filter(n=>n.type==='triangle').at(-1);
+  assert.ok(pending.starts[0]>e.context.currentTime);
+  e.pause();assert.equal(pending.stops.length,2,'a queued click cannot leak through a pause');
 });
 
 test('MusicXML slurs survive MIDI extraction, including ties and independent divisi', () => {
@@ -182,6 +214,10 @@ test('separate syllables still articulate separately without changing held-note 
   assert.equal(e.scheduled.size,0);
   e.resetScheduler(.028,{carryHeldNotes:true});
   assert.equal(e.scheduled.size,1);
+  const station=engine({...data,legato:[]},{station:true});
+  station.playing=true;station.basePosition=.5;station.anchorTime=10;station.resetScheduler();
+  assert.equal(station.scheduled.size,1,'an ordinary held note at the rehearsal cursor sounds without recording');
+  station.scheduleAhead();assert.equal(station.scheduled.size,1,'no duplicate attack');
 });
 
 test('shared transport waits for slow audio activation without consuming the first note', async () => {
@@ -201,7 +237,7 @@ test('shared transport waits for slow audio activation without consuming the fir
   wake(); await starting; await playback;
   assert.equal(starts, 1);
   assert.equal(e.scheduled.size, 1);
-  near([...e.scheduled][0].oscillator.starts[0], 14.028);
+  near([...e.scheduled][0].oscillator.starts[0], 14);
   e.pauseTransport();
 });
 

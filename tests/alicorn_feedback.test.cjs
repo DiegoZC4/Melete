@@ -54,7 +54,7 @@ test('paused position changes cannot start a follow-scroll', () => {
 test('arrow navigation follows note onsets, includes slur notes, skips rests and does not wrap', () => {
   const sounded=[], seeks=[];
   let position=0, timer;
-  const c=vm.createContext({ready:true,api:{},keyboardAudition:null,KEYBOARD_NOTE_PREVIEW_SECONDS:.22,
+  const c=vm.createContext({ready:true,api:{},scoreView:'standard',keyboardAudition:null,KEYBOARD_NOTE_PREVIEW_SECONDS:.22,
     currentScorePartIndex:()=>1,playbackCursorPlace:()=>'',followCursorFrom(){},cancelPitchAuditions(){},
     window:{setTimeout:fn=>{timer=fn;return 1;},clearTimeout(){}},
     engine:{notes:[{track:0,start:.25,end:1,key:70},

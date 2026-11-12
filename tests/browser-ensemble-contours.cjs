@@ -104,7 +104,7 @@ async function checkEnsembleContours(page, frame, {output, label}) {
   // Ordinary isolation enables capture. Expanding See ends capture safely.
   await choosePart(frame,0);
   await frame.waitForFunction(()=>new Set([...document.querySelectorAll('#barScore .take-pitch-trace-edge')].map(p=>p.dataset.takeId)).size===1);
-  await frame.locator('#recordAudio').click();
+  if(await frame.locator('#pitchCapture').getAttribute('aria-pressed')!=='true')await frame.locator('#pitchCapture').click();
   await frame.locator('#playPause').click();
   await frame.waitForFunction(()=>(window.__qa||window.__probe).recording.state==='recording');
   await frame.waitForFunction(()=>(window.__qa||window.__probe).recording.takes.some(t=>t.active&&t.seconds>.6));

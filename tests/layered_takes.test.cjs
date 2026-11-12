@@ -41,14 +41,27 @@ test('independent take layers survive focus changes and release every source on 
 
 test('pitchbar blank-space audition chooses the closest drawn bar, including across a rest', () => {
   const start = app.indexOf('  function barNoteAt('), end = app.indexOf('\n  }', start) + 4;
-  const c = vm.createContext({currentScorePartIndex: () => 0, visibleTracks: new Set([0, 1]),
-    sequence: {notes: [[0, 0, 2, 60], [1, 4, 6, 67], [0, 20, 21, 62]]}});
+  const c = vm.createContext({currentScorePartIndex: () => 0, mixerParts:[{source:0},{source:1}]});
+  const notes=[[0,0,2,60],[1,4,6,67],[0,20,21,62]];
   vm.runInContext(app.slice(start, end), c);
-  assert.equal(c.barNoteAt(3, 60), null);
+  assert.equal(c.barNoteAt(notes, 3, 60), null);
   const geometry = {startTick: 0, endTick: 8, tickScale: 10, pitchStep: 5};
-  assert.deepEqual({...c.barNoteAt(3, 60, true, geometry)}, {key: 60, track: 0, tick:0,endTick:2});
-  assert.deepEqual({...c.barNoteAt(3, 67, true, geometry)}, {key: 67, track: 1, tick:4,endTick:6});
-  assert.equal(c.barNoteAt(3, 62, true, geometry).key, 60, 'another system cannot win the nearest-note query');
+  assert.deepEqual({...c.barNoteAt(notes, 3, 60, true, geometry)}, {key: 60, track: 0, channel:0, tick:0,endTick:2});
+  assert.deepEqual({...c.barNoteAt(notes, 3, 67, true, geometry)}, {key: 67, track: 1, channel:1, tick:4,endTick:6});
+  assert.equal(c.barNoteAt(notes, 3, 62, true, geometry).key, 60, 'another system cannot win the nearest-note query');
+});
+
+test('B2-only Pitchbar audition uses exactly the displayed divisi notes', () => {
+  const ctx=vm.createContext({currentScorePartIndex:()=>3, visibleChannels:new Set([1]), mixerParts:[
+    {source:3,barNotes:[[0,16,55]]}, {source:3,barNotes:[[0,8,43],[8,16,45]]}]});
+  for(const name of ['visiblePitchNotes','barNoteAt']) {
+    const start=app.indexOf('  function '+name+'(');
+    vm.runInContext(app.slice(start,app.indexOf('\n  }',start)+4),ctx);
+  }
+  const visible=ctx.visiblePitchNotes();
+  assert.equal(ctx.barNoteAt(visible,4,55),null,'no B1 hitbox at its hidden pitch');
+  assert.equal(ctx.barNoteAt(visible,4,55,true,{startTick:0,endTick:16,tickScale:10,pitchStep:5}).key,43);
+  assert.deepEqual([...visible].map(n=>n[0]),[1,1]);
 });
 
 test('scheduler look-ahead never cuts the final 28ms from a shifted recording', () => {
@@ -59,4 +72,19 @@ test('scheduler look-ahead never cuts the final 28ms from a shifted recording', 
   engine.takeReviewWindow=lead=>lead ? null : {from:9.99,until:10};
   engine.stopTakeLayerAudio=()=>{throw Error('Stopped before the recorded boundary');};
   engine.scheduleTakeLayer({source:{stretch:true,endTime:10}},.028);
+});
+
+test('punch-in immediately silences the prior singer and keeps foreign or anonymous audio out of the pass', () => {
+  const start=app.indexOf('    setOverdubTarget('), end=app.indexOf('    stopVoices(',start);
+  const Engine=vm.runInNewContext(`(class {${app.slice(start,end)}})`);
+  const engine=new Engine(), stopped=[], scheduled=[];
+  const previous={id:'previous',singerId:'one'}, target={id:'comp:current',singerId:'two'};
+  engine.takeLayers=new Map([[previous.id,previous],[target.id,target]]);
+  engine.stopTakeLayerAudio=layer=>stopped.push(layer.id);
+  engine.setOverdubTarget('current','two');
+  assert.deepEqual(stopped,['previous','comp:current']);
+  engine.playing=true;engine.context={currentTime:0};
+  engine.takeReviewWindow=(_lead,layer)=>{scheduled.push(layer.id);return null;};
+  for(const layer of [previous,target,{id:'anonymous'},{id:'guide',reference:true}])engine.scheduleTakeLayer(layer,0);
+  assert.deepEqual(scheduled,['guide']);
 });

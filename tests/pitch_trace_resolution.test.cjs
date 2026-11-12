@@ -382,6 +382,8 @@ test('capture skips unchanged audio, follows genuine cadence, and resets on seek
   let analyses=0;
   const frames=[];
   const input={sampleRate:48000,currentTime:1,state:'running'};
+  c.recordingLatency=()=>0;
+  c.recordingPassClock=null;
   c.pitchCaptureEnabled=()=>true; c.playing=true; c.takeReview=null;
   Object.assign(c.engine,{playing:true,context:{currentTime:1},duration:30,
     currentSeconds:()=>input.currentTime, tickAtSeconds:s=>s*48*84/60});

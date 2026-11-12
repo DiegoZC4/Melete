@@ -43,7 +43,7 @@ test('role traces and take references stay separate without invalidating other s
   const vm=require('node:vm');
   const app=require('node:fs').readFileSync(require('node:path').join(__dirname,'../template/app.js'),'utf8');
   const calls=[];
-  const c=vm.createContext({sequence:{practiceRoles:roles},practicePartIndex:0,recordAudio:false,preparingCapture:null,
+  const c=vm.createContext({sequence:{practiceRoles:roles},practicePartIndex:0,ready:true,singEnabled:false,preparingCapture:null,stationReview:null,changingReviewFocus:false,
     pitchTraceBaseKey:'trace',pitchTraceKey:'trace',config:{},practiceDivisi:[],pitchTraceLanes:new Map(),pitchTraceDirty:new Map(),pitchCaptureWorker:null,takeState:'off',
     buildMetadata:{build:{sourcePlaybackSha256:'source',playbackSha256:'expanded',
       practiceReferenceFingerprints:{1:'chorus',2:'solo'}}},

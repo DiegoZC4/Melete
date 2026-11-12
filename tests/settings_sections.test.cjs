@@ -14,9 +14,9 @@ function fixture(value = null, blocked = false) {
       body: {inert: false, contains: () => false},
       toggle: {setAttribute(name, value) {this[name] = value;}, focus() {calls.push('focus');}}}];
   }));
-  const c = vm.createContext({settingsSections: groups, settingsSectionsKey: key,
-    mobileSectionOpen: {}, settingsSectionsMedia: {matches: true},
-    document: {activeElement: null}, ready: true, elements: {takeActions: {open: true}},
+  const c = vm.createContext({settingsSections: groups, settingsSectionsKey: key, desktopSectionsKey:'choir-practice:desktop-sections:v1',
+    mobileSectionOpen: {}, desktopSectionOpen:{}, settingsSectionsMedia: {matches: true},
+    document: {activeElement: null}, ready: true, elements: {takeActions: {open: true},settingsPanel:{classList:{toggle(){}}}},
     requestAnimationFrame() {}, updateTransportHeight() {},
     cancelTakeScoring() {calls.push('cancel');}, stopTakePreview() {calls.push('preview');}, scoreNextTake() {calls.push('score');},
     localStorage: {
@@ -52,6 +52,11 @@ test('desktop exposes controls without destroying remembered mobile choices', ()
     assert.equal(c.settingsSectionCollapsed(name), false);
     assert.equal(groups.get(name).body.inert, false);
   }
+  assert.equal(stored.get(key), preference);
+  c.setSettingsSection('practice', false);
+  c.readSettingsSections(); c.syncSettingsSections();
+  assert.equal(c.settingsSectionCollapsed('practice'), true);
+  assert.equal(c.settingsSectionCollapsed('parts'), false);
   assert.equal(stored.get(key), preference);
   c.settingsSectionsMedia.matches = true;
   c.syncSettingsSections();

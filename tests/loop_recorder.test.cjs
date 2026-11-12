@@ -125,6 +125,19 @@ function memoryStore() {
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('a clock warning persists through recording checkpoints on the affected pass only', async () => {
+  const store=memoryStore(), pitchReference={timing:{source:'acoustic',seconds:.041}};
+  const journal=new TakeJournal(store,'song',{mode:'loop',seconds:4,pitchReference},100);
+  journal.begin(0);journal.append(0,new Float32Array(100));await tick();
+  journal.markClockDivergence(-38);
+  journal.append(100,new Float32Array(300));journal.begin(400);await tick();
+  journal.append(400,new Float32Array(400));journal.finish(800);await journal.flush();
+  const [first,next]=[...store.records.values()].sort((a,b)=>a.number-b.number);
+  assert.equal(first.pitchReference.timing.clockDivergenceMs,-38);
+  assert.deepEqual(next.pitchReference,pitchReference);
+  assert.equal(pitchReference.timing.clockDivergenceMs,undefined);
+});
+
 test('stopping a free segment retains its actual range despite pending checkpoints', async () => {
   const store = memoryStore(), journal = new TakeJournal(store, 'song',
     {mode:'segment',seconds:10,leadInSeconds:2,start:40,end:50}, 100);

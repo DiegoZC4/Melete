@@ -34,3 +34,33 @@ test('only unmodified singer profiles follow a changed station default',()=>{
   assert.ok(!station.followsOldDefault(owned,ch,4,preset,roles));
   assert.ok(station.followsOldDefault(owned,ch,4,mix.factory,roles));
 });
+test('review starts centered with the inspected MIDI channel muted, independent of recording',()=>{
+  const record=station.guideMix(ch,7),review=mix.reviewProfile(ch,3);
+  assert.equal(record.pans[7],100);
+  assert.ok(record.audible.every(Boolean));
+  assert.deepEqual(review.audible,ch.map((_,i)=>i!==3));
+  assert.ok(review.pans.every(v=>v===0));
+  assert.ok(review.volumes.every(v=>v===35));
+  assert.equal(review.metronome,0);
+  assert.equal(review.takeVolume,100);
+  assert.notEqual(mix.reviewKey('autumn',ch,3),mix.reviewKey('seed',ch,3));
+  assert.notEqual(mix.reviewKey('seed',ch,3),mix.reviewKey('seed',ch,4));
+  assert.notEqual(mix.reviewKey('seed',ch,3),mix.reviewKey('seed',ch.toReversed(),3));
+});
+test('review profiles preserve custom audio settings without visibility, recording targets or microphone consent',()=>{
+  const saved={...mix.reviewProfile(ch,3),sing:true,practicePart:7,visible:ch.map(()=>false),
+    metronome:70,takeVolume:85,takeReverb:20,reference:{enabled:true},tempo:60};
+  saved.pans[0]=-75;saved.audible[3]=true;saved.volumes[3]=65;
+  const restored=mix.reviewProfile(ch,3,saved);
+  assert.equal(restored.audible[3],true);
+  assert.equal(restored.pans[0],-75);
+  assert.equal(restored.metronome,70);
+  assert.equal(restored.takeVolume,85);
+  assert.equal(restored.takeReverb,20);
+  for(const field of ['sing','practicePart','visible','tempo'])assert.ok(!(field in restored));
+  restored.reference.enabled=false;restored.volumes[3]=100;
+  assert.equal(saved.reference.enabled,true);assert.equal(saved.volumes[3],65);
+  for(const corrupt of [{...saved,pans:[0]},{...saved,volumes:ch.map(()=>NaN)}, {...saved,audible:ch.map(()=>1)}])
+    assert.deepEqual(mix.reviewProfile(ch,3,corrupt),mix.reviewProfile(ch,3));
+  assert.equal(mix.reviewProfile(ch,3,{...saved,metronome:Infinity}).metronome,0);
+});

@@ -26,7 +26,7 @@ function fixture({names = SEED, practicePart = null, divisi = {}, view = 'standa
   const element = (extra = {}) => ({hidden: true, textContent: '', contains: () => false,
     classList: {contains: () => false}, focus() {}, ...extra});
   const c = vm.createContext({
-    URL,
+    URL, stationReview:null,
     sequence: {}, pitchTraceBaseKey: '', pitchTraceKey: '',pendingMixReceipt:null,lastGuideChannel:null,
     parts: names.map((name, index) => ({index, id: `P${index + 1}`, name,
       short: name.split(' ').map((word, i) => i ? word : word[0]).join(''), color: '#123456'})),

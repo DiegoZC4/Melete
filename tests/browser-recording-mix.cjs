@@ -144,6 +144,9 @@ async function checkRecordingMix(page, frame, {output,label}) {
   await frame.waitForFunction(()=>(window.__qa||window.__probe).compState?.descriptor.slot);
   const clone=await seed(true);
   await frame.waitForFunction(()=>document.querySelectorAll('#compRows > .comp-row').length===2);
+  const parts=await frame.locator('#compRows .take-part').allTextContents();
+  assert.equal(parts[0],parts[1],'layering another singer never changes the musical part label');
+  assert.ok(!parts[1].includes('\u00b7'),'take and singer columns identify duplicate parts');
   const latestTrack=await frame.evaluate(()=>(window.__qa||window.__probe).compState.key);
   // New recordings may select their completed track. Clear review explicitly,
   // then turn on both independent Hear controls.
@@ -164,21 +167,14 @@ async function checkRecordingMix(page, frame, {output,label}) {
   assert.equal(await frame.locator('[data-audio-index][aria-pressed="false"]').count(),1);
   assert.equal(await firstRow.locator('.take-segments').textContent(),'1');
   if(await frame.locator('[data-view="standard"]').getAttribute('aria-selected')!=='true')await frame.locator('#scoreViewToggle').click();
-  await frame.waitForFunction(()=>!(window.__qa||window.__probe).busy&&document.querySelector('#score .take-pitch-trace-edge'));
+  await frame.waitForFunction(()=>!(window.__qa||window.__probe).busy);
   const scoreGroups=frame.locator('#score .take-pitch-trace-group');
-  assert.deepEqual([...new Set(await scoreGroups.evaluateAll(nodes=>nodes.map(n=>n.dataset.takeId)))],
-    [await frame.evaluate(()=>(window.__qa||window.__probe).takeReview.id)],'only the inspected take is drawn on the score, regardless of Hear');
+  assert.equal(await scoreGroups.count(),0,'even an inspected saved take leaves notation clean');
   await firstRow.locator('.comp-review').click();
   await frame.waitForFunction(()=>!document.querySelector('#score .take-pitch-trace-group'));
   assert.ok(await frame.evaluate(()=>(window.__qa||window.__probe).engine.takeLayers.size>=1),'deselection clears notation even with audible recordings');
   await firstRow.locator('.comp-review').click();
-  await scoreGroups.first().waitFor({state:'attached'});
-  const paintOrder=await frame.evaluate(()=>[...document.querySelectorAll('#score .score-pitch-trace')].map(trace=>({
-    inside:trace.parentElement.matches('.at-surface-svg'),staff:trace.previousElementSibling?.classList.contains('melete-staff-lines'),
-    foreground:!!trace.nextElementSibling,filter:getComputedStyle(trace).filter,
-    viewBox:trace.getAttribute('viewBox'),scoreY:document.querySelector('#score').getBoundingClientRect().y,
-    surfaces:[...document.querySelectorAll('.at-surface-svg')].map(s=>({y:s.getBoundingClientRect().y,h:s.getBoundingClientRect().height,top:s.parentElement.style.top}))})));
-  assert.ok(paintOrder.length&&paintOrder.every(p=>p.inside&&p.staff&&p.foreground&&p.filter==='none'),JSON.stringify(paintOrder));
+  assert.equal(await scoreGroups.count(),0,'reselection does not restore notation contours');
   await page.screenshot({path:require('node:path').join(output,`${label}-notation-contour.png`)});
   await frame.locator('#scoreViewToggle').click();
   await frame.waitForFunction(()=>!(window.__qa||window.__probe).busy);
@@ -234,6 +230,16 @@ async function checkRecordingMix(page, frame, {output,label}) {
   assert.equal(batchMix.calls.length,1,JSON.stringify(batchMix));
   assert.equal(batchMix.calls[0].length,available,JSON.stringify(batchMix));
   assert.ok(batchMix.counts.every(count=>count===1||count===available),JSON.stringify(batchMix));
+  const audibleButtons=frame.locator('#compRows .take-hear[aria-pressed="true"], #takeList .take-hear[aria-pressed="true"]');
+  while(await audibleButtons.count()) await audibleButtons.first().click();
+  await frame.waitForFunction(()=>(window.__qa||window.__probe).engine.takeLayers.size===0);
+  await firstRow.locator('.take-hear').click();
+  await frame.waitForFunction(()=>(window.__qa||window.__probe).engine.takeLayers.size===1);
+  await firstRow.locator('.take-hear').click();
+  await frame.waitForFunction(()=>(window.__qa||window.__probe).engine.takeLayers.size===0);
+  await holdHear();
+  await frame.waitForFunction(count=>(window.__qa||window.__probe).engine.takeLayers.size===count,available);
+  assert.equal(await firstRow.locator('.take-hear').getAttribute('aria-pressed'),'true','hold from all muted enables everyone');
   const octave=firstRow.locator('.take-octave');
   for(const value of ['-','8va','8vb','-']){
     assert.equal(await octave.textContent(),value);
@@ -341,9 +347,18 @@ async function checkRecordingMix(page, frame, {output,label}) {
     return r.top>=p.top-.5&&r.bottom<=p.bottom+.5&&el.scrollWidth<=el.clientWidth+1&&el.scrollHeight<=el.clientHeight+1;
   });
   assert.ok(counterFits,'daily minutes fits the existing left Record grid without increasing its height');
+  await frame.evaluate(async()=>{
+    const q=window.__qa||window.__probe,d=q.compState.descriptor,r=d.reference;
+    localStorage.setItem('melete:cloud:local-only:v1',JSON.stringify([JSON.stringify([d.song,r.part,r.line??null,d.slot||null])]));
+    await q.refreshComp();
+  });
+  const privateButton=frame.locator('#compRows .take-upload.is-local-only');
+  await privateButton.waitFor({state:'visible'});
+  assert.equal(await privateButton.isEnabled(),false);
+  assert.match(await privateButton.getAttribute('title'),/Kept on this device/);
   await page.screenshot({path:require('node:path').join(output,`${label}-recording-mix.png`)});
   return {partOrder:labels,countInBeats:beats,countInRecorded:true,noLegacyContour:true,hearIsolationCycle:true,centeredOctaveCycle:true,
     batchMix,
-    allMidiMuted:true,practiceFromSee:true,automaticMeter:true,independentClones:true,audibleGreyContours:true,mixDownload:true,reverbControl:true,mix,levels,paintOrder,dailyTime,editHistory,keyboardHistory:true};
+    allMidiMuted:true,practiceFromSee:true,automaticMeter:true,independentClones:true,audibleGreyContours:true,mixDownload:true,reverbControl:true,mix,levels,cleanNotation:true,dailyTime,editHistory,keyboardHistory:true};
 }
 module.exports={checkRecordingMix};

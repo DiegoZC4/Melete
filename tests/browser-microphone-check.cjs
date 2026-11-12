@@ -3,6 +3,7 @@ const path = require('node:path');
 
 async function checkMicrophone(frame, page, {output,label}) {
   if(await frame.locator('#partChooser').isVisible()) await frame.locator('#partChooserDismiss').click();
+  await require('./browser-sing.cjs').choosePart(frame);
   if(await frame.locator('#settingsToggle').getAttribute('aria-expanded')!=='true') await frame.locator('#settingsToggle').click();
   const section=frame.locator('#takePanel');
   if(await section.evaluate(el=>el.classList.contains('is-collapsed'))) await section.locator('.settings-section-toggle').click();
@@ -61,7 +62,7 @@ async function checkMicrophone(frame, page, {output,label}) {
 
     await open();await state('signal');
     assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).recording.microphone), true, 'paused Sing monitors the input');
-    assert.match(await frame.locator('#pitchCapture').getAttribute('data-help'), /pitch feedback without audio/i);
+    assert.match(await frame.locator('#pitchCapture').getAttribute('data-help'), /records audio and pitch/i);
     assert.equal(await frame.locator('#takeMicrophone').isEnabled(),false,'Sing owns input until turned off');
     await close();
     assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).recording.microphone),false);
@@ -78,6 +79,7 @@ async function checkMicrophone(frame, page, {output,label}) {
     await open();await state('signal');
     await close();
 
+    await endInput(); // The previous disabled grant can otherwise be reused without a prompt.
     const count=await frame.evaluate(()=>{micCheckTest.mode='pending';return micCheckTest.streams.length;});
     await open();await state('requesting');
     await close();await frame.evaluate(()=>micCheckTest.resolve());

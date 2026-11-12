@@ -8,8 +8,8 @@
   // References stay immutable. Bump only analysis when detector behavior changes.
   const VERSION = 1;
   const ANALYSIS_VERSION = 2;
-  const SCORING_VERSION = 4;
-  const REST_POLICY_VERSION = 1;
+  const SCORING_VERSION = 9;
+  const REST_POLICY_VERSION = 2;
   const CONTOUR_VERSION = 1;
   const BEST_COVERAGE_WINDOW = 0.05;
   const DOMINANCE_CENTS_MARGIN = 2;
@@ -78,11 +78,13 @@
         return at;
       };
       const seconds = tick => clamp((secondsAtTick(tick) - origin) / rate, 0, ref.seconds);
-      const keep = mergeRanges(spans.map(s => [seconds(moveBeat(s.start, -1)), seconds(moveBeat(s.end, 1))])
-        .concat(ref.leadInSeconds > 0 ? [[0, ref.leadInSeconds]] : []));
+      const keep = mergeRanges(spans.map(s => [
+        Math.max(seconds(moveBeat(s.start, -1)), seconds(s.start) - 1),
+        Math.min(seconds(moveBeat(s.end, 1)), seconds(s.end) + 1),
+      ]));
       const sounding = mergeRanges(spans.map(s => [seconds(s.start), seconds(s.end)]));
       ref.restPolicy = {version: REST_POLICY_VERSION, keep,
-        guards: subtractRanges(keep, [...sounding, [0, ref.leadInSeconds]])};
+        guards: subtractRanges(keep, sounding)};
     }
     return ref;
   }
@@ -125,6 +127,14 @@
   function cleanRestFrames(frames, ref) {
     return restPolicyValid(ref) ? frames.map(f => containsTime(ref.restPolicy.keep, (f.start + f.end) / 2)
       ? f : {...f, cents: null}) : frames;
+  }
+
+  function playbackRestReference(ref, origin, seconds) {
+    if (!restPolicyValid(ref)) return null;
+    const keep=ref.restPolicy.keep.map(r=>r.slice());
+    if(origin<0 && keep.length && ref.notes[0]?.[0]===0)keep[0][0]=Math.max(origin,-1);
+    const shift=ranges=>mergeRanges(ranges.map(([a,b])=>[Math.max(0,a-origin),Math.min(seconds,b-origin)]));
+    return {seconds,latency:0,restPolicy:{version:REST_POLICY_VERSION,keep:shift(keep),guards:shift(ref.restPolicy.guards)}};
   }
 
   function stopNoiseCut(pcm, sampleRate, frames, latency = 0) {
@@ -437,7 +447,7 @@
         end: Math.min(offset + hop, take.frames) / sampleRate - ref.latency,
         cents: Number.isNaN(cents) ? null : cents});
     }
-    return vocal.cleanPitchFrames(frames);
+    return vocal.cleanPitchFrames(cleanRestFrames(frames, ref));
   }
 
   function samePassage(saved, current) {
@@ -544,13 +554,17 @@
     if (column === "number") return Number.isFinite(take.number) ? take.number : null;
     if (column === "part") return take.part || null;
     if (column === "singer") return take.singer || null;
-    if (column === "segments") return take.segmentCount ?? take.pitchScore?.segmentCount ?? 1;
+    if (column === "segments") return take.metrics ? take.segmentCount ?? null
+      : take.segmentCount ?? take.pitchScore?.segmentCount ?? 1;
     if (column === "start" || column === "end") return takeBounds(take)[column];
     if (column === "created") return Number.isFinite(take.createdAt) ? take.createdAt : null;
     if (column === "modified") {
       const value = take.editedAt ?? take.updatedAt ?? take.createdAt;
       return Number.isFinite(value) ? value : null;
     }
+    // Cloud summaries carry display metrics, not full analysis durations.
+    if (take.metrics) return Number.isFinite(take.metrics[column])
+      ? take.metrics[column] / (["tracked","within"].includes(column) ? 100 : 1) : null;
     const score = take.pitchScore;
     if (!validScore(score)) return null;
     if (column === "tracked") return score.expectedSeconds > 0 ? score.coverage : null;
@@ -656,7 +670,7 @@
   }
 
   return {VERSION, ANALYSIS_VERSION, SCORING_VERSION, REST_POLICY_VERSION, TIME_EPSILON, nonzeroNotes, mergeRanges, subtractRanges, containsTime,
-    restPolicyValid, trimReference, discardRestAudio, cleanRestFrames, restStats, restLabel,
+    restPolicyValid, trimReference, discardRestAudio, cleanRestFrames, playbackRestReference, restStats, restLabel,
     octaveError, currentScore, BEST_COVERAGE_WINDOW, DOMINANCE_CENTS_MARGIN, DOMINANCE_COVERAGE_MARGIN,
     reference, validReference, validScore, hasMedian, hasPitchBand, scoreFrames, reviewTimeline, analyse, packContour, packLiveContour, readContour,
     stopNoiseCut, muteStopTail,

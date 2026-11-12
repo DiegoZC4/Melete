@@ -1,4 +1,4 @@
-// Use the explicit audio control for recorder tests; Sing alone only stores pitch.
+// Sing arms local audio and pitch; the transport starts and stops the pass.
 async function choosePart(frame, index = null) {
   if (index === null && await frame.locator('[data-visible-index][aria-pressed="true"]').count() === 1) return;
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await frame.locator('#settingsToggle').click();
@@ -26,7 +26,7 @@ async function startRecording(frame) {
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await frame.locator('#settingsToggle').click();
   const heading=frame.locator('[data-settings-section="practice"] .settings-section-toggle');
   if(await heading.isVisible() && await heading.getAttribute('aria-expanded')==='false') await heading.click();
-  if(await frame.locator('#recordAudio').getAttribute('aria-pressed')!=='true') await frame.locator('#recordAudio').click();
+  if(await frame.locator('#pitchCapture').getAttribute('aria-pressed')!=='true') await frame.locator('#pitchCapture').click();
   await frame.locator('#playPause').click();
 }
 async function stopRecording(frame) {

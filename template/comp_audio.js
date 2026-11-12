@@ -61,7 +61,7 @@
         const bytes = await blob.arrayBuffer();
         signal.throwIfAborted();
         const message = {type: "source", origin: take.origin - origin,
-          latency: take.pitchReference.latency, segments: snapshot.segments.filter(s => s.takeId === id)
+          latency: take.pitchReference.latency+(take.playbackAdvance || 0), segments: snapshot.segments.filter(s => s.takeId === id)
             .map(s => ({...s, from:s.from - origin, to:s.to - origin}))};
         if (take.sampleRate === context.sampleRate) {
           worker.postMessage({...message, wav: bytes}, [bytes]);

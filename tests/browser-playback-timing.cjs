@@ -8,6 +8,32 @@ async function checkPlaybackTiming(frame,page,{probe='__qa',output,label}={}) {
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded')!=='true') await frame.locator('#settingsToggle').click();
   const cases=[];
   try {
+    const clickAudio=await frame.evaluate(async name=>{
+      const qa=window[name], Engine=qa.engine.constructor, sampleRate=48000;
+      const measures=qa.pitchbar.sequence.measures, out=[];
+      for(const where of ['count-in','barline','rounded','midbeat','muted']){
+        const e=new Engine(qa.pitchbar.sequence);
+        // The fresh generic fixture has no configured virtual count-in.
+        e.leadInTicks=-3*e.division;e.clicks=e.buildMetronomeEvents(measures);
+        const ctx=new OfflineAudioContext(1,.08*sampleRate,sampleRate);
+        const master=ctx.createGain(),compressor=ctx.createDynamicsCompressor(),limiter=ctx.createDynamicsCompressor();
+        master.connect(compressor).connect(limiter).connect(ctx.destination);
+        e.context=ctx;e.master=master;e.playbackNotes=[];e.playing=true;e.anchorTime=0;
+        e.metronomeVolume=where==='muted'?0:1;
+        const bar=e.secondsAtTick(measures[1][0]);
+        e.basePosition=where==='count-in'?e.clicks[0].time:bar+(where==='rounded'?.001:where==='midbeat'?.08:0);
+        e.resetScheduler(0,{transportStart:true});e.scheduleAhead();
+        const samples=(await ctx.startRendering()).getChannelData(0);
+        out.push({where,firstMs:samples.findIndex(v=>Math.abs(v)>1e-7)*1000/sampleRate,
+          peak:samples.reduce((max,v)=>Math.max(max,Math.abs(v)),0)});
+      }
+      return out;
+    },probe);
+    for(const row of clickAudio){
+      if(row.where==='muted'||row.where==='midbeat')assert.equal(row.peak,0,row.where);
+      else assert.ok(row.peak>.01 && row.firstMs>=11 && row.firstMs<=14,`opening click vs guide clock: ${JSON.stringify(row)}`);
+    }
+    cases.push({clickAudio});
     const geometry=await checkPlayingNoteEdges(frame,probe);
     cases.push({geometry});
     for(const view of ['standard','bars']) for(const slow of [false,true]) {
@@ -241,12 +267,11 @@ async function checkPlayingNoteEdges(frame,probe) {
     && !document.getElementById('score').hidden,probe);
   const result=await frame.evaluate(name=>{
     const qa=window[name], {api,engine}=qa, score=document.getElementById('score');
-    const track=api.tracks.at(-1), total=track.staves[0].bars.length;
-    const first=total>20?18:0;
+    const track=api.tracks.at(-1);
     const entries=[];
-    for(const staff of track.staves)for(const bar of staff.bars.slice(first,first+6))for(const voice of bar.voices)
+    for(const staff of track.staves)for(const bar of staff.bars)for(const voice of bar.voices)
       for(const beat of voice.beats) {
-        if(beat.isRest || beat.isGrace)continue;
+        if(beat.isRest || beat.graceType!==alphaTab.model.GraceType.None)continue;
         const bounds=api.boundsLookup.findBeat(beat);
         if(!bounds?.notes?.length)continue;
         const expected=Math.min(...bounds.notes.map(n=>n.noteHeadBounds.x));

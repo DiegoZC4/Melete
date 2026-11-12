@@ -5,7 +5,7 @@ const {choosePart, toggleRecording} = require('./browser-sing.cjs');
 const {checkTakeColumnLayout} = require('./browser-take-column-layout.cjs');
 
 const ROSTER = {singers: [{name: 'DemoA', voice: 'Alto'}, {name: 'DemoZ', voice: 'Alto'}, {name: 'DemoB (AliasB)', voice: 'Bass'},
-  {name: 'DemoS', voice: 'Soprano'}, {name: 'DemoN', voice: ''}]};
+  {name: 'DemoS', voice: 'Soprano'}, {name: 'DemoN', voice: ''}, {name: 'Loop Fixture', voice: ''}]};
 
 const slot = page => page.evaluate(() => __qa.compState?.descriptor.slot || null);
 const rows = page => page.locator('#compRows .comp-row').evaluateAll(list => list.map(row => ({
@@ -97,7 +97,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     await open(page, `${origin}?station`);
     assert.equal(await page.locator('#stationPicker').isVisible(), true);
     assert.equal(await page.locator('[data-take-sort="singer"]').isVisible(), true);
-    assert.equal(await page.locator('#stationStage, #stationBar').count(), 0);
+    assert.equal(await page.locator('#stationStage, #stationBar, #stationNewSinger').count(), 0);
     assert.equal(await panelHeight(), ordinaryHeight, 'station does not add a row to Record');
     assert.equal(await page.locator('label[for="stationSinger"]').innerText(), 'Singer');
     assert.ok(await page.evaluate(() => {
@@ -125,7 +125,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
 
     await input.click();
     await input.fill('aliasb');
-    assert.deepEqual(await page.locator('#stationSingerList .station-option span:last-child').allTextContents(), ['DemoB (AliasB)', 'Add “aliasb”']);
+    assert.deepEqual(await page.locator('#stationSingerList .station-option span:last-child').allTextContents(), ['DemoB (AliasB)']);
     await input.fill('bass');
     assert.deepEqual(await page.locator('#stationSingerList .station-option span:first-child').allTextContents(), ['B']);
     await input.fill('');
@@ -156,21 +156,21 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     await seed(page, 12, true);
     assert.equal(await stage(page), 'Scratchpad', 'an imported Final remains reviewable without arming it');
 
-    await page.locator('#recordAudio').click();
-    assert.equal(await page.locator('#recordAudio').getAttribute('data-state'),'armed');
+    await page.locator('#pitchCapture').click();
+    assert.equal(await page.locator('#pitchCapture').getAttribute('data-state'),'armed');
     await input.fill('demoz');
     await page.getByRole('option', {name: 'Alto, DemoZ', exact:true}).click();
     await page.evaluate(() => __qa.refreshComp());
     assert.equal(await stage(page), 'Start');
-    assert.equal(await page.locator('#recordAudio').getAttribute('aria-pressed'),'false','two singers in the same section do not share audio consent');
+    assert.equal(await page.locator('#pitchCapture').getAttribute('aria-pressed'),'false','two singers in the same section do not share audio consent');
     assert.equal(await page.evaluate(()=>__qa.engine.playing),false);
     await page.locator('#pitchCapture').click();
     await seed(page, 40);
     await pick(page, 'demoa');
     assert.equal(await stage(page), 'Scratchpad', 'returning singers resume after Start');
     await pick(page, 'Guest Singer');
-    assert.equal(await slot(page), 'station:guest-singer:start', 'a name outside the roster still works');
-    assert.deepEqual((await rows(page)).filter(row => row.armed).map(row => row.singer), ['Guest Singer']);
+    assert.equal(await slot(page), 'station:demoa:scratchpad', 'a name outside the directory cannot create a singer');
+    assert.deepEqual((await rows(page)).filter(row => row.armed).map(row => row.singer), ['DemoA']);
     await pick(page, 'DemoZ');
 
     await page.locator('[data-take-sort="singer"]').click();
@@ -245,7 +245,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     const atTempo = (tab, tempo) => tab.waitForFunction(expected => __qa.pitchbar.captureSettingsState().tempo === expected, tempo);
     const ordinary = await mix(), last = ordinary.volumes.length - 1;
     await pick(page, 'demoa');
-    const initialA=await mix(); assert.deepEqual(initialA.volumes,[35,150,35]); assert.deepEqual(initialA.pans,[-35,50,-35]);
+    const initialA=await mix(); assert.deepEqual(initialA.volumes,[35,150,35]); assert.deepEqual(initialA.pans,[-35,100,-35]);
     await page.locator(`[data-volume-index="${last}"]`).press('ArrowUp');
     await page.locator(`[data-pan-index="${last}"]`).press('ArrowRight');
     await page.locator('[data-audio-index="0"]').click();
@@ -264,7 +264,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     assert.deepEqual([demoa.tempo < ordinary.tempo, demoa.volumes[last] > initialA.volumes[last], demoa.pans[last] > initialA.pans[last],
       demoa.audible[0] !== initialA.audible[0]], [true, true, true, true], JSON.stringify({ordinary, demoa}));
     await pick(page, 'DemoS');
-    assert.deepEqual((await mix()).volumes,[150,35,35]); assert.deepEqual((await mix()).pans,[50,-35,-35]);
+    assert.deepEqual((await mix()).volumes,[150,35,35]); assert.deepEqual((await mix()).pans,[100,-35,-35]);
     await page.locator(`[data-pan-index="${last}"]`).press('ArrowLeft');
     const demos = await mix();
     await pick(page, 'demoa');
@@ -416,6 +416,14 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     await personal.locator('.edit-take-singer').dblclick();
     await page.locator('#takeSingerName').fill('Demo Corrected');
     await page.locator('#takeSingerDialog button[type=submit]').click();
+    assert.equal(await page.locator('#takeSingerDialog').isVisible(),true,'missing directory cannot create a singer');
+    assert.match(await page.locator('#takeSingerName').evaluate(el=>el.validationMessage),/directory/);
+    await page.keyboard.press('Escape');
+    await fresh.route('**/station-roster.json', route => route.fulfill({json:{singers:[{name:'Demo Corrected',discord:'corrected'}]}}));
+    await open(page,origin+'?station&part=Alto');
+    await personal.locator('.edit-take-singer').dblclick();
+    await page.locator('#takeSingerName').fill('@corrected');
+    await page.locator('#takeSingerDialog button[type=submit]').click();
     await page.locator('#takeSingerDialog').waitFor({state:'hidden'});
     await open(page,origin+'?part=Alto');
     const corrected=page.locator('#compRows .comp-row').filter({hasText:'Demo Corrected'});
@@ -427,4 +435,4 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     sameAudioAfterSingerCorrection:true, samePitchAndScoreAfterCorrection:true, collisionPreservesBothTracks:true, archivalCreditKeepsSlot:true, geometry};
 }
 
-module.exports = {checkStation};
+module.exports = {checkStation, seed, pick};

@@ -7,6 +7,19 @@ const reference = overrides => ({version: 1, fingerprint: 'score-one', part: 0, 
   start: 0, end: 4, rate: 1, seconds: 4, latency: 0, notes: [[0, 4, [69]]], ...overrides});
 const frame = (start, end, cents) => ({start, end, cents});
 
+test('cloud display metrics sort alongside local analysis without percent/unit mismatches', () => {
+  const local = {id:'local',pitchScore:pitch.scoreFrames([frame(0,2,6920),frame(2,4,null)],reference(),4)};
+  const cloud = {id:'cloud',metrics:{tracked:80,mean:15,median:12,within:90}};
+  const missing = {id:'pending',metrics:{tracked:null,mean:null,median:null,within:null}};
+  for(const column of ['tracked','mean','median','within']) {
+    const rows=[cloud,missing,local].sort((a,b)=>pitch.compareTakes(a,b,{column,direction:'ascending'}));
+    assert.equal(rows.at(-1).id,'pending');
+    assert.deepEqual(rows.slice(0,2).map(r=>r.id),column==='tracked'?['local','cloud']:['cloud','local']);
+  }
+  assert.ok(pitch.compareTakes(cloud,{...local,segmentCount:2},{column:'segments',direction:'ascending'})>0,
+    'source take count is not a segment count; unavailable segments stay last');
+});
+
 test('mean absolute cents error is time-weighted, not note-weighted or signed', () => {
   const ref = reference({notes: [[0, 1, [69]], [1, 4, [72]]]});
   const result = pitch.scoreFrames([frame(0, 1, 6870), frame(1, 4, 7210)], ref, 4);

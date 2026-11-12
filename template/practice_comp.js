@@ -17,6 +17,19 @@
   const empty = descriptor => ({key: key(descriptor), song: descriptor.song, descriptor, offerVersion: OFFER_VERSION,
     trackVersion: TRACK_VERSION, revision: 0, segments: [], undo: null, processed: [], adopted: [], freshAt: 0});
   function adoptRevision(saved, descriptor, takes, current) {
+    // A score-key change must not recover audio that the singer deleted under
+    // an older key. Deletion applies to the track identity, not its score hash.
+    const removed = saved.filter(s => !s.segments.length && !s.track && s.freshAt > 0
+      && s.song === descriptor.song && (s.descriptor.slot || null) === (descriptor.slot || null)
+      && s.descriptor.reference.part === descriptor.reference.part
+      && (s.descriptor.reference.line ?? null) === (descriptor.reference.line ?? null)
+      && s.descriptor.reference.rate === descriptor.reference.rate)
+      .sort((a,b) => b.freshAt-a.freshAt)[0];
+    if (removed && removed.key !== current?.key && removed.freshAt > Math.max(current?.updatedAt || 0,current?.freshAt || 0)) {
+      return {...removed, key:key(descriptor), descriptor, revision:current?.revision || 0,
+        undo:protectedIds(removed).every(id=>takes.has(id) && eligible(takes.get(id),descriptor)) ? removed.undo : null,
+        processed:[...new Set([...(removed.processed || []), ...(current?.processed || [])])], revisionOf:removed.key};
+    }
     if (current && (current.segments.length || current.processed.length || current.freshAt
       || current.track || current.undo || current.revisionOf)) return current;
     const previous = saved.filter(s => s.key !== key(descriptor) && s.song === descriptor.song
@@ -87,7 +100,8 @@
       const frames = decoded.get(s.takeId);
       if (!frames) throw new Error("A comp contour is missing or outdated");
       return frames.flatMap(f => {
-        const start = Math.max(s.from, take.origin + f.start), end = Math.min(s.to, take.origin + f.end);
+        const origin=take.origin-(take.playbackAdvance || 0);
+        const start = Math.max(s.from, origin + f.start), end = Math.min(s.to, origin + f.end);
         return end - start > EPS ? [{start, end, cents: f.cents, takeId: s.takeId, ...(f.live ? {live:true} : {})}] : [];
       });
     }).sort((a, b) => a.start - b.start);
@@ -262,7 +276,7 @@
     const kept = new Map(), whole = new Set(), checked = new Map();
     const trusted = (t, stateKey) => {
       const id = JSON.stringify([stateKey, t.id]);
-      if (!checked.has(id)) checked.set(id, states.has(stateKey) && !t.favorite && eligible(t, states.get(stateKey).descriptor));
+      if (!checked.has(id)) checked.set(id, states.has(stateKey) && !t.favorite && !t.playbackAdvance && eligible(t, states.get(stateKey).descriptor));
       return checked.get(id);
     };
     const use = (segments, stateKey) => {

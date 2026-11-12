@@ -9,12 +9,9 @@ test('relative mix links accept zero, signed pan and omitted controls, but never
   assert.equal(mix.fromMixer(1,[50,150,50],[-90,90,-90]).uniform,true);
   assert.equal(mix.fromMixer(1,[50,150,30],[-90,90,-90]).uniform,false);
 });
-test('practice contours replace only observed intervals, with silence distinct from missing input',()=>{
-  const f=(start,end,cents)=>({start,end,cents});
-  const packed=trace.merge(null,[f(1,2,6031),f(3,4,6100)]);
-  const next=trace.merge(packed,[f(1.2,1.3,null),f(1.7,1.8,6005)]);
-  assert.deepEqual(trace.unpack(next).map(({start,end,cents})=>[start,end,cents]),[
-    [1,1.2,6031],[1.3,1.7,6031],[1.7,1.8,6005],[1.8,2,6031],[3,4,6100]]);
-  assert.equal(next.byteLength,5*12);assert.notDeepEqual(trace.key('s',1,0,{id:'a'},'f'),trace.key('s',1,0,{id:'b'},'f'));
+test('old pitch-only practice remains readable, but no writer can create new traces',()=>{
+  assert.deepEqual(trace.unpack(new Int32Array([1200,1300,6005])),[{start:1.2,end:1.3,cents:6005,live:true}]);
+  assert.equal(trace.writer,undefined);
+  assert.notDeepEqual(trace.key('s',1,0,{id:'a'},'f'),trace.key('s',1,0,{id:'b'},'f'));
   assert.notDeepEqual(trace.key('s',1,0,null,'f'),trace.key('s',1,1,null,'f'));
 });

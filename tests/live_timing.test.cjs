@@ -92,3 +92,13 @@ test('each visual frame reads the current audio clock and stop cancels the indep
   engine.startPresentation();assert.equal(frames.size,1,'no duplicate RAF chains');
   engine.stopPresentation();assert.equal(frames.size,0);
 });
+
+test('the engraved cursor uses the audio tick even if notation position callbacks are stale',()=>{
+  const {engine}=engineFixture(),ticks=[],updates=[];
+  engine.api={tickPosition:960,customCursorHandler:{sync:tick=>ticks.push(tick)}};
+  engine.output={updatePosition:ms=>updates.push(ms)};
+  engine.pushPosition(6.25);
+  assert.equal(ticks[0],6000);
+  assert.equal(updates[0],6250);
+  assert.equal(engine.api.tickPosition,960,'does not seek or advance the independent notation player');
+});

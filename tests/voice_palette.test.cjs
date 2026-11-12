@@ -1,5 +1,19 @@
 const test=require('node:test'),assert=require('node:assert/strict');
-const {lanes,mean}=require('../template/voice_palette.js');
+const {lanes,mean,labelPaint}=require('../template/voice_palette.js');
+test('unloaded recording labels reuse the mixer palette, not selection or row order',()=>{
+  const names=['S1','S2','A1','A2','T1','T2','B1','B2'];
+  const parts=names.map((short,i)=>({short,name:`${{S:'Soprano',A:'Alto',T:'Tenor',B:'Bass'}[short[0]]} ${short[1]}`,color:`var(--part-${i+1})`}));
+  for(const part of parts) {
+    assert.equal(labelPaint(part.short,[...parts].reverse()),part.color);
+    assert.equal(labelPaint(` ${part.name.toLowerCase()} `,parts),part.color);
+    assert.equal(labelPaint(`${part.short} \u00b7 80%`,parts),part.color);
+  }
+  assert.equal(labelPaint('S1',[...parts,parts[0]]),parts[0].color);
+  assert.equal(labelPaint('S',parts),'','do not guess which division');
+  assert.equal(labelPaint('Guest',parts),'');
+  assert.equal(labelPaint(null,parts),'');
+  assert.equal(labelPaint('S1',[...parts,{short:'S1',color:'red'}]),'','ambiguous labels remain neutral');
+});
 test('reattacks keep separate hit areas in a single-pitch divisi span',()=>{
   const {barNotes}=require('../template/voice_palette.js'), raw=[[0,0,2,60],[0,2,4,60],[0,0,4,67]];
   assert.deepEqual(barNotes({line:1},{notes:[[0,4,60]]},raw),[[0,2,60],[2,4,60]]);

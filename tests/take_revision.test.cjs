@@ -72,6 +72,17 @@ test('track adoption carries selections, removal/undo state and keeps historical
   const explicit=C.remove(C.empty(target),200);
   assert.equal(C.adoptRevision([state],target,sources,explicit),explicit);
 });
+test('a deletion beats a stale score-key comp even when its old source is no longer eligible',()=>{
+  const t=fixture(), oldTarget={song:'seed',reference:ref};
+  const state={...C.offer(C.empty(oldTarget),t,new Map([[t.id,t]])),updatedAt:5};
+  const removed={...C.remove(state,100),updatedAt:100};
+  const target={song:'seed',reference:{...ref,fingerprint:'corrected',notes:[[0,4,[43]]]}};
+  const stale={...state,key:C.key(target),descriptor:target,revision:2,updatedAt:50};
+  const kept=C.adoptRevision([removed,stale],target,new Map(),stale);
+  assert.deepEqual(kept.segments,[]);assert.equal(kept.freshAt,100);assert.equal(kept.revision,2);
+  const restored={...stale,updatedAt:150};
+  assert.equal(C.adoptRevision([removed,restored],target,new Map(),restored),restored,'later explicit restoration remains authoritative');
+});
 test('boundary labels use actual measure/beat fractions and exclusive ends, with numeric sorting',()=>{
   const measures=Array.from({length:25},(_,i)=>[i*6720,6720,7,4]);
   assert.equal(P.measureAddress(23*6720+2.5*960,measures,960),'24.3.5');

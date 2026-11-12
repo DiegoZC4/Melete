@@ -15,6 +15,7 @@ async function checkUiImports(frame,page,{mobile,output,label}) {
     throw error;
   });
   const ranges=frame.locator('[class*="melete-range-"][data-pitch]');
+  await frame.waitForFunction(()=>!(window.__qa||window.__probe).busy);
   const rangeCount=await ranges.count();
   const note=ranges.first(), hit=note.locator('.range-hit');
   await hit.scrollIntoViewIfNeeded();

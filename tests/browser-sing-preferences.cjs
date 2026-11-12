@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 
 const singPreferenceProbe = `singPreferences: {
   snapshot() { return {
-    wanted: wantsPitchCapture, state: pitchCaptureState, preferences: currentPreferenceState(),
+    wanted: wantsPitchCapture(), state: pitchCaptureState, preferences: currentPreferenceState(),
     saved: JSON.parse(localStorage.getItem(preferenceKey)), help: settingsHelpEnabled,
     input: pitchCaptureStream?.getAudioTracks()[0]?.enabled || false,
     hasStream: !!pitchCaptureStream, audioState: pitchCaptureContext?.state,
@@ -49,7 +49,7 @@ async function checkSingPreferences(frame, page, {reload, probe = '__qa'} = {}) 
     const q = window[probe], ref = q.compDescriptor.reference;
     q.api.tickPosition = q.engine.tickAtSeconds(ref.notes[Math.floor(ref.notes.length / 3)][0] * ref.rate);
   }, probe);
-  await frame.locator('#recordAudio').click();
+  assert.equal(await frame.locator('#recordAudio').count(),0);
   assert.equal((await snapshot()).playing,false,'arming audio is not Play');
   await frame.locator('#playPause').click();
   await frame.waitForFunction(probe => {
@@ -68,7 +68,7 @@ async function checkSingPreferences(frame, page, {reload, probe = '__qa'} = {}) 
   }
   assert.equal((await snapshot()).input, true, 'Sing continues metering while paused');
   assert.equal((await snapshot()).saved.sing, true, 'Pause retains Sing intent');
-  assert.equal(await frame.locator('#recordAudio').getAttribute('aria-pressed'),'true','Pause keeps the same singer ready to overdub');
+  assert.equal(await frame.locator('#pitchCapture').getAttribute('aria-pressed'),'true','Pause keeps the same singer ready to overdub');
   assert.equal(await frame.evaluate(({probe,id})=>window[probe].recording.takes.find(t=>t.id===id)?.complete, {probe,id:savedId}), true);
   try { await frame.waitForFunction(({probe,id})=>window[probe].compState?.segments.some(s=>s.takeId===id), {probe,id:savedId}); }
   catch (error) {
@@ -132,7 +132,7 @@ async function checkSingPreferences(frame, page, {reload, probe = '__qa'} = {}) 
 
   await frame.evaluate(() => document.dispatchEvent(new CustomEvent('melete:deactivate')));
   const inactive = await snapshot();
-  assert.equal(await frame.locator('#recordAudio').getAttribute('aria-pressed'),'false','audio consent never transfers to the next song');
+  assert.equal(inactive.takeState,'off','a hidden song never records');
   assert.equal(inactive.state, 'off');
   assert.equal(inactive.input, false);
   assert.equal(inactive.worker, false);

@@ -4,7 +4,7 @@ const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {execFileSync} = require('node:child_process');
 const {readCollection, mapCollectionAssets} = require('./collection-fixture.cjs');
-const {startRecording} = require('./browser-sing.cjs');
+const {enableSing,startRecording} = require('./browser-sing.cjs');
 
 async function shown(page, title) {
   const locator = page.locator(`iframe[title="${title} practice score"][aria-hidden="false"]`);
@@ -42,7 +42,9 @@ async function checkCollections(browser, temporary, output) {
       `engine = new GuideEngine(sequence);
        window.__collection = {engine, get busy(){return Boolean(renderTimer || barRenderFrame || notationRenderInFlight || notationRenderQueued);},
          get song(){return takeSongKey();}, get capture(){return pitchCaptureStream;},
-         get recordState(){return takeState;}, get store(){return takeStore;}};`));
+         get recordState(){return takeState;}, get store(){return takeStore;},
+         portable:currentPortableState, octave:takeOctave,
+         annotate(text){annotations.set('0:0',{tick:0,partIndex:0,text});saveAnnotations();}};`));
     const offline = path.join(temporary,`collection-${count}.html`);
     await fs.writeFile(offline,html);
     for(const mobile of [false,true]) {
@@ -90,6 +92,7 @@ async function checkCollections(browser, temporary, output) {
         assert.equal(await frame.evaluate(()=>__collection.capture?.getAudioTracks().some(t=>t.readyState==='live')||false),false);
         assert.notEqual(await first.evaluate(()=>__collection.song),secondKey);
         assert.equal(await first.locator('#tempo').getAttribute('data-value'),'100','preferences do not bleed between songs');
+        await first.evaluate(()=>__collection.annotate('First annotation </script> with a second line\nkeep it'));
         const firstIdentity=await first.evaluate(()=>{window.__instance=crypto.randomUUID();return __instance;});
         if(count===2)await first.locator('#songToggle').click();
         else await first.locator('#songSelect').selectOption('1');
@@ -101,6 +104,10 @@ async function checkCollections(browser, temporary, output) {
         });
         assert.deepEqual(embedded,{pdf:[...pdf],conductor:false,extension:false},'manual PDF stays embedded, conductor assets do not');
         assert.equal(await frame.locator('#tempo').getAttribute('data-value'),'80');
+        await frame.evaluate(()=>{
+          __collection.annotate('Second annotation');
+          localStorage.setItem(`melete:take-octaves:${__collection.song}`,JSON.stringify({'fixture-cloud-row':-1}));
+        });
         assert.equal(await frame.locator('#loopStart').textContent(),'2');
         if(count===2)await frame.locator('#songToggle').click();
         else await frame.locator('#songSelect').selectOption('0');
@@ -109,6 +116,7 @@ async function checkCollections(browser, temporary, output) {
 
         // Capture synthetic microphone audio, switch away, then reload. The
         // source song ID and stored PCM must survive the new packaging.
+        await enableSing(frame);
         await startRecording(frame);
         await frame.waitForFunction(()=>__collection.recordState==='recording');
         await page.waitForTimeout(650);
@@ -159,6 +167,12 @@ async function checkCollections(browser, temporary, output) {
         await page.waitForFunction(()=>typeof __savedCollection==='string');
         const saved=await page.evaluate(()=>__savedCollection);
         assert.equal(readCollection(saved).songs.length,count);
+        const exported=readCollection(saved).songs.map(song=>song.portableState);
+        assert.deepEqual(exported.slice(0,2).map(state=>state.annotations.items[0].text),
+          ['First annotation </script> with a second line\nkeep it','Second annotation']);
+        assert.equal(exported[1].takeOctaves['fixture-cloud-row'],-1);
+        assert.ok(exported.every(state=>state.preferences.sing===false),'HTML never transfers microphone consent');
+        assert.equal((await page.evaluate(()=>window.__collectionMediaCalls)).capture,1,'export does not open hidden microphones');
         await fs.writeFile(offline,saved);
         await page.unrouteAll({behavior:'wait'});
         await page.route('**/*',route=>{
@@ -168,10 +182,16 @@ async function checkCollections(browser, temporary, output) {
         await page.goto(pathToFileURL(offline).href+'#second-song');
         frame=await shown(page,'Second song');
         assert.equal(page.url(),pathToFileURL(offline).href+'?song=second-song','the local file also keeps a query URL');
+        assert.equal(await frame.locator('#tempo').getAttribute('data-value'),'80','current settings survive the download');
+        assert.equal(await frame.evaluate(()=>__collection.portable().annotations.items[0].text),'Second annotation');
+        assert.equal(await frame.evaluate(()=>__collection.octave('fixture-cloud-row')),-1,'octave choices apply live after import');
+        assert.equal(await frame.evaluate(()=>__collection.capture),null);
         if(count===2)await frame.locator('#songToggle').click();
         else await frame.locator('#songSelect').selectOption('2');
         const finalTitle=count===2?'First song':'Third song';
         frame=await shown(page,finalTitle);
+        if(count===2)assert.equal(await frame.evaluate(()=>__collection.portable().annotations.items[0].text),
+          'First annotation </script> with a second line\nkeep it');
         // Browsers can reload a srcdoc frame independently of its collection.
         // Restore collection controls as well as the ordinary player on load.
         await Promise.all([frame.waitForNavigation({waitUntil:'load'}),frame.evaluate(()=>location.reload())]);

@@ -1,6 +1,49 @@
 const assert = require('node:assert/strict');
 const {withMixerSignal} = require('./browser-mixer-signal.cjs');
 
+async function checkNumericWheel(surface,page,probe='__qa') {
+  const original=await surface.evaluate(probe=>window[probe].pitchbar.captureSettingsState(),probe),results=[];
+  try {
+    if(await surface.locator('#settingsToggle').getAttribute('aria-expanded')!=='true')await surface.locator('#settingsToggle').click();
+    for(const toggle of await surface.locator('.settings-section-toggle').all())
+      if(await toggle.getAttribute('aria-expanded')==='false')await toggle.click();
+    for(const selector of ['[data-volume-index="0"]','#tempo','#metronome','#takeVolume','#takeReverb','#verticalScale','#horizontalScale']) {
+      const control=surface.locator(selector);
+      await control.scrollIntoViewIfNeeded();await control.press('Home');
+      await surface.waitForFunction(probe=>!window[probe].busy,probe);
+      const before=Number(await control.getAttribute('data-value'));
+      const box=await control.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+      const scroll=await surface.evaluate(()=>[scrollX,scrollY,document.getElementById('takePanel').scrollTop]);
+      await page.mouse.wheel(0,-24);
+      await surface.waitForFunction(({selector,before})=>Number(document.querySelector(selector).dataset.value)>before,{selector,before});
+      await surface.waitForFunction(probe=>!window[probe].busy,probe);
+      const after=Number(await control.getAttribute('data-value'));
+      assert.deepEqual(await surface.evaluate(()=>[scrollX,scrollY,document.getElementById('takePanel').scrollTop]),scroll,selector+' wheel is not page scroll');
+      await page.mouse.wheel(0,24);
+      await surface.waitForFunction(({selector,before})=>Number(document.querySelector(selector).dataset.value)===before,{selector,before});
+      results.push({selector,before,after});
+    }
+    const volume=surface.locator('[data-volume-index="0"]');await volume.press('Home');
+    await volume.evaluate(button=>{for(let i=0;i<4;i++)button.dispatchEvent(new WheelEvent('wheel',{deltaY:-6,bubbles:true,cancelable:true}));});
+    assert.equal(await volume.getAttribute('data-value'),'5','small trackpad deltas accumulate');
+    await volume.press('End');
+    await volume.evaluate(button=>{
+      button.dispatchEvent(new WheelEvent('wheel',{deltaY:-1000,bubbles:true,cancelable:true}));
+      button.dispatchEvent(new WheelEvent('wheel',{deltaY:24,bubbles:true,cancelable:true}));
+    });
+    assert.equal(await volume.getAttribute('data-value'),'195','no scroll debt at the ceiling');
+    const ignored=await volume.evaluate(button=>[
+      {deltaY:-24,ctrlKey:true},{deltaY:-24,metaKey:true},{deltaX:100,deltaY:-1},
+    ].map(props=>{const e=new WheelEvent('wheel',{...props,bubbles:true,cancelable:true});button.dispatchEvent(e);return e.defaultPrevented;}));
+    assert.deepEqual(ignored,[false,false,false]);
+    assert.equal(await volume.getAttribute('data-value'),'195','zoom/horizontal gestures do not change values');
+    return {controls:results,trackpad:true,limits:true,nativeZoom:true};
+  } finally {
+    await surface.evaluate(({probe,state})=>window[probe].pitchbar.applySettingsState(state),{probe,state:original});
+    await surface.waitForFunction(probe=>!window[probe].busy,probe);
+  }
+}
+
 async function checkNumericClicks(surface, page, mobile, probe) {
   const original=await surface.evaluate(probe=>window[probe].pitchbar.captureSettingsState(),probe),results=[];
   try {
@@ -11,10 +54,16 @@ async function checkNumericClicks(surface, page, mobile, probe) {
     },probe);
     for(const selector of ['#tempo','#metronome','#verticalScale','#horizontalScale','[data-volume-index="0"]']){
       await reset();
+      await surface.waitForFunction(probe=>!window[probe].busy,probe);
       const control=surface.locator(selector),before=Number(await control.getAttribute('data-value'));
       if(mobile)await control.tap();else await control.click();
       assert.equal(Number(await control.getAttribute('data-value')),before+10,selector+' click adds ten percentage points');
-      await control.press('Enter');assert.equal(Number(await control.getAttribute('data-value')),before+20,selector+' keyboard activation');
+      // Pointer-up deliberately blurs toolbar controls on the next frame. Let
+      // that finish before focusing again for a separate keyboard gesture.
+      await surface.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      await control.press('Enter');
+      await surface.waitForFunction(({selector,value})=>Number(document.querySelector(selector)?.dataset.value)===value,{selector,value:before+20});
+      assert.equal(Number(await control.getAttribute('data-value')),before+20,selector+' keyboard activation');
       results.push({selector,before,after:before+20});
     }
   } finally {
@@ -170,4 +219,4 @@ async function checkMetronome(surface) {
   }
 }
 
-module.exports = {checkNumericClicks, checkVolumeDrag, checkBoostedAudio, checkMetronome};
+module.exports = {checkNumericClicks, checkNumericWheel, checkVolumeDrag, checkBoostedAudio, checkMetronome};

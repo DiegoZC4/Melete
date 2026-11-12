@@ -4,15 +4,80 @@
   const CHUNK = 1024 * 1024;
   const digest = async bytes => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
     .map(x => x.toString(16).padStart(2, "0")).join("");
+  const RECEIPTS = "melete:submitted-tracks:v1";
+  function localOnly(state) {
+    if (!state?.descriptor) return false;
+    const {song, reference:r, slot} = state.descriptor;
+    try { return JSON.parse(localStorage.getItem('melete:cloud:local-only:v1') || '[]')
+      .includes(JSON.stringify([song,r.part,r.line ?? null,slot || null])); } catch { return false; }
+  }
+  function receipts() {
+    try { return JSON.parse(localStorage.getItem(RECEIPTS) || "{}") || {}; } catch { return {}; }
+  }
+  function signature(state, sources) {
+    if (!state?.segments?.length) return null;
+    const ref = state.descriptor.reference;
+    return JSON.stringify([state.key, ref.fingerprint, ref.rate, state.segments,
+      [...new Set(state.segments.map(s => s.takeId))].map(id => {
+        const t = sources.get(id);
+        return t ? [id,t.frames,t.sampleRate,t.updatedAt,t.playbackAdvance,t.pitchReference?.latency,
+          t.pitchContour?.analysisVersion,t.pitchScore?.scoringVersion] : [id,null];
+      })]);
+  }
+  function hasReceipt(state, sources) {
+    const stamp = signature(state, sources);
+    return Boolean(stamp && receipts()[state.key]?.signature === stamp);
+  }
+  function rememberReceipt(key, stamp, result, owner) {
+    if (!stamp || !result?.id || !owner) return;
+    try { localStorage.setItem(RECEIPTS, JSON.stringify({...receipts(), [key]:
+      {signature:stamp,id:result.id,owner,uploaded:result.uploaded}})); } catch {}
+  }
+  function forgetReceipt(id, owner) {
+    const saved = receipts();
+    for (const [key, receipt] of Object.entries(saved)) if (receipt.id === id && receipt.owner === owner) delete saved[key];
+    try { localStorage.setItem(RECEIPTS, JSON.stringify(saved)); } catch {}
+  }
   function create(adapter) {
     const el = id => document.getElementById(id), model = root.MeleteComp;
     let session = null, remote = null, remoteKey = null, working = false, timer = null, savedRevision = -1;
-    let pendingUpload = null, scope = "mine", listing = [], listOrder = {column:"updatedAt", direction:-1};
+    let pendingUpload = null, listing = [];
+    let preferReview=false, listEpoch=0, consentOwner=null, pendingLibrary=false;
     let connection = 0;
     const uploaded = new Set();
+    const prepared = new Map(), preparing = new Map();
+    const identities = typeof BroadcastChannel === "function" ? new BroadcastChannel("melete-cloud-identity") : null;
+    const itemId = item => item.rehearsalDate ? `rehearsal:${item.rehearsalDate}:${item.id}`
+      : item.id ? `submitted:${item.owner}:${item.id}` : `cloud:${item.owner}:${item.key}:${item.revision}`;
+    const itemVersion = item => JSON.stringify(item);
     let endpoint;
+    function clearReviewedAudio(){
+      if(/^(submitted|cloud|rehearsal):/.test(adapter.selected?.() || ""))adapter.clear();
+      for (const item of listing) adapter.mute?.(itemId(item));
+      prepared.clear(); preparing.clear();
+    }
+    function forgetSession() {
+      if(session?.user)adapter.identityChanged?.();
+      adapter.directoryChanged?.(null);
+      clearReviewedAudio(); connection++; listEpoch++; clearTimeout(timer);
+      session=null; remote=null; remoteKey=null; consentOwner=null; pendingUpload=null;
+      savedRevision=-1; uploaded.clear(); listing=[]; renderListing(); controls();
+    }
+    if (identities) identities.onmessage = event => {
+      if (event.data !== "changed") return;
+      forgetSession();
+      // A notification invalidates caches, never grants access; the server
+      // verifies the cookie again for every already-loaded song/tab.
+      void connect({interactive:false}).catch(() => {});
+    };
+    root.addEventListener("pagehide",event=>{if (!event.persisted) identities?.close();});
     function account() {
-      el('cloudScope').hidden = !session?.reviewer;
+      const login=el('openCloudLibrary');
+      if(login){login.setAttribute('aria-label',session?.user ? 'Google account and recording backups' : 'Sign in with Google to review recordings');
+        login.title=session?.user ? `${session.user.name}: Google account and recording backups` : 'Sign in with Google to review recordings';}
+      el("cloudIdentity").textContent=session?.user?.name || "";
+      el("cloudPrivateControls").hidden=!session?.user || !adapter.state();
+      el("compCloudLogout").hidden=!session?.user;
     }
     function signIn() {
       try {
@@ -33,7 +98,8 @@
       for (const id of ["compCloudSave", "compCloudRestore", "compCloudDelete", "compCloudLogout", "compCloudAuto"]) el(id).disabled = working || !session?.user;
       el("compCloudRestore").disabled ||= !remote;
       el("compCloudDelete").disabled ||= !remote;
-      el("compCloudSave").disabled ||= !adapter.state();
+      el("compCloudSave").disabled ||= !adapter.state() || localOnly(adapter.state());
+      el("compCloudAuto").disabled ||= localOnly(adapter.state());
       el("compCloudRestore").disabled ||= !adapter.state();
       el("compCloudAuto").checked = Boolean(enabled());
       el("compCloudDelete").dataset.deleteToken = `${remoteKey}:${remote?.revision}`;
@@ -69,10 +135,13 @@
       controls();
     }
     async function connect({interactive = true} = {}) {
-      const attempt = ++connection, next = await request("status");
+      const attempt = ++connection, next = await request("status",{query:{song:adapter.song()}});
       if (attempt !== connection) return;
       if (session?.user?.id !== next.user?.id) {
-        listing = []; scope = "mine"; remote = null; remoteKey = null; renderListing();
+        if(session?.user)adapter.identityChanged?.();
+        adapter.directoryChanged?.(null);
+        clearReviewedAudio();
+        listing = []; remote = null; remoteKey = null;consentOwner=null;uploaded.clear();renderListing();
       }
       session = next;
       controls();
@@ -81,10 +150,15 @@
         el("compGoogleButton").replaceChildren();
         await loadRemote();
         message("");
-        if (el("compCloudDialog").open) await loadListing();
+        await loadListing();
+        if(attempt !== connection)return;
+        if(session.directoryAccess){
+          const data=await request('directory',{query:{song:adapter.song()}});
+          if(attempt === connection)adapter.directoryChanged?.(data.directory);
+        } else adapter.directoryChanged?.(null);
         return;
       }
-      if (!interactive) return;
+      if (!interactive && !el("compCloudDialog").open) return;
       // Google rejects the null location.origin of about:srcdoc song frames.
       // Authenticate on a real same-origin document, never in the score frame.
       const frame = document.createElement("iframe"), url = new URL('signin.html', endpoint);
@@ -104,18 +178,22 @@
     async function afterSignIn() {
       try {
         await connect({interactive: false});
+        if (session?.user) identities?.postMessage("changed");
+        if(session?.user && (pendingLibrary || preferReview)){
+          pendingLibrary=false;preferReview=false;el("compCloudDialog").close();adapter.openLibrary?.();
+        }
         if (!session?.user || !pendingUpload) return;
         const intended = pendingUpload; pendingUpload = null;
-        if (adapter.state()?.key !== intended.key || adapter.state()?.revision !== intended.revision) {
+        if (Date.now()>intended.until || adapter.state()?.key !== intended.key || adapter.state()?.revision !== intended.revision) {
           adapter.toast("The track changed during sign-in. Click Upload again.", "error"); return;
         }
-        await save({reviewable: true});
+        await submit();
       } catch (e) { message(e.message); }
     }
     function uploadTrack() {
-      if (working || !adapter.state()?.segments.length) return;
-      if (session?.user) { void save({reviewable:true}); return; }
-      pendingUpload = {key:adapter.state().key, revision:adapter.state().revision};
+      if (working || !adapter.state()?.segments.length || localOnly(adapter.state())) return;
+      if (session?.user) { void submit(); return; }
+      pendingUpload = {key:adapter.state().key, revision:adapter.state().revision,until:Date.now()+5*60000};
       signIn();
     }
     async function upload(blob) {
@@ -140,8 +218,40 @@
       if (blob.size !== info.bytes) throw new Error("Cloud recording is incomplete");
       return blob;
     }
-    async function save({automatic = false, reviewable} = {}) {
-      if (working || !session?.user || !adapter.state()) return;
+    async function submit() {
+      const state=adapter.state(), owner=session?.user?.id;
+      if(!owner || !state?.segments.length || working || localOnly(state))return;
+      if(consentOwner!==owner){
+        if(!confirm("Submit this comp as "+session.user.name+"? The choir reviewers can hear the finished audio and see its pitch contour and scores. Your other recordings stay private."))return;
+        consentOwner=owner;
+      }
+      working=true;controls();message("Submitting comp...");
+      try{
+        const ref=state.descriptor.reference, stats=adapter.metadata().pitchScore;
+        const stamp=signature(state,adapter.sources());
+        const check=()=>{if(session?.user?.id!==owner || adapter.state()?.key!==state.key || adapter.state()?.revision!==state.revision)
+          throw Error("The track or account changed. Select the comp and submit again.");};
+        const render=await adapter.renderSubmission();check();
+        const pitch=new Float32Array(render.frames.length*3);
+        render.frames.forEach((f,i)=>pitch.set([f.start,f.end,Number.isFinite(f.cents)?f.cents:NaN],i*3));
+        const ids=new Map(), seams=state.segments.map(s=>{
+          if(!ids.has(s.takeId))ids.set(s.takeId,ids.size+1);
+          return [s.from,s.to,ids.get(s.takeId)];
+        });
+        const track=await digest(new TextEncoder().encode(state.key)), audio=await upload(render.blob),
+          pitches=await upload(new Blob([pitch]));check();
+        const result=await request("submit",{method:"POST",body:{version:1,song:state.song,track,label:state.descriptor.label,
+          part:ref.part,line:ref.line??null,fingerprint:ref.fingerprint,rate:ref.rate,origin:render.origin,seconds:ref.seconds,seams,
+          stats:root.MeleteTakeControls.metricValues(stats),audio,pitches}});
+        rememberReceipt(state.key,stamp,result,owner);adapter.submitted?.();
+        const notice=result.unchanged?"This version was already submitted":"Comp submitted for review";
+        message(notice);adapter.toast(notice);
+        await loadListing();
+      }catch(e){message(e.message);adapter.toast(e.message,"error");}
+      finally{working=false;controls();}
+    }
+    async function save({automatic = false} = {}) {
+      if (working || !session?.user || !adapter.state() || localOnly(adapter.state())) return;
       const current = adapter.state(), takes = new Map(adapter.sources());
       const key = await digest(new TextEncoder().encode(current.key));
       if (automatic && savedRevision === current.revision) return;
@@ -163,11 +273,11 @@
         }
         if (adapter.state()?.key !== current.key) throw new Error("Part changed during backup. Retry from that part.");
         const result = await request("save", {method: "POST", body: {key, revision: remote?.revision || 0,
-          ...(reviewable === undefined ? {} : {reviewable}), payload: {version: 1, state, records, summary: adapter.metadata?.()}}});
+          reviewable:false, payload: {version: 1, state, records, summary: adapter.metadata?.()}}});
         remote = result.profile; remoteKey = key; savedRevision = current.revision;
         message("");
-        adapter.toast(reviewable ? "Track uploaded for review" : "Track backed up");
-        if (el("compCloudDialog").open) await loadListing();
+        adapter.toast("Track backed up");
+        await loadListing();
       } catch (e) { message(e.message); adapter.toast(e.message, "error"); }
       finally { working = false; controls(); if (savedRevision >= 0 && adapter.state()?.key === current.key && adapter.state()?.revision !== savedRevision) changed(); }
     }
@@ -210,58 +320,142 @@
       finally { working = false; controls(); }
     }
     async function open() {
+      pendingUpload=null;
       el("compCloudDialog").showModal(); controls();
       try { await connect(); } catch (e) { message(e.message); }
     }
     async function loadListing() {
       if (!session?.user) return;
-      if (!session.reviewer) scope = "mine";
-      const expected = scope, owner = session.user.id, song = adapter.song(), items = [];
-      let offset = 0;
-      do {
-        const result = await request("list", {query:{song, scope:expected, offset}});
-        items.push(...result.items); offset = result.next;
-      } while (offset !== null && items.length < 1000);
-      if (scope !== expected || session?.user?.id !== owner || adapter.song() !== song) return;
+      const owner=session.user.id, song=adapter.song(), items=[], epoch=++listEpoch;
+      const active=()=>epoch===listEpoch && session?.user?.id===owner && adapter.song()===song;
+      for(const action of ["submissions","list"]){
+        const scope = (action === "submissions" ? session.submissionReviewer : session.reviewer) ? "review" : "mine";
+        let offset=0;
+        do{
+          const result=await request(action,{query:{song,scope,offset}});
+          if(!active())return;
+          items.push(...(action==="submissions"?result.items:result.items.filter(i=>i.reviewable).map(i=>({...i,uploaded:i.updatedAt}))));
+          offset=result.next;
+        }while(offset!==null);
+      }
+      if(session.rehearsalReviewer){
+        const result=await request('rehearsals',{query:{song}});
+        if(!active())return;
+        items.push(...result.items);
+      }
+      const versions = new Map(items.map(item => [itemId(item), itemVersion(item)]));
+      for (const item of listing) if (versions.get(itemId(item)) !== itemVersion(item)) {
+        const id = itemId(item);
+        if (adapter.selected?.() === id) adapter.clear();
+        adapter.mute?.(id); prepared.delete(id); preparing.delete(id);
+      }
       listing = items; renderListing();
     }
     function renderListing() {
-      const pill = el("cloudScope");
-      pill.style.setProperty("--pill-index", scope === "mine" ? 0 : 1);
-      pill.querySelectorAll("button").forEach((b, i) => {
-        const active = (scope === "mine") === (i === 0);
-        b.classList.toggle("is-active", active); b.setAttribute("aria-selected", String(active)); b.tabIndex = active ? 0 : -1;
-      });
-      const rows = [...listing].sort((a,b) => {
-        const x=a[listOrder.column], y=b[listOrder.column];
-        if ((x == null) !== (y == null)) return x == null ? 1 : -1;
-        return listOrder.direction * (typeof x === "string" ? x.localeCompare(y) : (x || 0)-(y || 0));
-      }).map(item => {
-        const row=document.createElement("tr");
-        for (const [key,value] of [["name",item.name],["label",item.label],["createdAt",item.createdAt],["updatedAt",item.updatedAt],["mean",item.mean]]) {
-          const cell=document.createElement("td");
-          cell.textContent = key.endsWith("At") ? new Date(value).toLocaleString()
-            : key === "mean" ? Number.isFinite(value) ? value.toFixed(1) : "\u2014" : String(value);
-          row.append(cell);
-        }
-        const actions=document.createElement("td");
-        for (const [downloadOnly,label,svg] of [[false,"Review",'<path d="m9 5 10 7-10 7V5Z"></path>'],
-          [true,"Download",'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path>']]) {
-          const b=document.createElement("button"); b.className="icon-button";
-          b.setAttribute("aria-label",`${label} ${item.name}: ${item.label}`);
-          b.innerHTML=`<svg viewBox="0 0 24 24" aria-hidden="true">${svg}</svg>`;
-          b.onclick=()=>reviewCloud(item,downloadOnly); actions.append(b);
-        }
-        row.append(actions); return row;
-      });
-      el("cloudTakeRows").replaceChildren(...rows);
+      account();
+      adapter.libraryChanged?.();
     }
-    async function reviewCloud(item, downloadOnly) {
-      if (working) return;
-      working=true; controls(); message("Loading...");
-      try {
+    const canWithdraw = item => Boolean(item.id && !item.rehearsalDate && item.owner === session?.user?.id);
+    async function withdraw(item) {
+      if (!canWithdraw(item)) return;
+      await request("withdraw", {method:"POST", body:{id:item.id}});
+      uploaded.clear(); forgetReceipt(item.id,item.owner); adapter.submitted?.(); await loadListing();
+    }
+    function prepare(item, downloadOnly = false) {
+      const id = itemId(item), version = itemVersion(item), owner = session?.user?.id, epoch = connection;
+      // Sign-out, account changes and a withdrawn/replaced item invalidate both
+      // in-flight downloads and decoded audio, without touching local takes.
+      const check = () => {
+        if (!owner || owner !== session?.user?.id || epoch !== connection
+          || !listing.some(i => itemId(i) === id && itemVersion(i) === version))
+          throw new DOMException("Recording access changed", "AbortError");
+      };
+      check();
+      if (!downloadOnly && prepared.has(id)) return Promise.resolve({...prepared.get(id)});
+      if (!downloadOnly && preparing.has(id)) return preparing.get(id);
+      const job = (async () => {
+        try {
+          const load = item.rehearsalDate ? reviewRehearsal : item.id ? reviewSubmission : reviewCloud;
+          const review = await load(item, downloadOnly, check);
+          check();
+          if (review) {
+            const frames = review.frames.map(frame => ({...frame,
+              start:frame.start + review.origin, end:frame.end + review.origin}));
+            review.pitchScore = root.MeleteTakePitch.scoreFrames(frames, review.ref, review.ref.seconds);
+            prepared.set(id, review);
+          }
+          return review && {...review};
+        } finally {
+          if (preparing.get(id) === job) preparing.delete(id);
+          renderListing();
+        }
+      })();
+      if (!downloadOnly) preparing.set(id, job);
+      renderListing();
+      return job;
+    }
+    async function reviewRehearsal(item,downloadOnly,check) {
+        const id=itemId(item);
+        const get=async action=>{
+          const url=new URL('rehearsal.php',endpoint);
+          for(const [key,value] of Object.entries({action,date:item.rehearsalDate,id:item.id}))url.searchParams.set(key,value);
+          const response=await fetch(url,{credentials:'same-origin',cache:'no-store',signal:AbortSignal.timeout(60000)});
+          if(!response.ok)throw Error('Rehearsal unavailable for this Google account.');
+          return response;
+        };
+        const stored=await (await get('pitch')).json(), ref=adapter.descriptor(stored.ref.part,stored.ref.line,stored.ref.rate)?.reference;
+        check();
+        if(!ref || !root.MeleteTakePitch.samePassage(stored.ref,ref))throw Error('Different score edition.');
+        const blob=await (await get('audio')).blob(), ctx=adapter.context(), buffer=await ctx.decodeAudioData(await blob.arrayBuffer());
+        const rest=root.MeleteTakePitch.playbackRestReference(ref,item.origin,buffer.duration);
+        if(rest)for(let channel=0;channel<buffer.numberOfChannels;channel++)root.MeleteTakePitch.discardRestAudio(buffer.getChannelData(channel),buffer.sampleRate,rest);
+        const ranges=item.segments.map(([a,b])=>[a*ref.rate,b*ref.rate]);
+        const review={id,label:item.name+': '+item.label,ref,buffer,blob,origin:item.origin,latency:0,
+          frames:root.MeleteVocalPitch.cleanPitchFrames(root.MeleteTakePitch.cleanRestFrames(
+            stored.frames.map(([start,end,cents])=>({start,end,cents,live:true})),rest)),
+          track:ref.part,rate:ref.rate,start:item.origin*ref.rate,end:item.end*ref.rate,ranges,
+          timelineSegments:ranges.map(([from,to],i)=>({from,to,takeId:String(item.segments[i][2]),label:'Take '+item.segments[i][2]}))};
+        check();
+        if(downloadOnly){
+          const pcm=Int16Array.from(buffer.getChannelData(0),x=>Math.round(Math.max(-1,Math.min(1,x))*32767));
+          adapter.downloadBlob(new Blob([root.MeleteRecording.wavBytes(pcm,buffer.sampleRate)],{type:'audio/wav'}),`${adapter.song()}-${item.name}-${item.rehearsalDate}.wav`);
+        }
+        else{
+          if(root.MeleteTakeLoudness)review.loudness=await root.MeleteTakeLoudness.track(buffer);
+          return review;
+        }
+    }
+    async function reviewSubmission(item,downloadOnly,check) {
+        const query={owner:item.owner,id:item.id}, {manifest:m}=await request("submission",{query});
+        check();
+        const q={owner:item.owner,submission:item.id}, id=itemId(item);
+        const ref=adapter.descriptor(m.part,m.line,m.rate)?.reference;
+        if(!downloadOnly && (m.song!==adapter.song() || ref?.fingerprint!==m.fingerprint || ref.rate!==m.rate || Math.abs(ref.seconds-m.seconds)>.01))
+          throw Error("Different score edition. Download the comp to listen separately.");
+        const blob=await download(m.audio,q);
+        check();
+        if(downloadOnly){adapter.downloadBlob(blob,`${m.song}-${item.name}-${new Date(item.uploaded).toISOString().slice(0,10)}-comp.wav`);}
+        else{
+          const samples=new Float32Array(await (await download(m.pitches,q)).arrayBuffer()),frames=[];
+          if(samples.length%3)throw Error("Invalid pitch contour");
+          for(let i=0;i<samples.length;i+=3){
+            const [a,b,c]=samples.subarray(i,i+3);
+            if(!Number.isFinite(a)||!Number.isFinite(b)||b<a)throw Error("Invalid pitch contour");
+            frames.push({start:a,end:b,cents:Number.isFinite(c)?c:null});
+          }
+          const ctx=adapter.context(), buffer=await ctx.decodeAudioData(await blob.arrayBuffer());
+          const ranges=m.seams.map(([a,b])=>[a*m.rate,b*m.rate]);
+          const review={id,label:item.name+": "+item.label,ref,buffer,blob,frames,origin:m.origin,latency:0,
+            track:m.part,rate:m.rate,start:m.origin*m.rate,end:m.seconds*m.rate,ranges,
+            timelineSegments:ranges.map(([from,to],i)=>({from,to,takeId:String(m.seams[i][2]),label:"Take "+m.seams[i][2]}))};
+          if(root.MeleteTakeLoudness)review.loudness=await root.MeleteTakeLoudness.track(buffer);
+          return review;
+        }
+    }
+    async function reviewCloud(item, downloadOnly, check) {
         const query={owner:item.owner,key:item.key};
         const {profile}=await request("load",{query});
+        check();
         const payload=profile?.payload, state=payload?.state, ref=state?.descriptor?.reference;
         if (!state || !ref || !Array.isArray(payload.records)) throw new Error("Invalid cloud recording");
         const current=adapter.descriptor(ref.part,ref.line ?? null);
@@ -278,31 +472,21 @@
         }
         model.validate(state,takes);
         const rendered=await root.MeleteCompAudio.prepare(adapter.context(),state,takes,t=>audio.get(t.id),AbortSignal.timeout(60000));
+        check();
         if (downloadOnly) adapter.downloadBlob(rendered.blob,`${state.song}-${item.name}-track.wav`);
         else {
-          const id=`cloud:${item.owner}:${item.key}:${profile.revision}`;
-          if (adapter.selected()===id) adapter.clear();
-          else adapter.review({id,label:`${item.name}: ${item.label}`,ref,
+          return {id:itemId(item),label:`${item.name}: ${item.label}`,ref,
             frames:model.framesFor(state.segments,takes).map(f=>({...f,start:f.start-rendered.origin,end:f.end-rendered.origin})),...rendered,
             track:ref.part,rate:ref.rate,start:rendered.origin*ref.rate,end:ref.seconds*ref.rate,latency:0,
             ranges:state.segments.map(s=>[s.from*ref.rate,s.to*ref.rate]),
-            timelineSegments:state.segments.map(s=>({from:s.from*ref.rate,to:s.to*ref.rate,takeId:s.takeId,label:`${item.name}: take ${takes.get(s.takeId).number}`}))});
-          el("compCloudDialog").close();
+            timelineSegments:state.segments.map(s=>({from:s.from*ref.rate,to:s.to*ref.rate,takeId:s.takeId,label:`${item.name}: take ${takes.get(s.takeId).number}`}))};
         }
-        message("");
-      } catch(e) { message(e.message); adapter.toast(e.message,"error"); }
-      finally { working=false; controls(); }
     }
     function changed() {
       clearTimeout(timer);
       if (enabled()) timer = setTimeout(() => { void save({automatic: true}); }, 2500);
     }
     el("compCloudSave").onclick = () => save();
-    el("cloudScope").onclick = () => { if (session?.reviewer) { scope=scope === "mine" ? "review" : "mine"; void loadListing().catch(e=>message(e.message)); } };
-    el("cloudTakeTable").querySelectorAll("[data-cloud-sort]").forEach(button=>{
-      button.onclick=()=>{ const column=button.dataset.cloudSort;
-        listOrder={column,direction:column===listOrder.column?-listOrder.direction:column.endsWith("At")?-1:1};renderListing(); };
-    });
     el("compCloudRestore").onclick = restore;
     el("compCloudAuto").onchange = () => {
       try {
@@ -314,9 +498,7 @@
     el("compCloudLogout").onclick = async () => {
       try {
         await request("logout", {method: "POST", body: {}});
-        connection++;
-        clearTimeout(timer); session = null; remote = null; remoteKey = null; uploaded.clear();
-        pendingUpload = null; listing = []; scope = "mine"; renderListing();
+        forgetSession();identities?.postMessage("changed");
         el('compGoogleInline')?.removeAttribute('src');
         root.google?.accounts?.id.disableAutoSelect(); await connect();
       } catch (e) { message(e.message); }
@@ -331,9 +513,20 @@
       } catch (e) { message(e.message); }
     };
     controls();
-    void connect({interactive:false}).catch(()=>{});
-    return {open, uploadTrack, enter: () => session?.user ? open() : signIn(), changed,
+    try{const page=new URL(root.parent.location.href), requested=page.searchParams.get("song");
+      preferReview=page.searchParams.get("review")==="1" && (!requested || adapter.song()===requested || adapter.song().endsWith("-"+requested));
+    }catch{}
+    void connect({interactive:false}).then(() => {
+      if (!preferReview) return;
+      if (session?.user) {preferReview=false;adapter.openLibrary?.();}
+      else return open();
+    }).catch(e => {if (preferReview) adapter.toast(e.message,"error");});
+    return {open, uploadTrack, entries: () => listing, itemId, prepare, canWithdraw, withdraw,
+      loading: id => preparing.has(id), loaded: id => prepared.get(id),
+      enter: () => {pendingUpload=null;
+      if(session?.user)return open();pendingLibrary=true;signIn();}, changed,
       resume: () => connect({interactive: false}).then(changed).catch(() => {})};
   }
-  root.MeleteCloud = {create, digest};
+  root.MeleteCloud = {create, digest, signature, hasReceipt, rememberReceipt, forgetReceipt, localOnly};
+  if (typeof module !== "undefined" && module.exports) module.exports = root.MeleteCloud;
 })(globalThis);

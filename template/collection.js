@@ -1,5 +1,15 @@
 (() => {
   "use strict";
+  // The optional desktop station copies this file's own Melete storage before
+  // opening the same player at a stable, microphone-permission-capable origin.
+  if (globalThis.location?.protocol==="file:" && new URLSearchParams(location.search).has("stationTransfer")
+      && /^#[a-f0-9]{64}$/.test(location.hash)) {
+    document.body.replaceChildren(); const msg=document.createElement("p"); msg.id="stationProgress";
+    msg.textContent="Opening the local Melete recording station…"; document.body.append(msg);
+    const script=document.createElement("script"); script.src="./melete-station-transfer.js";
+    script.onerror=()=>{msg.textContent="The station transfer helper is missing. Your original takes are still here.";};
+    document.head.append(script); return;
+  }
   const source = "<!doctype html>\n" + document.documentElement.outerHTML;
   const loading = document.getElementById("loading");
   let bundle;
@@ -41,7 +51,8 @@
     const value=sessionStorage.getItem(singerKey);
     if (value !== null) stationPerson=JSON.parse(value);
   } catch {}
-  let selected = -1, frame = null, settingsOpen = null;
+  let selected = -1, frame = null, settingsOpen = null, saving = false;
+  let reviewSinger = null;
   const passageKeys = ["part", "div", "loop", "myVol", "otherVol", "myPan", "otherPan", "layout", "width"];
   const fieldName = k => passageKeys.find(key=>key.toLowerCase()===k.toLowerCase()) || k.toLowerCase();
   let addressFields = {}, pendingLink = null, lastAddress;
@@ -155,7 +166,7 @@
     const download = child.getElementById("download");
     const save = download.cloneNode(true);
     save.id = "saveCollection";
-    save.title = `Save all ${songs.length} songs for offline practice`;
+    save.title = `Save all ${songs.length} songs with current settings and annotations for offline practice`;
     save.setAttribute("aria-label", save.title);
     save.addEventListener("click", saveCollection);
     download.replaceWith(save);
@@ -164,6 +175,9 @@
   function deactivate() {
     if (!frame) return;
     const child = frame.contentDocument;
+    const review = {singer:null};
+    child?.dispatchEvent(new frame.contentWindow.CustomEvent("melete:capture-review", {detail:review}));
+    reviewSinger = review.singer;
     child?.dispatchEvent(new frame.contentWindow.CustomEvent("melete:deactivate"));
     settingsOpen = child?.getElementById("settingsToggle")?.getAttribute("aria-expanded") === "true";
     const play = child?.getElementById("playPause");
@@ -183,6 +197,8 @@
     if (stationView) child.dispatchEvent(new player.frame.contentWindow.CustomEvent("melete:station-visit",
       {detail:{name:stationPerson, linkedPart:addressFields.part !== undefined || addressFields.div !== undefined}}));
     deliverLink(player);
+    if (reviewSinger && addressFields.part === undefined && addressFields.div === undefined)
+      child.dispatchEvent(new player.frame.contentWindow.CustomEvent("melete:review-singer", {detail:reviewSinger}));
     paint(player);
     loading.hidden = true;
     if (keyboard) (player.select || player.buttons?.[selected])?.focus();
@@ -203,6 +219,7 @@
       const child = currentFrame.contentDocument;
       const play = child.getElementById("playPause");
       if (!play) {
+        player.failure = "A song could not load. Reload to retry the download.";
         if (index === selected) loading.textContent = "The score could not load. Reload to retry.";
         return;
       }
@@ -245,10 +262,12 @@
     });
     try {
       const modeScript = (conductorView ? `<script data-conductor-bootstrap>window.MELETE_CONDUCTOR_VIEW=true;window.MELETE_CONDUCTOR_DRILL=${JSON.stringify(["downbeats", "cold", "gaps"].includes(conductorDrill) ? conductorDrill : null)};<\/script>` : "")
-        + (stationView ? "<script data-station-bootstrap>window.MELETE_STATION=true;<\/script>" : "");
+        + (stationView ? "<script data-station-bootstrap>window.MELETE_STATION=true;<\/script>" : "")
+        + (song.portableState ? `<script data-portable-bootstrap>window.MELETE_PORTABLE_STATE=${scriptJson(song.portableState)};<\/script>` : "");
       currentFrame.srcdoc = song.chunks.map(decode).join("").replace(/<head\s*>/i, "$&" + modeScript);
       panel.append(currentFrame);
     } catch (error) {
+      player.failure = "A song could not be decoded. Open the latest built copy.";
       loading.textContent = "This practice file is incomplete. Open the latest built copy.";
       console.error("Could not decode the practice song", error);
       players.delete(index);
@@ -282,18 +301,58 @@
       frame.contentDocument.dispatchEvent(new frame.contentWindow.KeyboardEvent("keydown", {code: "Space", key: " ", repeat: event.repeat, bubbles: true}));
     } else if (!event.repeat) frame?.contentDocument?.getElementById("playPause")?.click();
   }, true);
-  async function saveCollection() {
-    const blob = new Blob([source], {type: "text/html"});
-    if (window.showSaveFilePicker) {
-      try {
-        const handle = await showSaveFilePicker({suggestedName: bundle.downloadName, types: [{description: "Melete practice collection", accept: {"text/html": [".html"]}}]});
-        const writable = await handle.createWritable();
-        await writable.write(blob); await writable.close(); return;
-      } catch (error) { if (error.name === "AbortError") return; }
+  function scriptJson(value) {
+    return JSON.stringify(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+  }
+  async function songState(index) {
+    const player = prepare(index), deadline = performance.now() + 30000;
+    // Export explicitly loads unvisited songs, without activating them or
+    // requesting a microphone, so their saved device-local settings travel too.
+    while (!player.ready) {
+      if (player.failure) throw Error(player.failure);
+      if (performance.now() >= deadline) throw Error(`Could not finish loading ${songs[index].title}. Retry the download.`);
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob); link.download = bundle.downloadName;
-    link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 30000);
+    const detail = {}, view = player.frame.contentWindow;
+    view.document.dispatchEvent(new view.CustomEvent("melete:export-state", {detail}));
+    if (detail.error || !detail.state) throw Error(detail.error || `Could not export ${songs[index].title}'s settings.`);
+    return detail.state;
+  }
+  async function saveCollection(event) {
+    event.preventDefault();
+    if (saving) return;
+    saving = true;
+    const button = event.currentTarget, child = button.ownerDocument;
+    button.setAttribute("aria-busy", "true");
+    try {
+      let handle = null;
+      if (window.showSaveFilePicker) {
+        try {
+          handle = await showSaveFilePicker({suggestedName: bundle.downloadName, types: [{description: "Melete practice collection", accept: {"text/html": [".html"]}}]});
+        } catch (error) { if (error.name === "AbortError") return; }
+      }
+      const exportedSongs = [];
+      for (const [index, song] of songs.entries()) exportedSongs.push({...song, portableState: await songState(index)});
+      const outputDocument = new DOMParser().parseFromString(source, "text/html");
+      outputDocument.getElementById("melete-collection-data").textContent = scriptJson({...bundle, songs: exportedSongs});
+      const blob = new Blob(["<!doctype html>\n" + outputDocument.documentElement.outerHTML], {type: "text/html;charset=utf-8"});
+      if (handle) {
+        const writable = await handle.createWritable();
+        try { await writable.write(blob); await writable.close(); }
+        catch (error) { try { await writable.abort(); } catch {} throw error; }
+      } else {
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob); link.download = bundle.downloadName;
+        link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 30000);
+      }
+      child.dispatchEvent(new child.defaultView.CustomEvent("melete:export-status", {detail:{message:"Collection saved with settings and annotations"}}));
+    } catch (error) {
+      console.error("Could not export the collection", error);
+      child.dispatchEvent(new child.defaultView.CustomEvent("melete:export-status", {detail:{message:error.message || "Could not download this collection", type:"error"}}));
+    } finally {
+      saving = false;
+      button.removeAttribute("aria-busy");
+    }
   }
   function followAddress() {
     if (location.href === lastAddress) return;

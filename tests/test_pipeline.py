@@ -221,8 +221,9 @@ console.log(JSON.stringify({{
         self.assertIn('name="color-scheme" content="light dark"', document)
         self.assertIn('media="(prefers-color-scheme: dark)"', document)
         self.assertIn("@media (prefers-color-scheme: dark)", styles)
-        self.assertIn(".at-surface-svg > :not(.score-pitch-trace) { filter: var(--score-filter); }", styles)
-        self.assertIn(".at-surface-svg { filter: none; }", styles)
+        self.assertIn(".at-surface-svg { fill: var(--notation-ink); }", styles)
+        self.assertIn("--notation-ink: var(--ink)", styles)
+        self.assertNotIn("--score-filter", styles)
         self.assertIn("--group-top: var(--panel-solid)", styles)
         self.assertIn("--group-bottom: var(--panel-solid)", styles)
         self.assertIn(".settings-strip { background: var(--panel-solid); }", styles)
@@ -259,10 +260,9 @@ console.log(JSON.stringify({{
         self.assertEqual(order, sorted(order))
         self.assertIn(".display-demo[hidden] { display: none; }", styles)
         logo = document.split('id="demoVideo"', 1)[1].split("</a>", 1)[0]
-        self.assertIn('viewBox="0 0 24 24"', logo)
-        self.assertIn('fill="#ff0000"', logo)
-        self.assertIn('fill="white"', logo)
-        self.assertIn(".icon-button.display-demo svg { width: 24px; height: 24px; stroke: none; }", styles)
+        self.assertIn('viewBox="-1 -1 26 26"', logo)
+        self.assertNotIn('fill=', logo)
+        self.assertIn(".icon-button.display-demo svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.6; }", styles)
         self.assertIn("const demoVideo = demoVideoAddress(config.demoVideo);", app)
         self.assertIn("elements.demoVideo.hidden = false;", app)
 
@@ -304,7 +304,7 @@ console.log(JSON.stringify([
         self.assertIn('localStorage.setItem(settingsPanelPreferenceKey, expanded ? "open" : "closed")', app)
         self.assertIn("function setSettingsOpen(open, { persist = true } = {})", app)
         self.assertIn('settingsPanelPreferenceKey = songKey(conductorMode ? "conductor-settings-open" : "settings-open");', app)
-        self.assertIn("setSettingsOpen(loadSettingsOpenState(), { persist: false })", app)
+        self.assertIn("setSettingsOpen(rehearsalReview ? false : loadSettingsOpenState(), { persist: false })", app)
         self.assertIn("if (isMobileSettingsDevice()) setSettingsOpen(false)", app)
         self.assertIn("--selection-highlight: color-mix(in srgb, var(--accent-bright) 14%, transparent)", styles)
         self.assertIn("--selection-highlight: color-mix(in srgb, var(--accent-bright) 19%, transparent)", styles)
@@ -332,7 +332,7 @@ console.log(JSON.stringify([
         self.assertIn("function renderPitchTrace", app)
         self.assertIn("function evaluatePitchEvidence", app)
         self.assertIn("replacePitchTraceWindows", app)
-        self.assertIn("const PITCH_CONFIDENCE_THRESHOLD = 0.7", app)
+        self.assertIn("const PITCH_CONFIDENCE_THRESHOLD = 0.85", app)
         self.assertIn("const threshold = PITCH_CONFIDENCE_THRESHOLD", app)
         self.assertNotIn("pitchConfidenceControl", app)
         self.assertIn("if (!pitchCaptureEnabled() || !playing) return", app)
@@ -1020,8 +1020,8 @@ console.log(JSON.stringify(out));
         self.assertIn('attachHoldReset(elements.loopStart', app)
         self.assertIn('attachHoldReset(elements.loopEnd', app)
         sing = styles.split(".sing-control.icon-button {", 1)[1].split("}", 1)[0]
-        self.assertIn("grid-row: 1;", sing)
-        self.assertIn(".audio-record-control.icon-button { grid-column:3; grid-row:2;", styles)
+        self.assertIn("grid-row: 1 / span 2;", sing)
+        self.assertNotIn('id="recordAudio"', document)
         self.assertIn("grid-column: 3", sing)
 
     def test_takes_are_a_permanent_compact_settings_group(self) -> None:
@@ -1278,11 +1278,11 @@ console.log(JSON.stringify({{ opening: describe(1), closing: describe(-1) }}));
         app = (ROOT / "template" / "app.js").read_text(encoding="utf-8")
         # Sweeping before the adoptions would throw away data this build wants.
         self.assertLess(app.index("      loadAnnotations();"),
-                        app.index("      if (!conductorMode) sweepSupersededStorage(config.slug"))
+                        app.index("      if (!conductorMode && !rehearsalReview) sweepSupersededStorage(config.slug"))
         # The obsolete standalone live trace is not adopted. Saved take contours
         # live in IndexedDB alongside the corresponding audio.
-        self.assertLess(app.index("      loadPitchTrace();"),
-                        app.index("      if (!conductorMode) sweepSupersededStorage(config.slug"))
+        self.assertLess(app.index("      if (!rehearsalReview) loadPitchTrace();"),
+                        app.index("      if (!conductorMode && !rehearsalReview) sweepSupersededStorage(config.slug"))
         self.assertNotIn("const stored = JSON.parse(adoptedPitchTrace() || \"null\");", app)
         self.assertIn('if (!value?.includes(wanted) || JSON.parse(value)?.fingerprint !== wanted) continue;', app)
 
@@ -1409,12 +1409,13 @@ console.log(JSON.stringify(sweepSupersededStorage("autumn")));
         styles = (ROOT / "template" / "styles.css").read_text(encoding="utf-8")
         # The microphone is remembered as a wish, and restored once the engine
         # exists. Runtime cleanup must never overwrite the saved choice.
-        self.assertIn("      sing: wantsPitchCapture,\n", app)
-        self.assertIn("wantsPitchCapture = stored.sing === true;", app)
+        self.assertIn("      sing: singEnabled,\n", app)
+        self.assertIn("singEnabled = stored.singRecordsAudio === true && stored.sing === true", app)
         self.assertIn("engine.beforeStart = () =>", app)
         self.assertIn("disablePitchCapture(false, { preservePreference: true });", app)
-        restoration = app.split("  function restorePitchCapture() {", 1)[1].split("  async function ", 1)[0]
+        restoration = app.split("function restorePitchCapture() {", 1)[1].split("\n  }", 1)[0]
         self.assertIn("armMicrophone()", restoration)
+        self.assertIn("state==='granted'", restoration)
         self.assertNotIn("startTakeRecording", restoration)
         self.assertIn("preferences: { ...currentPreferenceState(), sing: false },", app)
         self.assertIn("""    updatePitchCaptureAppearance();
@@ -2086,19 +2087,21 @@ console.log(JSON.stringify({{
 
         start = app.index("  function barNoteAt")
         end = app.index("\n  }", start) + len("\n  }")
+        visible_start = app.index("  function visiblePitchNotes(")
+        visible_end = app.index("\n  }", visible_start) + len("\n  }")
         script = f"""
 let selected = 1;
 const currentScorePartIndex = () => selected;
-const visibleTracks = new Set([0, 1, 2]);
-const sequence = {{ notes: [
-  [0, 0, 960, 72, 80],      // soprano, high
-  [1, 0, 960, 64, 80],      // alto
-  [2, 0, 960, 52, 80],      // tenor, far below
-  [1, 960, 1920, 65, 80],   // alto, later in time
-  [3, 0, 960, 64, 80],      // a part that is not shown
-] }};
+const visibleChannels = new Set([0, 1, 2]);
+const mixerParts = [
+  {{source: 0, barNotes: [[0, 960, 72]]}},
+  {{source: 1, barNotes: [[0, 960, 64], [960, 1920, 65]]}},
+  {{source: 2, barNotes: [[0, 960, 52]]}},
+  {{source: 1, barNotes: [[0, 960, 66]]}}, // hidden line on the same track
+];
+{app[visible_start:visible_end]}
 {app[start:end]}
-const at = (tick, pitch) => barNoteAt(tick, pitch);
+const at = (tick, pitch) => barNoteAt(visiblePitchNotes(), tick, pitch);
 console.log(JSON.stringify({{
   onTheCentre: at(0, 64),
   oneSemitoneAbove: at(0, 65),
@@ -2109,7 +2112,7 @@ console.log(JSON.stringify({{
   whereTheNextNoteTakesOver: at(960, 64),
   afterEverythingEnds: at(1920, 64),
   theNextNoteInTime: at(1000, 65),
-  hiddenPartIsNotHeard: at(0, 64).track,
+  hiddenPartIsNotHeard: at(0, 66),
   tieGoesToTheFollowedPart: at(0, 63.5),
 }}));
 """
@@ -2135,15 +2138,14 @@ console.log(JSON.stringify({{
         self.assertEqual(got["whereTheNextNoteTakesOver"], {"key": 65, "track": 1})
         self.assertIsNone(got["afterEverythingEnds"])
         self.assertEqual(got["theNextNoteInTime"], {"key": 65, "track": 1})
-        # Track 3 shares the alto's pitch but is not shown, so it never sounds.
-        self.assertEqual(got["hiddenPartIsNotHeard"], 1)
+        self.assertIsNone(got["hiddenPartIsNotHeard"])
         self.assertEqual(got["tieGoesToTheFollowedPart"]["track"], 1)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
     def test_pressing_a_pitch_bar_sounds_it_and_holding_stops_the_seek(self) -> None:
         app = (ROOT / "template" / "app.js").read_text(encoding="utf-8")
         self.assertIn("beginPitchAudition(event, preview, follow, scrubTarget)", app)
-        self.assertIn("holdNote(key, track, { fullChord = false } = {}) {", app)
+        self.assertIn("holdNote(key, track, { fullChord = false, channel } = {}) {", app)
         # The audition is its own voice, so pausing or seeking playback does not
         # cut it off and stopVoices() does not sweep it up.
         self.assertIn("this.held = new Set();", app)
@@ -2159,23 +2161,14 @@ console.log(JSON.stringify({{
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
     def test_starting_mid_phrase_plays_pickups_but_not_the_held_chord(self) -> None:
-        app = (ROOT / "template" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("resetScheduler(minimumLead = SCHEDULER_LEAD_SECONDS, { carryHeldNotes = false } = {})", app)
-        body = app.split("resetScheduler(minimumLead = SCHEDULER_LEAD_SECONDS, { carryHeldNotes = false } = {}) {", 1)[1]
-        body = body.split("\n    }", 1)[0]
-        # Earlier standalone notes stay silent; slurred notes at a seek must sound.
-        self.assertIn("(carryHeldNotes || note.segments) && note.end > position", body)
-        self.assertLess(body.index("notes.slice(0, this.nextNoteIndex)"),
-                        body.index("this.scheduleAhead(minimumLead)"))
-        self.assertIn("const notes = this.playbackNotes || this.notes", body)
-        # Tempo and divisi changes continue a phrase instead of starting over.
-        self.assertEqual(app.count("carryHeldNotes: true"), 2)  # Tempo and divisi changes, never a seek.
-        rate = app.split("    setRate(nextRate) {", 1)[1].split("\n    }", 1)[0]
-        self.assertIn("this.resetScheduler(0.045, { carryHeldNotes: true });", rate)
-        # Starting, seeking while played, and looping round are all fresh starts.
-        for caller in ("play()", "seek(seconds)"):
-            method = app.split(f"    {caller} {{", 1)[1].split("\n    }", 1)[0]
-            self.assertNotIn("carryHeldNotes", method)
+        result = subprocess.run(
+            [shutil.which("node") or "node", "--test", "--test-name-pattern",
+             "barline clicks|seeking to every slurred onset|held-note start policy|lead-in carries held harmony",
+             str(ROOT / "tests/slur_playback.test.cjs")],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("held-note start policy", result.stdout)
 
     def test_seeking_to_the_end_parks_there_instead_of_rewinding(self) -> None:
         app = (ROOT / "template" / "app.js").read_text(encoding="utf-8")
@@ -2451,7 +2444,7 @@ console.log(JSON.stringify({{
         self.assertIn('<circle cx="12" cy="12" r="10"></circle>', document)
         self.assertIn('id="settingsTooltip" role="tooltip" aria-hidden="true" hidden', document)
         self.assertIn('id="practicePart" class="practice-part-pager', document)
-        self.assertIn('Save pitch only. Rec adds audio.', document)
+        self.assertIn('Record microphone audio and pitch during playback.', document)
         self.assertNotIn('title="Unique lyrics', document)
         self.assertIn("let settingsHelpEnabled = false", app)
         self.assertIn("function setupSettingsHelp()", app)
@@ -2478,7 +2471,7 @@ console.log(JSON.stringify({{
         toggle = app.split("  function togglePracticePlayback() {", 1)[1].split("  function ", 1)[0]
         self.assertIn('if (takeState !== "off")', toggle)
         self.assertIn('["requesting", "counting"].includes(takeState) ? "Count-in canceled" : "Stopped"', toggle)
-        self.assertRegex(toggle, r'true, \{discardShortTail: true,\s*preserveRecordIntent:\s*true\}')
+        self.assertRegex(toggle, r'"Stopped",\s*true\);')
         self.assertIn("      engine?.toggleTransport();", app)
         self.assertIn('if (takeState === "off") { void startTakeRecording(); return true; }', app)
         self.assertNotIn('takePreviewUrl', app)
@@ -2628,7 +2621,7 @@ console.log(JSON.stringify({{
         self.assertIn('label.setAttribute("data-section-measure", "true")', app)
         self.assertIn('.at-surface-svg text[data-section-measure="true"]', styles)
         self.assertIn("font-weight: 900 !important", styles)
-        self.assertIn("stroke: #c80000 !important", styles)
+        self.assertIn("stroke: var(--notation-measure) !important", styles)
         self.assertIn("stroke-width: 0.4px", styles)
         self.assertNotIn("score-section-line", app)
         self.assertNotIn(".score-section-line", styles)

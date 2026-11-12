@@ -119,10 +119,10 @@ test('manual scroll detachment is evaluated against the selected staff and respe
   c.frame();
 });
 
-test('Sing distinguishes audio recording from local pitch-only practice with headphone guidance', () => {
+test('Sing clearly arms local audio and pitch, and old contours remain reviewable', () => {
   assert.match(source('activateCachedPitchCapture'), /recordings stay in this browser/);
-  assert.match(source('updatePitchCaptureAppearance'), /Saving microphone audio and pitch locally/);
-  assert.match(source('updatePitchCaptureAppearance'), /Saving pitch only; no audio is kept/);
+  assert.match(source('updatePitchCaptureAppearance'), /Record microphone audio and pitch locally/);
+  assert.doesNotMatch(source('updatePitchCaptureAppearance'), /pitch only/i);
   assert.match(source('updatePitchCaptureAppearance'), /Use headphones\./);
   assert.match(source('reviewPracticeTrace'), /inspectedTakeId=explicit/);
   assert.doesNotMatch(app.slice(app.indexOf('  async function scoreNextTake()'), app.indexOf('  function takePitchLabel')), /settingsSectionCollapsed|settingsPanel/);

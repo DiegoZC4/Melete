@@ -3,7 +3,7 @@
   "use strict";
   const splitKeys=["myVol","otherVol","myPan","otherPan"];
   const keys=[...splitKeys,"layout","width"];
-  const factory=Object.freeze({myVol:150,otherVol:35,myPan:50,otherPan:-35});
+  const factory=Object.freeze({myVol:150,otherVol:35,myPan:100,otherPan:-35});
   const defaultWidth=70, stationKey="melete:station:practice-mix-default:v1";
   function read(fields) {
     const result={}, input=new Map([...(fields instanceof URLSearchParams?fields:Object.entries(fields || {}))]
@@ -62,6 +62,24 @@
     const [otherVol,otherPan]=[...pairs].sort((a,b)=>b[1]-a[1])[0]?.[0].split(",").map(Number) || [volumes[index],pans[index]];
     return {mix:{myVol:volumes[index],otherVol,myPan:pans[index],otherPan},uniform:pairs.size<=1};
   }
+  const audioKeys=["metronome","audible","volumes","pans","takeVolume","takeReverb","reference",
+    "practiceMixMode","practiceMixPart","practiceMixUndo"];
+  const audioState=state=>structuredClone(Object.fromEntries(audioKeys.filter(k=>k in state).map(k=>[k,state[k]])));
+  function reviewKey(song,channels,index) {
+    return `melete:review-mix:v1:${JSON.stringify([song,channels.map(c=>[c.source,c.line??null,c.short]),index])}`;
+  }
+  function reviewProfile(channels,index,saved) {
+    const defaults={metronome:0,takeVolume:100,takeReverb:0,
+      audible:channels.map((_,i)=>i!==index),volumes:channels.map(()=>factory.otherVol),pans:channels.map(()=>0),
+      practiceMixMode:null,practiceMixPart:null,practiceMixUndo:null};
+    if(!saved || !["audible","volumes","pans"].every(k=>Array.isArray(saved[k]) && saved[k].length===channels.length))return defaults;
+    if(!saved.audible.every(v=>typeof v==="boolean") || !saved.volumes.every(v=>Number.isFinite(v)&&v>=0&&v<=200)
+      || !saved.pans.every(v=>Number.isFinite(v)&&v>=-100&&v<=100))return defaults;
+    const next={...defaults,...audioState(saved)};
+    for(const [key,min,max] of [["metronome",0,200],["takeVolume",0,200],["takeReverb",0,100]])
+      if(!Number.isFinite(next[key]) || next[key]<min || next[key]>max)next[key]=defaults[key];
+    return next;
+  }
   function address(base,mix,loop,publishedBase) {
     const url=new URL(publishedBase || base), song=new URL(base).searchParams.get("song") || url.searchParams.get("song");
     if (!/^https?:$/.test(url.protocol)) throw new Error("A hosted player is required to share links.");
@@ -71,6 +89,7 @@
     for(const [key,value] of Object.entries(read(mix) || {})) url.searchParams.set(key,String(value));
     return url.href;
   }
-  const api={keys,read,fromMixer,address,factory,defaultWidth,stationDefault,setStationDefault,seatOrder,project,fullPreset};
+  const api={keys,read,fromMixer,address,factory,defaultWidth,stationDefault,setStationDefault,seatOrder,project,fullPreset,
+    audioState,reviewKey,reviewProfile};
   if(typeof module==="object" && module.exports) module.exports=api; else root.MeletePracticeMix=api;
 })(globalThis);

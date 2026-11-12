@@ -51,13 +51,14 @@
   --pan-detent: rgba(32, 37, 34, 0.58);
   --ink-faint: rgba(32, 37, 34, 0.11);
   --ink-fainter: rgba(32, 37, 34, 0.055);
-  /* The one mark in the toolbar that carries a brand colour: a red wash
-     inside the outline so the link is recognisably YouTube at a glance. */
-  --demo-mark-tint: #f0a09e;
+  --recording-red: #c82c32;
   --loop-border: var(--accent);
   --loop-fill: var(--accent-soft);
   --loop-ink: var(--accent);
-  --score-filter: none;
+  --notation-ink: #000;
+  --notation-secondary: #222211;
+  --notation-staff: #a5a5a5;
+  --notation-measure: #c80000;
   --pitch-surface: rgba(255, 255, 255, 0.38);
   --pitch-grid: rgba(32, 37, 34, 0.15);
   --pitch-grid-strong: rgba(32, 37, 34, 0.31);
@@ -430,6 +431,28 @@ button { color: inherit; }
 
 .settings-section-content { display: contents; }
 .settings-section-toggle { display: none; }
+.desktop-sections .control-group > .group-label { display: none; }
+.desktop-sections .settings-section-toggle {
+  position: absolute; z-index: 2; top: -8px; left: 5px; display: inline-flex;
+  align-items: center; gap: 2px; height: 15px; padding: 0 4px; border: 0;
+  border-radius: 3px; background: var(--panel-solid); color: var(--muted);
+  font: inherit; font-size: .6rem; font-weight: 760; text-transform: uppercase; cursor: pointer;
+}
+.desktop-sections .settings-section-toggle:is(:hover, :focus-visible) { color: var(--ink); }
+.desktop-sections .settings-section-toggle svg {
+  width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.desktop-sections .control-group.is-collapsed {
+  display: block; flex: 0 0 28px; width: 28px; min-width: 0; height: 104px; padding: 0;
+}
+.desktop-sections .is-collapsed > .settings-section-content { display: none; }
+.desktop-sections .is-collapsed > .settings-section-toggle {
+  position: static; width: 100%; height: 100%; padding: 6px 0; gap: 5px;
+  writing-mode: vertical-rl; background: transparent; justify-content: center;
+}
+.desktop-sections .is-collapsed > .settings-section-toggle svg { transform: rotate(-90deg); }
+.desktop-sections .take-panel.has-recording > .settings-section-toggle { color: #d84e4e; }
 
 [data-resettable="true"] { -webkit-touch-callout: none; }
 
@@ -495,22 +518,19 @@ button { color: inherit; }
 
 .sing-control.icon-button {
   grid-column: 3;
-  grid-row: 1;
+  grid-row: 1 / span 2;
   width: 100%;
   height: 100%;
-  flex-direction: row;
+  flex-direction: column;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 3px;
   font-size: 0.65rem;
 }
-.audio-record-control.icon-button { grid-column:3; grid-row:2; width:100%; height:100%; display:flex; align-items:center; justify-content:center; gap:3px; font-size:.65rem; }
-.practice-group :is(.sing-control,.audio-record-control) svg { width:13px; height:13px; flex-shrink:0; }
-.audio-record-control[aria-pressed="true"] svg { color:#df5555; }
-.audio-record-control[data-state="armed"] circle { fill: none; stroke: currentColor; stroke-width: 3; }
+.practice-group .sing-control svg { width:15px; height:15px; flex-shrink:0; color:var(--recording-red); }
 .practice-guide-pager { grid-column:1 / -1; grid-row:3; }
-.practice-guide-pager[hidden], .audio-record-control[hidden] { display:none; }
+.practice-guide-pager[hidden] { display:none; }
 .practice-guide-pager.is-mixed { opacity:.65; }
 .practice-group:has(.station-picker:not([hidden])) .practice-guide-pager { grid-column:3; }
 .practice-group:has(.practice-guide-pager:not([hidden])) .station-picker { grid-column:1 / 3; }
@@ -599,12 +619,17 @@ button { color: inherit; }
   container-type: inline-size; font-size: 11px;
 }
 /* Keep the desktop controls on one row; large choirs scroll within Parts. */
+.desktop-sections .settings-strip:has(> .practice-group.is-collapsed):has(> .display-group.is-collapsed):has(> .tools-group.is-collapsed) {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) repeat(3, max-content) var(--take-column, minmax(303px, 1fr));
+}
+.desktop-sections .settings-strip:has(> .take-panel.is-collapsed) { --take-column: max-content; }
 @media (min-width: 1280px) and (hover: hover) and (pointer: fine) {
   body:not(.conductor-mode) .settings-strip {
     display: grid;
-    grid-template-columns: minmax(0, max-content) repeat(3, max-content) minmax(303px, 1fr);
+    grid-template-columns: minmax(0, max-content) repeat(3, max-content) var(--take-column, minmax(303px, 1fr));
   }
-  body:not(.conductor-mode) :is(.practice-group, .display-group) {
+  body:not(.conductor-mode) :is(.practice-group, .display-group):not(.is-collapsed) {
     width: calc(3 * var(--toolbar-unit-width) + 2 * var(--toolbar-row-gap) + 2 * var(--toolbar-group-padding) + 2px);
   }
 }
@@ -626,17 +651,14 @@ button { color: inherit; }
 .take-loose-section[hidden], .comp-row[hidden] { display: none; }
 .comp-cloud-dialog { width: 360px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 32px); overflow: auto; box-sizing: border-box; background: var(--panel-solid); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 16px; font-family: inherit; font-size: 13px; line-height: 1.45; }
 .comp-cloud-dialog::backdrop { background: #0007; }
-.comp-cloud-dialog { width: 700px; }
-#cloudScope { width: 160px; margin: 8px 0; }
-#cloudScope .pill-option { flex: 1; }
-#cloudScope .pill-thumb { top: 2px; left: 2px; width: calc(50% - 2px); height: calc(100% - 4px); transform: translateX(calc(var(--pill-index, 0) * 100%)); }
-#cloudScope[hidden] { display: none; }
-.cloud-take-scroll { overflow: auto; max-height: 45dvh; margin: 8px 0; }
-#cloudTakeTable { border-collapse: collapse; font-size: 11px; white-space: nowrap; }
-#cloudTakeTable :is(td,th) { padding: 4px 6px; border: 1px solid var(--line); }
-#cloudTakeTable th { position: sticky; top: 0; background: var(--panel-solid); }
-#cloudTakeTable th button { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0; }
-#cloudTakeTable .icon-button { width: 24px; height: 24px; }
+.comp-cloud-dialog { width: fit-content; min-width: min(325px,calc(100vw - 24px)); }
+#compCloudDialog [hidden], .take-table-tools > .icon-button[hidden] { display: none; }
+#cloudIdentity { color: var(--muted); }
+#compCloudStatus:empty { display:none; }
+#compCloudLogout { margin-top:8px; }
+@media (max-width:600px) {
+  .comp-cloud-dialog { padding:10px; }
+}
 #compGoogleButton iframe { width: 42px; height: 36px; border: 0; }
 .comp-cloud-dialog form { display: flex; align-items: center; justify-content: space-between; }
 .comp-cloud-dialog p { overflow-wrap: anywhere; }
@@ -673,9 +695,17 @@ button { color: inherit; }
 .take-actions-menu svg { width: 16px; height: 16px; flex: 0 0 16px; fill: none; stroke: currentColor; stroke-width: 2; }
 .take-microphone {
   grid-column: 1 / 4; grid-row: 1 / 3; display: grid;
-  grid-template-columns: minmax(0, 1fr); grid-template-rows: subgrid;
+  grid-template-columns: minmax(0, 1fr) var(--toolbar-row-height); grid-template-rows: subgrid;
   align-items: center; gap: var(--toolbar-row-gap); min-width: 0;
 }
+#takeMicrophone { grid-column:1; grid-row:1; }
+#openTimingCheck { grid-column:2; grid-row:1; }
+.take-microphone > .mic-check-inline { grid-column:1 / -1; grid-row:2; }
+#timingCheckDialog { width: min(380px,calc(100vw - 24px)); }
+#timingCheckDialog select { flex:1; }
+#timingCheckDialog .output-signal { display:grid;grid-template-columns:auto minmax(40px,1fr) 8ch;gap:8px;margin:6px 0; }
+.output-signal meter { width:100%; }.output-signal output { text-align:right;font-variant-numeric:tabular-nums; }
+#timingCheckDialog p:empty { display:none; }
 .take-microphone select {
   min-width: 0; width: 100%; height: var(--toolbar-row-height); padding: 0 3px;
   border: 1px solid var(--line); border-radius: 6px; background: var(--field);
@@ -783,9 +813,10 @@ button { color: inherit; }
 .comp-columns > span { display: grid; place-items: center; }
 .comp-row { width: var(--take-table-width); }
 /* The armed track receives new recordings; it turns red while one runs. */
-.comp-row.is-armed :is(.take-part, .take-singer) { color: var(--accent); font-weight: 700; }
+.comp-row.is-armed :is(.take-part, .take-singer) { font-weight: 700; }
+.comp-row.is-armed .take-singer { color: var(--accent); }
 .comp-row.is-new .comp-review:disabled { opacity: 1; }
-.comp-row.is-recording :is(.take-number, .take-singer, .take-part) { color: #df4848; }
+.comp-row.is-recording :is(.take-number, .take-singer) { color: #df4848; }
 .comp-add { color: var(--muted); }
 .comp-add:hover:not(:disabled) { color: var(--ink); border-color: var(--accent); }
 .comp-row .take-download, .comp-row .take-delete { grid-row: 1; }
@@ -814,7 +845,7 @@ button { color: inherit; }
   box-sizing: border-box; height: 100%; display: grid; place-items: center;
 }
 .take-created, .take-modified { font-size: 10px; white-space: nowrap; }
-.take-upload[hidden] { display: none; }
+.take-row-actions [hidden] { display: none; }
 .take-delete.is-delete-armed, #compCloudDelete.is-delete-armed { color: var(--danger); border-color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .take-review-exit {
   display: flex; align-items: center; gap: 4px; flex: none; height: 28px; padding: 0 5px;
@@ -872,6 +903,16 @@ button { color: inherit; }
   background: var(--panel-solid); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 18px rgba(0, 0, 0, .25);
 }
 .station-list[hidden] { display: none; }
+.practice-group:has(.station-list:not([hidden])) { z-index: 4; }
+.station-empty { padding: 6px 8px; color: var(--muted); white-space: normal; }
+#stationLogDialog { width: min(540px, 94vw); max-height: 85vh; background: var(--panel-solid); color: var(--ink); border: 1px solid var(--line); border-radius: 7px; }
+#stationLogDialog h2 { margin: 0 0 .75em; }
+.station-log-scroll { max-height: 55vh; overflow: auto; }
+.station-log-scroll table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.station-log-scroll :is(th,td) { text-align: left; padding: 4px; }
+.station-log-scroll input { max-width: 100%; width: 12em; box-sizing: border-box; }
+.station-log-scroll input[type=number] { width: 5em; }
+.take-table-tools #stationTakeLog { font-size: 9px; }
 .station-option { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 25px; padding: 0 7px; color: var(--ink); font-size: 11px; cursor: pointer; }
 .station-option span:first-child { color: var(--muted); border-right: 1px solid var(--line); font-weight: 650; }
 .station-option span:last-child { white-space: normal; overflow-wrap: anywhere; }
@@ -1169,7 +1210,7 @@ button { color: inherit; }
 .display-controls > .display-utility { justify-self: center; }
 .display-fullscreen { grid-row: 4; grid-column: 3; }
 .display-demo[hidden] { display: none; }
-.icon-button.display-demo svg { width: 24px; height: 24px; stroke: none; }
+.icon-button.display-demo svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.6; }
 .icon-button.display-theme svg { fill: currentColor; stroke: none; }
 .display-control-row > :first-child { min-width: 0; justify-self: end; text-align: right; }
 .display-control-row > :last-child { justify-self: start; }
@@ -1196,9 +1237,9 @@ button { color: inherit; }
 .lyric-toggle.is-lyric-hidden .lyric-placeholder { opacity: 0.6; }
 .can-edit-lyrics .lyric-toggle:hover .lyric-placeholder,
 .can-edit-lyrics .lyric-toggle:focus-visible .lyric-placeholder { opacity: 1; stroke: var(--ink); }
-.at-surface-svg .lyric-placeholder { stroke: #444; }
+.at-surface-svg .lyric-placeholder { stroke: var(--notation-secondary); }
 .can-edit-lyrics .at-surface-svg .lyric-toggle:hover .lyric-placeholder,
-.can-edit-lyrics .at-surface-svg .lyric-toggle:focus-visible .lyric-placeholder { stroke: #000; }
+.can-edit-lyrics .at-surface-svg .lyric-toggle:focus-visible .lyric-placeholder { stroke: var(--notation-ink); }
 .display-controls .pill-option { width: auto; min-width: 0; flex: 1 1 50%; padding-inline: 3px; }
 .display-direction-row svg {
   width: 14px;
@@ -1224,8 +1265,9 @@ button { color: inherit; }
 .display-help svg { fill: none; }
 .settings-panel.is-help-mode [data-help] { cursor: help; }
 .binary-icon-button[aria-pressed="true"] { border-color: var(--accent-bright); background: var(--selection-highlight); color: var(--accent-bright); }
-.binary-icon-button.is-recording svg { filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent-bright) 68%, transparent)); }
+.binary-icon-button.is-recording svg { filter: drop-shadow(0 0 3px color-mix(in srgb, var(--recording-red) 68%, transparent)); }
 .sing-control.is-pending { border-style: solid; }
+.sing-control[data-state="unavailable"] { border-color:var(--danger,#b24c46); }
 
 .settings-toggle.has-active-microphone::after,
 .settings-toggle.has-recording::after {
@@ -1642,9 +1684,15 @@ svg.is-auditioning-score { cursor: grabbing; }
   will-change: transform, opacity;
 }
 
-.at-surface-svg { filter: none; }
-.at-surface-svg > :not(.score-pitch-trace) { filter: var(--score-filter); }
-.at-surface-svg > .score-pitch-trace { position: static; filter: none; }
+/* AlphaTab inherits SVG black for most glyphs and assigns these literal paints
+   to the others. Native paints also work in WebKit's SVG text renderer. */
+.at-surface-svg { fill: var(--notation-ink); }
+.at-surface-svg [fill="#000000" i] { fill: var(--notation-ink); }
+.at-surface-svg [fill="#222211" i] { fill: var(--notation-secondary); }
+.at-surface-svg [fill="#a5a5a5" i] { fill: var(--notation-staff); }
+.at-surface-svg [fill="#c80000" i] { fill: var(--notation-measure); }
+.at-surface-svg [stroke="#000000" i] { stroke: var(--notation-ink); }
+.at-surface-svg > .score-pitch-trace { position: static; fill: none; }
 
 .score-pitch-trace {
   position: absolute;
@@ -1672,7 +1720,7 @@ svg.is-auditioning-score { cursor: grabbing; }
 
 .at-surface-svg text[data-section-measure="true"] {
   font-weight: 900 !important;
-  stroke: #c80000 !important;
+  stroke: var(--notation-measure) !important;
   stroke-width: 0.4px;
   paint-order: stroke fill;
 }
@@ -2118,11 +2166,14 @@ textarea:focus-visible {
     --pan-detent: rgba(237, 242, 238, 0.72);
     --ink-faint: rgba(237, 242, 238, 0.14);
     --ink-fainter: rgba(237, 242, 238, 0.075);
-    --demo-mark-tint: #c76a67;
+    --recording-red: #ff7478;
     --loop-border: var(--accent);
     --loop-fill: var(--accent-soft);
     --loop-ink: var(--accent);
-    --score-filter: invert(0.88) hue-rotate(180deg) saturate(0.9);
+    --notation-ink: var(--ink);
+    --notation-secondary: #c6cfc9;
+    --notation-staff: #7b857e;
+    --notation-measure: #f1a8b0;
     --pitch-surface: rgba(255, 255, 255, 0.035);
     --pitch-grid: rgba(237, 242, 238, 0.17);
     --pitch-grid-strong: rgba(237, 242, 238, 0.36);
@@ -2192,11 +2243,14 @@ textarea:focus-visible {
   --pan-detent: rgba(237, 242, 238, 0.72);
   --ink-faint: rgba(237, 242, 238, 0.14);
   --ink-fainter: rgba(237, 242, 238, 0.075);
-  --demo-mark-tint: #c76a67;
+  --recording-red: #ff7478;
   --loop-border: var(--accent);
   --loop-fill: var(--accent-soft);
   --loop-ink: var(--accent);
-  --score-filter: invert(0.88) hue-rotate(180deg) saturate(0.9);
+  --notation-ink: var(--ink);
+  --notation-secondary: #c6cfc9;
+  --notation-staff: #7b857e;
+  --notation-measure: #f1a8b0;
   --pitch-surface: rgba(255, 255, 255, 0.035);
   --pitch-grid: rgba(237, 242, 238, 0.17);
   --pitch-grid-strong: rgba(237, 242, 238, 0.36);
@@ -2313,6 +2367,11 @@ textarea:focus-visible {
   .scrub-label,
   .skip-link { display: none !important; }
   body { background: white; color: black; }
-  .at-surface-svg, .at-surface-svg > * { filter: none; }
+  .at-surface-svg { --notation-ink: #000; --notation-secondary: #222211; --notation-staff: #a5a5a5; --notation-measure: #000; }
   .score-shell { padding: 0; }
 }
+.rehearsal-review {display:flex;align-items:center;flex-wrap:wrap;gap:5px 14px;padding:5px 12px;font:500 13px/1.4 system-ui;}
+.rehearsal-review label {display:inline-flex;align-items:center;gap:5px;}
+.rehearsal-review select {font:inherit;max-width:16em;background:var(--panel-solid);color:inherit;}
+.rehearsal-review output {font-variant-numeric:tabular-nums;white-space:pre-wrap;}
+.private-review :is(#takePanel,#pitchCapture,#partChooser,#stationSinger,#exitTakeReview) {display:none!important;}

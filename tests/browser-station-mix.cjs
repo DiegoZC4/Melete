@@ -1,4 +1,43 @@
 const assert=require('node:assert/strict');
+async function stereoOutput(page) {
+  const result=await page.evaluate(async()=>{
+    const e=__qa.engine,ctx=(e.ensureAudio(),e.context);
+    const samples=[],probe=ctx.createScriptProcessor(512,2,1);
+    probe.onaudioprocess=({inputBuffer})=>{
+      samples.push([0,1].map(i=>inputBuffer.getChannelData(i).reduce((m,v)=>Math.max(m,Math.abs(v)),0)));
+    };
+    e.finalOutput.connect(probe);probe.connect(ctx.destination);
+    const wait=ms=>new Promise(ok=>setTimeout(ok,ms));
+    try{
+      document.querySelector('#openTimingCheck').click();
+      document.querySelector('#testPlaybackOutput').click();
+      await wait(1500);
+      const channels=[],peaks=[0,0];let last=0,leak=0;
+      for(const [l,r] of samples){
+        peaks[0]=Math.max(peaks[0],l);peaks[1]=Math.max(peaks[1],r);
+        leak=Math.max(leak,Math.min(l,r));const side=l>.003?1:r>.003?2:0;
+        if(side && side!==last)channels.push(side);last=side;
+      }
+      document.querySelector('#closeTimingCheck').click();
+      const saved=__qa.pitchbar.captureSettingsState(),guide=[];
+      try{
+        for(const [pan,heard] of [[-100,true],[100,true],[-100,false],[100,false]]){
+          e.updateMix(new Set(heard?[0]:[]),[100],[pan],true);
+          const {release}=e.holdNote(62,0,{channel:0});
+          try{await wait(80);samples.length=0;await wait(160);
+            guide.push(samples.reduce(([l,r],v)=>[Math.max(l,v[0]),Math.max(r,v[1])],[0,0]));
+          }finally{release();await wait(180);}
+        }
+      }finally{e.updateMix(new Set(saved.audible.flatMap((on,i)=>on?[i]:[])),saved.volumes,saved.pans,true);}
+      return {channels,peaks,leak,guide};
+    }finally{e.finalOutput.disconnect(probe);probe.disconnect();probe.onaudioprocess=null;}
+  });
+  assert.deepEqual(result.channels,[1,2,2]);assert.ok(Math.min(...result.peaks)>.01 && result.leak<.0001);
+  result.guide.forEach((pair,i)=>{
+    assert.ok(pair[i%2]>.01 && pair[1-i%2]<.0001,`guide preview ${i} with left/right peaks ${pair} must pan at the final output`);
+  });
+  return result;
+}
 async function run(context,origin) {
   await context.route('**/station-roster.json',r=>r.fulfill({json:{singers:[{name:'Mix Bass',voice:'Bass'}]}}));
   await context.route('**/melete/api.php*',r=>r.fulfill({json:{}}));
@@ -12,6 +51,7 @@ async function run(context,origin) {
   };
   const waitPan=(i,v)=>page.waitForFunction(([i,v])=>Math.abs(__qa.engine.trackStrips[i].panner.pan.value-v)<.015,[i,v]);
   await page.goto(origin+'?mode=station&part=Bass');await ready();await settings('tools');
+  const stereo=await stereoOutput(page);
   const before=await page.evaluate(()=>({mix:__qa.pitchbar.captureSettingsState(),t:__qa.engine.currentSeconds()}));
   await page.evaluate(()=>{Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async url=>window.lastURL=url}});});
   await page.locator('#copyPracticeMix').click();
@@ -60,6 +100,6 @@ async function run(context,origin) {
   await page.waitForFunction(()=>document.querySelector('[data-visible-index="2"]').getAttribute('aria-pressed')==='true');
   assert.deepEqual(await pans(),[100,50,0],'retarget the whole choir, not just the old/new guide pair');
   assert.deepEqual(errors,[]);
-  return {audio:true,unchangedTransport:true,defaultSeparate:true,recipientRetarget:true};
+  return {audio:true,stereo,unchangedTransport:true,defaultSeparate:true,recipientRetarget:true};
 }
 module.exports={run};

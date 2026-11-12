@@ -175,6 +175,12 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   assert.equal(result.pitch, 'off', 'Sing-off stops pitch capture too');
   assert.ok(result.takes.every(take => take.pitchReference?.fingerprint && take.pitchReference.notes.length),
     'real microphone capture snapshots the selected part and performed timing');
+  for (const take of result.takes) {
+    assert.equal(take.captureProfile?.policy, 'unprocessed');
+    for (const key of ['echoCancellation','noiseSuppression','autoGainControl'])
+      assert.equal(take.captureProfile[key], false, `Chrome actually disabled ${key}`);
+    assert.ok(take.captureProfile.sampleRate > 0);
+  }
   await page.waitForFunction(() => __qa.recording.takes.every(take => take.pitchScore), null, {timeout: 60000});
   // Each pass replaced the previous one; bounded history protects recent passes.
   await page.waitForFunction(() => __qa.tracksSettled(), null, {timeout: 30000, polling: 250});
@@ -183,7 +189,9 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   const protectedAfterStop = await page.evaluate(async () => [
     ...(await __qa.takeStore.comps(__qa.takeSong)).flatMap(MeleteComp.protectedIds),
     ...MeleteRecording.historySources(await __qa.takeStore.compHistory(__qa.takeSong))]);
-  assert.ok(kept.length && kept.length <= passes && kept.every(take => protectedAfterStop.includes(take.id)),
+  // Another pass can finish while its predecessor's WAV is being read above.
+  assert.ok(kept.length && kept.length <= result.takes.length && kept.every(take =>
+    result.takes.some(completed=>completed.id===take.id) && protectedAfterStop.includes(take.id)),
     JSON.stringify({passes, kept: kept.map(({id, number}) => ({id, number})), protectedAfterStop}));
   assert.ok(kept.some(take => take.id === complete.id), 'recent replaced passes survive for multilevel Undo');
   assert.equal(await page.locator('#takeLoose').isVisible(), false, 'no loose takes after a loop recording');
@@ -327,7 +335,7 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   await page.locator('#takeUndo').waitFor({state: 'hidden'});
   assert.equal(await page.locator('#takeLoose').isVisible(), false, 'track sources are never offered for deletion');
 
-  // Toggling Sing off leaves the transport running; rearming is not a new pass.
+  // Toggling Sing off leaves the transport running; turning it back on punches in.
   await page.locator('#settingsToggle').click();
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
@@ -340,8 +348,8 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   assert.equal((await page.evaluate(() => __qa.recording)).microphone, false, 'Sing off releases capture');
   assert.equal(await page.evaluate(() => __qa.engine.playing), true, 'Sing off does not interrupt listening');
   await page.locator('#pitchCapture').click();
-  await page.waitForFunction(() => __qa.recording.pitch === 'armed');
-  assert.equal(await page.evaluate(() => __qa.recording.state),'off');
+  await page.waitForFunction(() => __qa.recording.pitch === 'recording');
+  assert.equal(await page.evaluate(() => __qa.recording.state),'recording');
   await page.keyboard.press('Space');await page.waitForFunction(()=>!__qa.engine.playing);
   await page.keyboard.press('Space');
   await page.waitForFunction(() => __qa.recording.pitch === 'recording');
@@ -453,6 +461,10 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
   if (await page.locator('#pitchCapture').getAttribute('aria-pressed') === 'true') await page.locator('#pitchCapture').click();
   await page.waitForFunction(() => !__qa.recording.microphone);
+  // A disabled but granted track can legitimately be reused until this page closes.
+  // Exercise a genuinely fresh permission request, not an already-authorized stream.
+  await page.reload();await settled();await enableAudition();
+  await page.waitForFunction(()=>__qa.recording.ready && !__qa.recording.microphone);
   await page.evaluate(() => {
     window.realGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('Test denial', 'NotAllowedError'); };

@@ -462,6 +462,22 @@
       });
     }
 
+    creditTake(song, id, previous, person, advanceMs, previousAdvance) {
+      return this.transaction(['takes'], 'readwrite', (tx, done, fail) => {
+        const takes=tx.objectStore('takes');
+        takes.get(id).onsuccess=({target})=>{
+          const take=target.result;
+          if (!take || take.song!==song || !take.finalized || take.active || !person?.id || !person.name
+              || (take.performer?.id ?? null)!==previous || take.playbackAdvanceMs!==previousAdvance
+              || !Number.isInteger(advanceMs) || Math.abs(advanceMs)>500) {
+            fail(new Error('This take changed. Reopen the singer log to credit the saved take.')); return;
+          }
+          const updated={...take,performer:{id:person.id,name:person.name},playbackAdvanceMs:advanceMs};
+          takes.put(updated); done(updated);
+        };
+      });
+    }
+
     reassignStationTrack(key, revision, person, keyFor) {
       return this.transaction(["comps","takes","counters"], "readwrite", (tx, done, fail) => {
         const comps = tx.objectStore("comps"), takes = tx.objectStore("takes");
@@ -548,7 +564,7 @@
       });
     }
 
-    pruneCompHistory(maxBytes = COMP_HISTORY_BYTES) {
+    pruneCompHistory(maxBytes = COMP_HISTORY_BYTES, keepOriginals = () => false) {
       return this.transaction(["comps", "takes", "chunks", "counters"], "readwrite", (tx, done, fail) => {
         tx.objectStore("comps").getAll().onsuccess = compEvent => {
           tx.objectStore("takes").getAll().onsuccess = takeEvent => {
@@ -565,6 +581,7 @@
               for (const {song, history} of result.histories) {
                 if (history.revision !== histories.find(h => h.song === song).history.revision) counters.put(history, historyKey(song));
               }
+              result.removed = result.removed.filter(take => !keepOriginals(take.song));
               for (const {id} of result.removed) {
                 tx.objectStore("takes").delete(id);
                 tx.objectStore("chunks").index("takeId").openCursor(id).onsuccess = event => {
@@ -996,6 +1013,11 @@
 
     append(frame, samples) { this.buffer.append(frame, samples); this.pump(); }
 
+    markClockDivergence(ms) {
+      const entry=this.entries.get(this.buffer.current);
+      if(entry && Number.isFinite(ms))entry.clockDivergenceMs=ms;
+    }
+
     observePitch(center, width, cents) {
       if (!Number.isFinite(center) || !(width > 0)) return;
       for (const entry of this.entries.values()) {
@@ -1087,8 +1109,11 @@
         }
         const end = info.length;
         const pcm = take.pcm.slice(entry.savedFrames, end);
+        const ref=entry.finalMetadata?.pitchReference || entry.record.pitchReference;
         entry.saving = this.store.append(entry.record, entry.savedFrames, pcm,
           {...(finalized ? {...entry.finalMetadata, ...this.liveMetadata(entry, end)} : {}),
+            ...(ref?.timing && Number.isFinite(entry.clockDivergenceMs) ?
+              {pitchReference:{...ref,timing:{...ref.timing,clockDivergenceMs:entry.clockDivergenceMs}}} : {}),
             complete: finalized && info.complete, finalized, gap: info.gap, peak: info.peak})
           .then(record => {
             entry.record = record;
@@ -1189,6 +1214,7 @@
   const installed = new WeakMap();
   class PcmCapture {
     static async create(context, source, onSamples, onError) {
+      if (source.nativeCapture) return source.nativeCapture(onSamples, onError);
       if (!context.audioWorklet || typeof AudioWorkletNode === "undefined") {
         throw new Error("Loop recording needs a browser with AudioWorklet support");
       }

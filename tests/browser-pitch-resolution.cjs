@@ -21,6 +21,25 @@ const pitchTraceProbe = `pitchResolution: {
         point:staffTracePoint(s,tick,frame.cents,review.ref.line,review.track)}))};
   },
   workerActive() { return !!pitchCaptureWorker; },
+  savedTraceEnd() {
+    const review=takeReview, frame=review?.frames.filter(f=>Number.isFinite(f.cents)).at(-1);
+    if(!frame)return null;
+    const tick=engine.tickAtSeconds(review.start+(frame.start+frame.end)/2*review.rate);
+    const system=barSystems.find(s=>tick>=s.startTick&&tick<s.endTick);
+    const point=system&&{x:system.xAtTick(tick),y:system.yAtPitch(frame.cents/100)};
+    const paths=system?[...system.traceLayer.querySelectorAll('.take-pitch-trace-edge')]:[];
+    // Firefox's nested SVG matrix omits its own x/viewBox translation; the
+    // painted group gives the actual on-screen coordinate in both engines.
+    const matrix=system?.traceLayer.getScreenCTM();
+    const screen=point&&matrix?new DOMPoint(point.x,point.y).matrixTransform(matrix):null;
+    return {tick,point,connected:system?.svg.isConnected,
+      svgBox:system?.svg.getBoundingClientRect().toJSON(),
+      parentBox:system?.svg.parentElement?.getBoundingClientRect().toJSON(),
+      parentOverflow:system?.svg.parentElement&&getComputedStyle(system.svg.parentElement).overflow,
+      renderedRight:paths.length?Math.max(...paths.map(p=>p.getBoundingClientRect().right)):null,
+      screen:screen&&{x:screen.x,y:screen.y},
+      right:paths.length?Math.max(...paths.map(p=>{const b=p.getBBox();return b.x+b.width;})):null};
+  },
   seedOldMovingOnset() {
     this.stop();clearPitchTrace();setPracticePart(0);setScoreView('bars');
     const values=[4592,4607,4630,4676,4645,0,4728,0,4722,3505,3500,
@@ -42,12 +61,13 @@ const pitchTraceProbe = `pitchResolution: {
     return {values:lane?Array.from(lane.pitches.slice(20,42)):[],split:lane?.breaks[29],
       stored:localStorage.getItem(pitchTraceKey)};
   },
-  seedReviewOutlier(tick) {
+  seedReviewOutlier(tick, cents = 10800, incremental = false) {
     const lane=pitchTraceLane(0,{create:true}),bin=pitchTraceBinAtTick(tick);
     const previous=lane.pitches[bin];
-    lane.pitches[bin]=10800;
+    lane.pitches[bin]=cents;
     if(!previous)pitchTraceCount++;
-    renderBarScore();
+    if(incremental) updatePitchTraceIncrementally(new Map([[0,new Set([bin])]]));
+    else renderBarScore();
     return {bin,previous,tick};
   },
   reviewRange(tick) {
@@ -168,14 +188,89 @@ const pitchTraceProbe = `pitchResolution: {
   }
 }`;
 
+async function checkFinalPhrase(frame,page,probe,output,label) {
+  const setup=await frame.evaluate(name=>{
+    const q=window[name];q.pitchResolution.prepare();q.pitchResolution.setScoreView('bars');
+    const sequence=q.pitchbar.sequence, note=sequence.notes.filter(n=>n[0]===0).sort((a,b)=>b[2]-a[2])[0];
+    q.pitchResolution.key=note[3];
+    q.pitchbar.applySettingsState({...q.pitchbar.captureSettingsState(),flow:'continuous',horizontal:400});
+    const end=q.engine.secondsAtTick(note[2]),start=Math.max(0,end-6);
+    q.engine.seek(start);return {start,end};
+  },probe);
+  await frame.waitForFunction(name=>!window[name].busy&&window[name].recording.state==='off',probe);
+  if(await frame.locator('#pitchCapture').getAttribute('aria-pressed')!=='true')await frame.locator('#pitchCapture').click();
+  await frame.locator('#playPause').click();
+  await frame.waitForFunction(name=>window[name].recording.state==='recording',probe);
+  await frame.evaluate(name=>window[name].pitchResolution.input(),probe);
+  await frame.waitForFunction(name=>window[name].recording.takes.some(t=>t.active),probe);
+  const id=await frame.evaluate(name=>window[name].recording.takes.find(t=>t.active).id,probe);
+  try {
+    await frame.waitForFunction(({name,end})=>window[name].engine.currentSeconds()>=end-.06,{name:probe,end:setup.end},{timeout:12000});
+    const captured=await frame.evaluate(name=>window[name].pitchResolution.snapshot(),probe);
+    const tail=captured.observations.filter(f=>Number.isFinite(f.cents)).at(-1);
+    assert.ok(tail,'a real detector observation reaches the last phrase');
+    const detected=await frame.evaluate(({name,tick})=>window[name].engine.secondsAtTick(tick),{name:probe,tick:tail.tick});
+    assert.ok(setup.end-detected<.3,`live contour reaches final sung note: ${JSON.stringify({setup,detected})}`);
+    await frame.evaluate(name=>window[name].pitchResolution.stop(),probe);
+    await frame.waitForFunction(({name,id})=>window[name].recording.state==='off'
+      &&window[name].recording.takes.some(t=>t.id===id&&t.finalized&&t.pitchContour),{name:probe,id});
+    const saved=await frame.evaluate(({name,id})=>{
+      const q=window[name],take=q.recording.takes.find(t=>t.id===id),frames=MeleteTakePitch.readContour(take);
+      const last=frames.filter(f=>Number.isFinite(f.cents)).at(-1);
+      return {seconds:take.frames/take.sampleRate,tail:last?.end,
+        start:q.engine.secondsAtTick(take.pitchReference.captureStart??take.start),rate:take.rate};
+    },{name:probe,id});
+    assert.ok(Number.isFinite(saved.tail)&&setup.end-(saved.start+saved.tail*saved.rate)<.3,
+      `saved contour retains the ending, not just the audio: ${JSON.stringify({setup,saved})}`);
+    await frame.waitForFunction(name=>window[name].tracksSettled(),probe);
+    await frame.evaluate(name=>window[name].pitchResolution.setScoreView('bars'),probe);
+    await frame.waitForFunction(name=>!window[name].busy,probe);
+    const key=await frame.evaluate(name=>window[name].compState.key,probe);
+    const row=frame.locator('#compRows [data-comp-key='+JSON.stringify(key)+'] .comp-review');
+    if(await row.getAttribute('aria-pressed')!=='true')await row.click();
+    await frame.waitForFunction(name=>window[name].pitchResolution.savedTraceEnd()?.point,probe);
+    const rendered=await frame.evaluate(name=>window[name].pitchResolution.savedTraceEnd(),probe);
+    assert.ok(rendered.connected&&Math.abs(rendered.right-rendered.point.x)<1,
+      `the saved trace draws through its last observation: ${JSON.stringify(rendered)}`);
+    const collapse=(page.viewportSize()?.width||1440)<600
+      &&await frame.locator('#settingsToggle').getAttribute('aria-expanded')==='true';
+    if(collapse)await frame.locator('#settingsToggle').click();
+    let displayed;
+    try {
+      await frame.waitForFunction(name=>!window[name].busy,probe);
+      await frame.locator('#barScore').scrollIntoViewIfNeeded();
+      // Other parts can finish later. At high stretch, the song's right edge
+      // can be a whole viewport beyond this part's last sung observation.
+      await frame.evaluate(name=>{
+        const score=document.getElementById('barScore'),box=score.getBoundingClientRect();
+        const end=window[name].pitchResolution.savedTraceEnd();
+        score.scrollLeft+=end.screen.x-box.left-score.clientWidth*.7;
+      },probe);
+      await frame.waitForFunction(name=>{
+        const end=window[name].pitchResolution.savedTraceEnd();
+        const ink=[...document.querySelectorAll('#barScore .bar-note')].some(text=>{
+          const box=text.getBoundingClientRect();
+          return box.right>0&&box.left<innerWidth&&box.bottom>0&&box.top<innerHeight;
+        });
+        return end?.connected&&end.screen?.x>=0&&end.screen.x<innerWidth
+          &&end.screen.y>=0&&end.screen.y<innerHeight&&ink;
+      },probe);
+      displayed=await frame.evaluate(name=>window[name].pitchResolution.savedTraceEnd(),probe);
+      if(output)await page.screenshot({path:path.join(output,`pitch-ending-${label}.png`)});
+    }finally{if(collapse)await frame.locator('#settingsToggle').click();}
+    return {setup,detected,saved,rendered,displayed};
+  }finally{await frame.evaluate(name=>window[name].pitchResolution.stop(),probe);}
+}
+
 async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, output, label}={}) {
   if (await frame.locator('#partChooser').isVisible()) await frame.locator('#partChooserDismiss').click();
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true')
     await frame.locator('#settingsToggle').click();
+  if(process.env.QA_FINAL_PHRASE_ONLY)return {finalPhrase:await checkFinalPhrase(frame,page,probe,output,label)};
   await frame.evaluate(name => window[name].pitchResolution.prepare(), probe);
   await frame.evaluate(name => window[name].pitchResolution.setScoreView('standard'), probe);
   await frame.waitForFunction(name => !window[name].pitchResolution.snapshot().busy, probe);
-  await frame.locator('#recordAudio').click();
+  if(await frame.locator('#pitchCapture').getAttribute('aria-pressed')!=='true')await frame.locator('#pitchCapture').click();
   await frame.locator('#playPause').click();
   await frame.waitForFunction(name => window[name].pitchResolution.snapshot().state === 'recording', probe);
   let captured;
@@ -228,7 +323,9 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     for(const view of ['standard','bars']) {
       await frame.evaluate(({name,view})=>window[name].pitchResolution.setScoreView(view),{name:probe,view});
       const surface=view==='bars'?'#barScore':'#score';
-      await frame.locator(`${surface} .take-pitch-trace-group[data-selected="true"] .take-pitch-trace-edge`).first().waitFor({state:'attached'});
+      await frame.waitForFunction(name=>!window[name].busy,probe);
+      if(view==='bars')await frame.locator(`${surface} .take-pitch-trace-group[data-selected="true"] .take-pitch-trace-edge`).first().waitFor({state:'attached'});
+      else assert.equal(await frame.locator(`${surface} .bar-pitch-trace-edge`).count(),0,'explicit saved-take review also leaves notation clean');
       if(output) await page.screenshot({path:path.join(output,`pitch-resolution-${label}-${view}.png`)});
     }
     frame = await reload();
@@ -241,6 +338,7 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     // audio finishes loading would toggle that freshly selected track off.
     await frame.waitForFunction(name=>window[name].takeReview,probe);
     assert.equal(await frame.locator('#compRows .comp-review[aria-pressed="true"]').count(),1);
+    const finalPhrase=await checkFinalPhrase(frame,page,probe,output,label);
     const octaves=[];
     for(const offset of [-12,12,-11]) {
       await frame.evaluate(({probe,offset})=>window[probe].pitchResolution.seedOctave(offset),{probe,offset});
@@ -265,8 +363,8 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     return {count:captured.count, detectorReadings:captured.observations.length,
       binTicks:captured.binTicks, cadenceMs:captured.cadence, processingIntervalMs:captured.interval,
       subdivisions:[...new Set(captured.observations.map(f=>256/f.stride))].sort((a,b)=>b-a),
-      reload:true, views:['standard','bars'], cleanStaffDuringRecording:true, sameTakeAcrossViewSwitches:true, scoredInStaffView:true, octaves,
-      savedTakes: saved.length, legacyCacheIgnored:true,
+      reload:true, views:['standard','bars'], cleanStaffDuringRecording:true, cleanStaffDuringReview:true, sameTakeAcrossViewSwitches:true, scoredInStaffView:true, octaves,
+      savedTakes: saved.length, legacyCacheIgnored:true, finalPhrase,
       input:'synthetic oscillator/silence through actual analyser/Pitchy'};
   } finally {
     await frame.evaluate(name=>{const p=window[name].pitchResolution;p.stop();p.clearPitchTrace();},probe);

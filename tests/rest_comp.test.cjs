@@ -10,6 +10,16 @@ const spans = [{start: 2, end: 3, pitches: [60]}, {start: 7, end: 8, pitches: [6
 const makeRef = (extra = {}) => P.reference({spans, division: 1, measures: [[0, 4, 4, 4], [4, 4, 4, 4], [8, 4, 4, 4]],
   secondsAtTick: t => t, start: 0, end: 10, rate: 1, fingerprint: 'rests', part: 0, line: null, ...extra});
 
+test('count-in talking is muted outside the one-second entrance margin', () => {
+  const ref=makeRef({spans:[{start:0,end:2,pitches:[60]}],captureStart:-3,secondsAtTick:t=>t*1.25});
+  assert.deepEqual(ref.restPolicy.keep,[[2.75,7.25]]);
+  assert.deepEqual(ref.restPolicy.guards,[[2.75,3.75],[6.25,7.25]]);
+  const pcm=new Int16Array(ref.seconds*8000).fill(1000);
+  P.discardRestAudio(pcm,8000,ref);
+  assert.equal(pcm[2*8000],0);
+  assert.equal(pcm[3*8000],1000,'preserve early consonants');
+});
+
 test('one-beat rest guards use full-score context, including a rest-only capture', () => {
   const ref = makeRef();
   assert.deepEqual(ref.restPolicy.keep, [[1, 4], [6, 9]]);

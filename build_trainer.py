@@ -487,6 +487,31 @@ def xml_start_tag_local_name(token: str) -> str:
     return match.group(1).rsplit(":", 1)[-1] if match else ""
 
 
+def practice_lyric_corrections(xml: str, rules: list) -> str:
+    """Correct a unique printed syllable per named part/bar, without modifying the source score."""
+    if not rules:
+        return xml
+    root = ET.fromstring(xml)
+    parts = {p.get("id"): p for p in root.findall("{*}part")}
+    changed = False
+    for rule in rules:
+        if not isinstance(rule, dict) or not isinstance(rule.get("parts"), list) or not rule["parts"]:
+            raise BuildError("lyricCorrections requires a nonempty parts list")
+        old, new = rule.get("from"), rule.get("to")
+        if not all(isinstance(v, str) and v for v in (old, new)) or old == new:
+            raise BuildError("lyricCorrections requires different nonempty from/to text")
+        bar = str(rule.get("measure", ""))
+        for part in rule["parts"]:
+            measures = [m for m in parts[part].findall("{*}measure") if m.get("number") == bar] if part in parts else []
+            words = [w for m in measures for w in m.findall("{*}note/{*}lyric/{*}text") if w.text in (old, new)]
+            if len(measures) != 1 or len(words) != 1:
+                raise BuildError(f"Ambiguous or missing lyric correction in {part}, measure {bar}")
+            if words[0].text == old:
+                words[0].text = new
+                changed = True
+    return ET.tostring(root, encoding="unicode") if changed else xml
+
+
 def hyphenate_lyric_syllables(xml_text: str) -> tuple[str, int]:
     """Append a hyphen to every syllable a word continues past.
 
@@ -1780,7 +1805,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     config = effective_config(inferred, override)
     try:
-        practice_xml, practice_roles = materialize_practice_routes(normalized_xml, config.get("practiceRoutes"))
+        corrected_xml = practice_lyric_corrections(normalized_xml, config.get("lyricCorrections", []))
+        practice_xml, practice_roles = materialize_practice_routes(corrected_xml, config.get("practiceRoutes"))
     except (ValueError, KeyError, TypeError) as exc:
         raise BuildError(f"Invalid practiceRoutes: {exc}") from exc
     if practice_roles:
@@ -1841,7 +1867,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         extracted = read_json_object(extractor_metadata_path, "score metadata")
         source_playback_hash = sha256(stable_json(playback).encode("utf-8"))
         reference_fingerprints = {}
-        if practice_roles:
+        if practice_roles or corrected_xml != normalized_xml:
             practice_path = assets / "practice.musicxml"
             atomic_write(practice_path, practice_xml)
             run_extractor(practice_path, playback_path, extractor_metadata_path)
@@ -1851,7 +1877,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 for handoff in role["handoffs"]:
                     handoff["start"] = round(handoff.pop("startQuarter") * playback["division"])
                     handoff["end"] = round(handoff.pop("endQuarter") * playback["division"])
-            playback["practiceRoles"] = practice_roles
+            if practice_roles:
+                playback["practiceRoles"] = practice_roles
             for role in practice_roles:
                 for part in (role["part"], role["soloist"]):
                     reference_fingerprints[str(part)] = sha256(stable_json([
@@ -1907,6 +1934,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         app = read_required(TEMPLATE_DIR / "voice_palette.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "practice_mix.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "practice_trace.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "rehearsal_review.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "comp_cloud.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "practice_comp.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "comp_audio.js") + "\n" + app
@@ -1926,6 +1954,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         app = read_required(TEMPLATE_DIR / "live_pitch.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "vocal_pitch.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "loop_recorder.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "native_station.js") + "\n" + app
         conductor_script, conductor_styles = conductor_assets(config)
         app = conductor_script + app
         styles += "\n" + conductor_styles
@@ -1982,8 +2011,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     },
                     "normalizedScoreSha256": sha256(normalized_xml.encode("utf-8")),
                     "playbackSha256": sha256(playback_bytes),
-                    **({"sourcePlaybackSha256": source_playback_hash,
-                        "practiceReferenceFingerprints": reference_fingerprints} if practice_roles else {}),
+                    **({"sourcePlaybackSha256": source_playback_hash} if practice_roles or corrected_xml != normalized_xml else {}),
+                    **({"practiceReferenceFingerprints": reference_fingerprints} if practice_roles else {}),
                 },
             }
         )

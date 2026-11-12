@@ -177,3 +177,39 @@ test('cancelling an inline permission request leaves the selector usable and no 
   assert.equal(f.fields.select.disabled,false);
   assert.equal(f.connections.size,0);
 });
+test('three quiet chirps recover an acoustic delay and reject silence or inconsistent detections', () => {
+  const {timingChirp, measuredLatency}=require('../template/microphone_check.js');
+  const rate=48000, starts=[.08,.8,1.52], chirp=timingChirp(rate), length=Math.ceil(2.3*rate);
+  let seed=17;
+  const capture=delays=>{
+    const samples=Float32Array.from({length},()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return .001*(seed/2**32-.5);});
+    delays.forEach((delay,i)=>{if(delay===null)return;const first=Math.round((starts[i]+delay)*rate);
+      chirp.forEach((v,j)=>{samples[first+j]+=.7*v;});}); return samples;
+  };
+  assert.ok(Math.abs(measuredLatency(capture([.137,.137,.137]),rate,starts)-.137)<.002);
+  assert.equal(measuredLatency(capture([.137,null,.137]),rate,starts),.137);
+  assert.equal(measuredLatency(capture([null,null,null]),rate,starts),null);
+  assert.equal(measuredLatency(capture([.1,.19,.28]),rate,starts),null);
+  const {calibration,freshCalibration}=require('../template/microphone_check.js');
+  const result=calibration(capture([.135,.136,.14]),rate,starts,1000);
+  assert.ok(Math.abs(result.seconds-.136)<.001 && result.spreadMs===5);
+  assert.equal(freshCalibration(result,1001),result);
+  assert.equal(freshCalibration(result,1000+12*3600000),null);
+  assert.equal(freshCalibration(result,999),null);
+  assert.equal(calibration(capture([.135,null,.135]),rate,starts),null);
+  assert.equal(calibration(capture([.135,.136,.175]),rate,starts),null);
+});
+test('a delayed transport callback cannot shift the recorded audio or the detector frame',()=>{
+  const {passClock,sampleScoreTime}=require('../template/microphone_check.js');
+  for(const speed of [.75,1,1.25])for(const delay of [0,.027,.180]){
+    const sr=48000,clock=passClock(12+delay,90+delay,90,3,3,speed,sr,.137);
+    assert.equal(clock.frame,12*sr);
+    for(const realError of [-.075,0,.075]){
+      const center=12+.4+realError+.137;
+      const live=sampleScoreTime(clock,center+.042,.042);
+      const saved=clock.position+((center*sr-clock.frame)/sr-clock.latency)*speed;
+      assert.ok(Math.abs(live-saved)<1e-9);
+      assert.ok(Math.abs(live-(3+(.4+realError)*speed))<1e-9);
+    }
+  }
+});

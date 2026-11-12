@@ -32,9 +32,19 @@ async function checkSettingsSections(frame, page, {mobile, output, label, probe 
   if (!mobile) {
     for (const key of sectionNames) {
       assert.equal(await collapsed(key), false);
-      assert.equal(await toggle(key).isVisible(), false, 'desktop retains its existing labels and grid');
+      assert.equal(await toggle(key).isVisible(), true, 'desktop section headings are accessible buttons');
     }
     await page.screenshot({path: path.join(output, `sections-${label}-desktop.png`)});
+    const before = await group('takes').boundingBox();
+    await toggle('takes').click({button:'right'});
+    for (const key of sectionNames) assert.equal(await collapsed(key), !['parts','takes'].includes(key));
+    assert.ok((await group('takes').boundingBox()).width > before.width + 150, 'folding controls gives width to the take table');
+    await resize({width: 1000, height: 750});
+    const partsBox = await group('parts').boundingBox(), takesBox = await group('takes').boundingBox();
+    assert.ok(Math.abs(partsBox.y - takesBox.y) < 2 && takesBox.x + takesBox.width <= 1001,
+      'Parts and Record share one row on a narrow laptop');
+    await toggle('tools').press('Enter');
+    assert.equal(await collapsed('tools'), false);
     await resize({width: 390, height: 844});
     await frame.waitForFunction(() => document.querySelector('.parts-group.is-collapsed'));
   }
@@ -81,7 +91,8 @@ async function checkSettingsSections(frame, page, {mobile, output, label, probe 
 
   if (!mobile) {
     await resize({width: 1440, height: 900});
-    await frame.waitForFunction(() => !document.querySelector('.control-group.is-collapsed'));
+    await frame.waitForFunction(() => document.querySelector('.practice-group.is-collapsed') && !document.querySelector('.tools-group.is-collapsed'));
+    assert.equal(await collapsed('display'), true, 'desktop folds persist separately across reload and resize');
     assert.equal(await frame.locator('#recordTakeCompact').count(), 0);
     assert.equal(await group('parts').locator('.settings-section-content').evaluate(node => node.inert), false);
     await resize({width: 390, height: 844});

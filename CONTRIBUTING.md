@@ -46,6 +46,16 @@ part/divisi grading, independent See/Hear filtering, touch identification and
 single-part-only recording. It uses synthetic saved takes and microphone input
 in disposable browser storage, never personal recordings.
 
+`QA_NUMBER_WHEEL_ONLY=1` checks vertical wheel/trackpad changes on shared
+draggable numbers, including fractional deltas, limits, disabled controls,
+browser zoom and ordinary page scrolling. Both desktop and phone-sized players
+are covered. The full browser gate includes these checks.
+
+Where the optional private review extension is installed,
+`QA_SINGER_REVIEW_ONLY=1` checks authorized directory access and singer continuity
+between songs, including manual overrides, missing recordings, logout and stale
+downloads. Synthetic accounts and recordings are used; no live upload occurs.
+
 `QA_COMP_ONLY=1` checks local comp persistence, source protection, Undo and
 full-song capture. Cloud-backend checks are explicitly skipped in this
 standalone distribution; neither PHP nor a Google account is required. The
@@ -67,12 +77,12 @@ and guide playback while preserving the saved prefix and a downloadable unsaved
 tail; retry must commit that exact tail. Unavailable/full storage must not fall
 back silently to memory-only recording. Other checks cover absence of guide-synth
 audio, permission denial/cancellation, transport edits, and independent
-Sing/recorder microphone ownership. Temporary
+single-toggle audio and pitch capture. Temporary
 WAVs are deleted with the test build. `QA_RECORDER_ONLY=1` runs just these focused
 browser checks; add `QA_FILE_ORIGIN=1` to verify a standalone file opened offline.
 `QA_MIC_CHECK_ONLY=1` checks the inline microphone meter on desktop/mobile with
 synthetic MediaStream audio, including silence, quiet input, clipping, permission
-denial, unplugging, late permission grants, and independent Sing ownership.
+denial, unplugging, late permission grants, and a disabled microphone between punches.
 `QA_UI_IMPORT_ONLY=1` checks playable ranges, grey/blue note feedback and retained
 loop endpoints. `QA_REFERENCE_ONLY=1` checks an optional embedded recording's
 independent mix, lazy decode and shared transport using synthetic audio.

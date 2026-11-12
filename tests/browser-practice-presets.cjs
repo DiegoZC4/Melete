@@ -34,75 +34,37 @@ async function run(context,origin,mobile) {
     assert.equal(await vol(2).getAttribute('data-value'),'145');assert.equal(await vol(1).getAttribute('data-value'),'50');
     await page.goto(origin+'?part=Soprano&myVol=150&otherVol=50&myPan=90&otherPan=-90');await wait();
     assert.ok(!await page.locator('#partChooser').isVisible());await settings(page,'practice');
-    await countPcm();
+    await countPcm();const sing=page.locator('#pitchCapture');
+    assert.equal(await page.locator('#recordAudio').count(),0);
     await page.evaluate(()=>__qa.pitchResolution.prepare());
-    await page.locator('#pitchCapture').click();await transport();
-    await page.waitForFunction(()=>__qa.recording.state==='recording');await page.evaluate(()=>__qa.pitchResolution.input());
-    await page.waitForFunction(()=>__qa.pitchResolution.snapshot().count>=8);
-    await transport();await page.waitForFunction(()=>!!document.querySelector('[data-trace-id]'));
-    assert.deepEqual(await storage(),{audio:0,chunks:0,traces:1});assert.equal(await page.evaluate(()=>window.pcmStarts),0);
-    await page.reload();await wait();await settings(page,'takes');
-    const row=page.locator('[data-trace-id]');await row.waitFor({state:'attached'});
-    assert.ok(Number(await row.locator('.comp-tracked').innerText())>0);
-    await row.locator('.comp-review').click();
-    await page.waitForFunction(()=>document.querySelector('.take-pitch-trace-group[data-take-id^="trace:"]'));
-    assert.ok(await row.locator('.take-hear').isDisabled());
-    await settings(page,'practice');
-    const rec=page.locator('#recordAudio'),pos=await page.evaluate(()=>__qa.engine.currentSeconds());
-    await countPcm();await rec.click();
-    assert.equal(await rec.getAttribute('data-state'),'armed');
-    assert.deepEqual(await page.evaluate(()=>[__qa.engine.playing,__qa.recording.state,__qa.engine.currentSeconds(),window.pcmStarts]),[false,'off',pos,0]);
-    assert.deepEqual(await storage(),{audio:0,chunks:0,traces:1});
-    await page.reload();await wait();
-    assert.equal(await rec.getAttribute('aria-pressed'),'false','reload never restores audio consent');
-    assert.equal(await page.locator('#pitchCapture').getAttribute('aria-pressed'),'true');
-    await settings(page,'practice');await countPcm();await rec.click();await transport();
-    await page.waitForFunction(()=>__qa.recording.takes.some(t=>t.active&&t.seconds>1.2));
-    assert.equal(await rec.getAttribute('data-state'),'recording');await transport();
-    await page.waitForFunction(()=>__qa.recording.state==='off');
-    const result=await storage();assert.ok(result.audio>0 && result.chunks>0 && result.traces===1);
-    assert.equal(await rec.getAttribute('data-state'),'armed');
+    const before=await storage();
+    await sing.click();assert.equal(await sing.getAttribute('data-state'),'armed');
+    assert.deepEqual(await storage(),before);assert.equal(await page.evaluate(()=>window.pcmStarts),0);
+    await transport();await page.waitForFunction(()=>__qa.recording.state==='recording');
+    await page.evaluate(()=>__qa.pitchResolution.input());await page.waitForFunction(()=>__qa.pitchResolution.snapshot().count>=8);
+    await page.waitForFunction(()=>__qa.recording.takes.some(t=>t.active && t.seconds>1.2));
+    await transport();await page.waitForFunction(()=>__qa.recording.state==='off' && __qa.recording.takes.some(t=>t.pitchScore));
+    const result=await storage();assert.ok(result.audio>0 && result.chunks>0);assert.equal(result.traces,0);
+    assert.equal(await sing.getAttribute('aria-pressed'),'true');
+    await page.reload();await wait();await settings(page,'practice');await countPcm();
+    assert.equal(await sing.getAttribute('aria-pressed'),'true');assert.equal(await page.evaluate(()=>__qa.engine.playing),false);
+    await sing.click();
+    const audioSnapshot=()=>page.evaluate(()=>__qa.recording.takes.map(t=>[t.id,t.frames]));
     await page.evaluate(()=>__qa.engine.seek(.2));await transport();
-    await page.waitForFunction(()=>__qa.recording.takes.some(t=>t.active&&t.seconds>1.15));
-    assert.equal(await page.evaluate(()=>window.pcmStarts),2,'Space starts a second overdub without rearming');
-    const mid=await page.evaluate(()=>__qa.engine.currentSeconds());await rec.click();
-    await page.waitForFunction(()=>__qa.recording.state==='recording' && !__qa.recording.takes.some(t=>t.active));
-    assert.ok(await page.evaluate(t=>__qa.engine.playing&&__qa.engine.currentSeconds()>=t,mid));
-    await rec.click();const afterArm=await page.evaluate(()=>__qa.engine.currentSeconds());
-    await page.waitForFunction(t=>__qa.engine.currentSeconds()>t+.25,afterArm);
-    assert.equal(await page.evaluate(()=>window.pcmStarts),2,'arming during a pitch-only pass cannot start PCM');
-    assert.equal(await rec.getAttribute('data-state'),'armed');await transport();
-    await page.waitForFunction(()=>__qa.recording.state==='off');
-    await rec.click();assert.equal(await rec.getAttribute('data-state'),'off');
-    await page.waitForFunction(()=>__qa.tracksSettled(),null,{polling:250});
-    const audioSnapshot=()=>page.evaluate(async()=>({
-      sources:__qa.recording.takes.map(t=>[t.id,t.frames]),
-      tracks:(await __qa.takeStore.comps(__qa.takeSong)).map(t=>[t.key,t.segments])
-    }));
-    const existingAudio=await audioSnapshot();assert.ok(existingAudio.sources.length);
-    await page.evaluate(()=>__qa.engine.seek(.2));await transport();
-    await page.waitForFunction(()=>__qa.recording.state==='recording'&&__qa.engine.currentSeconds()>.75);
-    await transport();await page.waitForFunction(()=>__qa.recording.state==='off');
-    assert.deepEqual(await audioSnapshot(),existingAudio,'pitch-only overdubs never replace existing audio or edit the comp');
-    const beforeDelete=await storage();
-    await settings(page,'takes');await row.locator('.take-delete').click();await row.locator('.take-delete').click();
-    await row.waitFor({state:'detached'});
-    const afterDelete=await storage();assert.equal(afterDelete.audio,beforeDelete.audio);assert.equal(afterDelete.traces,0);
+    for(let pass=0;pass<2;pass++){
+      await sing.click();await page.waitForFunction(()=>__qa.recording.takes.some(t=>t.active && t.seconds>.4));
+      await sing.click();await page.waitForFunction(()=>__qa.recording.state==='off');
+      const snap=await audioSnapshot(),t=await page.evaluate(()=>__qa.engine.currentSeconds());
+      await page.waitForFunction(s=>__qa.engine.playing && __qa.engine.currentSeconds()>s+.18,t);
+      assert.deepEqual(await audioSnapshot(),snap,'guide-only playback writes no audio');
+    }
+    assert.equal(await page.evaluate(()=>window.pcmStarts),2);await transport();
+    assert.equal((await storage()).traces,0);
     await settings(page,'parts');await vol(2).press('ArrowDown');await settings(page,'tools');await copy();
     await page.locator('#copyPracticeMix').click();await page.locator('#shareMixDialog').waitFor({state:'visible'});
     await page.locator('#shareBacking [name=volume]').fill('65');await page.locator('#shareMixDialog button[type=submit]').click();
     assert.equal(new URL(await page.evaluate(()=>window.copied)).searchParams.get('otherVol'),'65');
-    await page.evaluate(()=>{const store=__qa.takeStore,original=store.transaction.bind(store);
-      store.transaction=(names,mode,fn)=>names.length===1&&names[0]==='counters'&&mode==='readwrite'
-        ?Promise.reject(new DOMException('Trace test quota','QuotaExceededError')):original(names,mode,fn);
-      __qa.engine.seek(.2);
-    });
-    await page.locator('#playPause').click();
-    await page.waitForFunction(()=>__qa.recording.state==='off' && __qa.recording.notice.includes('last saved point'));
-    assert.equal((await storage()).audio,afterDelete.audio);
-    return {mobile,copy:true,relative:true,nonuniformBacking:true,refreshKeepsEdits:true,pitchOnly:{audio:0,chunks:0,traces:1},explicitAudio:result,
-      armDoesNotPlay:true,spaceRepeatsOverdub:true,noAudioUntilNextPlay:true,disarmDuringPassStopsPcm:true,
-      pitchOnlyLeavesCompIntact:true,deletingTraceKeepsAudio:true,pitchQuotaStopsWithoutAudio:true};
+    return {mobile,relative:true,recordedAudioAndPitch:result,punches:2,offWritesNothing:true};
   } finally {await page.close();}
 }
 module.exports={run};

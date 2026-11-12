@@ -30,6 +30,7 @@ test('restoring a collection position bypasses chapter magnets and validates the
 
 function mixFixture() {
   const c = vm.createContext({
+    stationReview:null, changingReviewFocus:false,
     parts: ['S', 'A', 'T', 'B'].map(name => ({name})), practicePartIndex: 0,
     visibleChannels:new Set([0]), visibleTracks:new Set([0]),
     pitchCaptureWorker: null,
@@ -326,7 +327,7 @@ test('pitchbar hyphens respect italic ink bearings and leave a readable gap', ()
 });
 
 test('See alone selects practice; the practice part is never forced visible', () => {
-  const c = vm.createContext({scoreView: 'bars', practicePartIndex: 1, parts: [{}, {}, {}, {}],
+  const c = vm.createContext({scoreView: 'bars', stationReview:null, practicePartIndex: 1, parts: [{}, {}, {}, {}],
     mixerParts:[0,1,2,3].map(source=>({source,line:null})),visibleChannels:new Set([0]),practiceDivisi:[],
     visibleTracks: new Set([0]), updateMixerAppearance() {}, updateNoteActionLabel() {},
     assignPracticePart(i){c.practicePartIndex=i;},renderTakePanel(){},savePreferences() {}, scheduleRender() {}, showToast() {}});

@@ -152,15 +152,14 @@
               </span>
               <button class="drag-number" id="metronome" type="button" data-value="0" aria-label="Metronome volume" data-help="Drag vertically to set metronome volume.">0%</button></label>
             </div>
-            <button class="icon-button binary-icon-button sing-control" id="pitchCapture" type="button" aria-pressed="false" aria-label="Turn on Sing" data-help="Save pitch only. Rec adds audio." disabled>
+            <button class="icon-button binary-icon-button sing-control" id="pitchCapture" type="button" aria-pressed="false" aria-label="Turn on Sing to record microphone audio and pitch" data-help="Record microphone audio and pitch during playback." disabled>
               <!-- Lucide Microphone, ISC license: https://lucide.dev/icons/mic -->
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><path d="M12 19v3"></path></svg>
               <span>Sing</span>
             </button>
-            <button class="icon-button binary-icon-button audio-record-control" id="recordAudio" type="button" aria-label="Arm audio recording" aria-pressed="false" data-state="off" data-help="Arm audio for the next Play." disabled><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="currentColor" stroke="none"/></svg><span>Rec</span></button>
             <div class="station-picker" id="stationPicker" hidden>
               <label for="stationSinger">Singer</label>
-              <input id="stationSinger" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="stationSingerList" autocomplete="off" spellcheck="false" placeholder="Name or voice part">
+              <input id="stationSinger" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="stationSingerList" autocomplete="off" spellcheck="false" placeholder="Name, @handle or part">
               <div class="station-list" id="stationSingerList" role="listbox" aria-label="Singers" hidden></div>
             </div>
             <div class="loop-setting" id="loopControls" role="group" aria-label="Measure loop">
@@ -212,9 +211,9 @@
               <!-- Lucide Pencil, ISC license: https://lucide.dev/icons/pencil -->
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path><path d="m15 5 4 4"></path></svg>
             </button>
-            <!-- YouTube: unchanged Simple Icons path, CC0; Google LLC trademark. -->
+            <!-- YouTube: Simple Icons outline, CC0; Google LLC trademark. -->
             <a class="icon-button display-demo" id="demoVideo" href="#" target="_blank" rel="noopener noreferrer" aria-label="Watch the demo recording" title="YouTube recording" data-help="Open the demo recording on YouTube." hidden>
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="8" y="7" width="9" height="10" fill="white"></rect><path fill="#ff0000" d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"></path></svg>
+              <svg viewBox="-1 -1 26 26" aria-hidden="true" focusable="false"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"></path></svg>
             </a>
             <div class="practice-files" role="group" aria-label="Score files">
               <a class="icon-button practice-file" id="printScore" href="#" target="_blank" rel="noopener noreferrer" aria-label="Open printable PDF score" title="Preview PDF in a new tab" data-help="Open the print-layout score as a PDF." hidden>
@@ -252,6 +251,17 @@
                 <label class="number-control take-reverb"><span>Reverb</span><button class="drag-number" id="takeReverb" type="button" data-value="0" aria-label="Recording mix reverb" data-help="Reverb for audible recordings and the mix download.">0%</button></label>
                 <div class="take-microphone">
                   <select id="takeMicrophone" aria-label="Microphone for Sing and recording"><option value="">System default</option></select>
+                  <button id="openTimingCheck" class="icon-button" type="button" aria-label="Measure audio latency" title="Measure and compensate microphone/headphone latency; test stereo output">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="14" r="8"></circle><path d="M10 2h4M12 6V2m5.5 5.5L19 6m-7 8 3-3"></path></svg>
+                  </button>
+                  <dialog id="timingCheckDialog" class="comp-cloud-dialog" aria-labelledby="timingCheckTitle"><h2 id="timingCheckTitle">Audio Timing</h2>
+                    <label>Output <select id="playbackDevice"><option value="">System default</option></select></label>
+                    <label class="output-signal">Signal <meter id="outputSignal" aria-label="Playback level before system volume" min="-90" max="0" value="-90"></meter><output id="outputDb">Silent</output></label>
+                    <button type="button" class="take-command" id="testPlaybackOutput" title="One tone on the left, then two on the right">Test stereo</button>
+                    <button type="button" class="take-command" id="downloadAudioLog">Audio log</button><p id="playbackDeviceStatus" role="status"></p>
+                    <p>Direct microphone monitoring must be off. Hold one headphone earpiece next to the selected microphone. Three chirps measure the delay; a fourth checks it before compensation is saved. With Bluetooth, keep the same input and output mode for the check and recording.</p>
+                    <p id="timingCheckStatus" role="status"></p><button type="button" class="take-command" id="measureTiming">Measure timing</button> <button class="take-command" id="closeTimingCheck" type="button">Close</button>
+                  </dialog>
                   <div id="microphoneCheck" class="mic-check-inline" data-state="idle">
                     <div class="mic-check-meter" role="meter" aria-label="Microphone input level" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60"><div class="mic-check-fill"></div></div>
                     <div id="checkMicrophone" aria-label="Microphone input" title="Input level while Sing is on"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"></path></svg><span role="status" aria-live="polite">Mic off</span><output></output></div>
@@ -314,11 +324,19 @@
                   </div>
                 </div></div>
                 <div class="take-table-tools">
+                  <button class="icon-button" id="openCloudLibrary" hidden type="button" aria-label="Sign in with Google to review recordings" title="Google account: review choir recordings"><svg viewBox="0 0 24 24" aria-hidden="true" style="stroke:none"><path fill="#4285f4" d="M21.6 12.23c0-.71-.06-1.39-.18-2.05H12v3.88h5.38a4.6 4.6 0 0 1-2 3.02v2.51h3.24c1.89-1.74 2.98-4.3 2.98-7.36Z"></path><path fill="#34a853" d="M12 22c2.7 0 4.96-.9 6.62-2.41l-3.24-2.51c-.9.6-2.06.96-3.38.96-2.61 0-4.82-1.76-5.61-4.12H3.04v2.59A10 10 0 0 0 12 22Z"></path><path fill="#fbbc05" d="M6.39 13.92a6 6 0 0 1 0-3.84V7.49H3.04a10 10 0 0 0 0 9.02l3.35-2.59Z"></path><path fill="#ea4335" d="M12 5.96c1.47 0 2.79.5 3.82 1.49l2.86-2.86A9.62 9.62 0 0 0 12 2a10 10 0 0 0-8.96 5.49l3.35 2.59C7.18 7.72 9.39 5.96 12 5.96Z"></path></svg></button>
+                  <button class="icon-button" id="stationTakeLog" type="button" hidden title="Open singer log for individual recordings" aria-label="Open singer log">Log</button>
                   <button class="icon-button" id="expandTakes" type="button" aria-label="Expand takes table" title="Expand takes table" aria-controls="takeReviewTable" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 6 5 5 5-5m-10 7 5 5 5-5"></path></svg></button>
                   <button class="icon-button" id="takeFields" type="button" aria-label="Choose visible columns" title="Choose visible columns" popovertarget="takeFieldMenu"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M9 3v18m6-18v18"></path></svg></button>
                   <div id="takeFieldMenu" popover="auto" role="group" aria-label="Visible columns"><strong>Columns</strong><div class="take-field-options"></div><div class="take-field-actions"><button type="button" id="fitTakeFields">Fit to width</button><button type="button" id="allTakeFields">Show all</button></div></div>
                 </div>
                 </div>
+                <dialog id="stationLogDialog" aria-labelledby="stationLogTitle">
+                  <h2 id="stationLogTitle">Singer log</h2>
+                  <div class="station-log-scroll"><table><thead><tr><th>Time</th><th>Take</th><th>Part</th><th>Singer</th><th title="Positive values play the recording earlier. Zero restores its original alignment.">Earlier (ms)</th><th></th></tr></thead><tbody id="stationLogRows"></tbody></table></div>
+                  <p id="stationLogStatus" role="status"></p><datalist id="stationLogNames"></datalist>
+                  <div><button class="take-command" type="button" id="stationLogDownload">Download CSV</button> <button class="take-command" type="button" id="stationLogClose">Close</button></div>
+                </dialog>
                 <dialog id="takeSingerDialog" aria-labelledby="takeSingerTitle"><form>
                   <strong id="takeSingerTitle">Change singer</strong><output id="takeSingerPart"></output>
                   <label>Singer <input id="takeSingerName" list="takeSingerOptions" required autocomplete="off"></label><datalist id="takeSingerOptions"></datalist>
@@ -342,18 +360,19 @@
     </main>
 
     <dialog id="compCloudDialog" class="comp-cloud-dialog" aria-labelledby="compCloudTitle">
-      <form method="dialog"><strong id="compCloudTitle">Cloud takes</strong><button class="icon-button" aria-label="Close cloud backup"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"></path></svg></button></form>
+      <form method="dialog"><strong id="compCloudTitle">Google account</strong><button class="icon-button" aria-label="Close account settings"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"></path></svg></button></form>
       <div id="compGoogleButton"></div>
+      <span id="cloudIdentity"></span>
       <p id="compCloudStatus" role="status"></p>
-      <div class="pill-toggle" id="cloudScope" role="tablist" aria-label="Cloud take scope" hidden><span class="pill-thumb" aria-hidden="true"></span><button class="pill-option is-active" type="button" role="tab" aria-selected="true">Mine</button><button class="pill-option" type="button" role="tab" aria-selected="false" tabindex="-1">Review</button></div>
-      <div class="cloud-take-scroll"><table id="cloudTakeTable"><thead><tr><th><button data-cloud-sort="name">Singer</button></th><th><button data-cloud-sort="label">Part</button></th><th><button data-cloud-sort="createdAt">Created</button></th><th><button data-cloud-sort="updatedAt">Modified</button></th><th><button data-cloud-sort="mean">Mean (&cent;)</button></th><th></th></tr></thead><tbody id="cloudTakeRows"></tbody></table></div>
-      <label><input type="checkbox" id="compCloudAuto"> Automatically back up improvements</label>
+      <div id="cloudPrivateControls" hidden>
+      <label><input type="checkbox" id="compCloudAuto"> Automatically back up privately</label>
       <div class="comp-cloud-actions">
-        <button class="take-command" id="compCloudSave">Back up</button>
+        <button class="take-command" id="compCloudSave">Private backup</button>
         <button class="take-command" id="compCloudRestore">Restore cloud copy</button>
         <button class="icon-button take-delete" id="compCloudDelete" aria-label="Delete cloud copy"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M19 6v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6M8 6V3h8v3M10 10v7M14 10v7"></path></svg></button>
-        <button class="take-command" id="compCloudLogout">Sign out</button>
       </div>
+      </div>
+      <button class="take-command" id="compCloudLogout">Sign out</button>
     </dialog>
 
     <button class="playback-return" id="playbackReturn" type="button" aria-hidden="true" tabindex="-1">

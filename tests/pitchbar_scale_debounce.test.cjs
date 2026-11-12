@@ -73,7 +73,7 @@ test('both full and incremental bar-contour painting are suspended without clear
   });
   Object.assign(c, {barSystems: [system('bars')], staffTraceSystems: [system('staff', true)],
     pitchTraceDirty: dirty, pitchTraceLaneList: () => [], takeReview: null, visibleChannels:new Set([0]), audibleTraceReviews:()=>[], liveTraceVisible:()=>false,
-    pitchTraceRange: () => ({min: 48, max: 60}), updatePitchCaptureAppearance() {},
+    recordingBarRanges:null, pitchTraceRange: () => ({min: 48, max: 60}), updatePitchCaptureAppearance() {},
     scheduleBarRender() { throw new Error('unexpected reflow'); },
   });
   vm.runInContext(source('renderPitchTrace') + '\n' + source('updatePitchTraceIncrementally'), c);
@@ -91,4 +91,18 @@ test('the shared horizontal control enables deferral before scheduling geometry'
   assert.match(app, /horizontalScale\.addEventListener\("input", \(\) => \{ deferBarPitchTrace\(\); savePreferences\(\); scheduleRender\(\); \}\)/);
   const css = fs.readFileSync(path.join(__dirname, '../template/styles.css'), 'utf8');
   assert.match(css, /#barScore\.is-rescaling \.bar-pitch-trace-layer\s*\{ display: none; \}/);
+});
+
+test('live outliers do not reformat a recording system or create edges through a hidden sample', () => {
+  const c=vm.createContext({scoreView:'bars',barTraceResumeTimer:0,recordingBarRanges:new Map(),
+    pitchTraceDirty:new Map(),visibleChannels:new Set([0]),audibleTraceReviews:()=>[],liveTraceVisible:()=>true,
+    pitchTraceLaneList:()=>[],updatePitchCaptureAppearance(){},pitchTraceTickAtBin:i=>i,
+    pitchRestState:()=>'sing',engine:{secondsAtTick:i=>i/1000},
+    PITCH_TRACE_MAX_DRAW_GAP_SECONDS:1,PITCH_TRACE_RENDER_JUMP_CENTS:9999});
+  const system={minPitch:40,maxPitch:60,traceLayer:{replaceChildren(){}},traceEdges:new Map(),traceEdgesByBin:new Map()};
+  c.barSystems=[system];
+  vm.runInContext(source('renderPitchTrace')+'\n'+source('appendPitchTraceEdge'),c);
+  c.renderPitchTrace();
+  for(const pitches of [[5000,8200],[3000,5000]]) c.appendPitchTraceEdge(system,0,{pitches,breaks:[]},0,1);
+  assert.equal(system.traceEdges.size,0);
 });

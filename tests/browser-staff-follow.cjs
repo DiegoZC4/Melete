@@ -182,6 +182,7 @@ async function checkHorizontalFollow(frame, {probe = '__qa'} = {}) {
       const line = surface.querySelector('.at-cursor-beat'), samples = [];
       await q.engine.startTransport();
       const deadline = performance.now() + 10000;
+      while(!q.engine.playing && performance.now()<deadline)await new Promise(requestAnimationFrame);
       while (performance.now() < deadline && q.engine.playing) {
         await new Promise(requestAnimationFrame);
         const fraction = (q.follow.tick - from.start) / from.length;

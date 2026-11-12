@@ -91,3 +91,14 @@ test('audio-clock cursor places the exact current tick and rejects delayed nativ
   handler.sync(240);
   assert.equal(f.calls.at(-1)[1],143,'placement callbacks recover the actual cursor objects');
 });
+
+test('a grace note sharing the written onset keeps its own performed cursor anchor',()=>{
+  const f=fixture();
+  f.first.beat.absoluteDisplayStart=480;
+  f.first.beat.absolutePlaybackStart=420;
+  f.second.beat.absolutePlaybackStart=480;
+  f.handler.placeBeatCursor(f.cursor,f.first,100);
+  assert.equal(f.calls.at(-1)[1],94);
+  f.handler.placeBeatCursor(f.cursor,f.second,200);
+  assert.equal(f.calls.at(-1)[1],192,'the main note must not inherit the grace-note center');
+});
