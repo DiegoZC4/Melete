@@ -26,6 +26,7 @@ function fixture(href = 'https://example.test/song/') {
     elements: Object.fromEntries(['loopToggle', 'loopStart', 'loopEnd', 'loopControls', 'loopBand', 'score', 'barScore'].map(key => [key, element()])),
     showToast: message => messages.push(message),
     requestAnimationFrame: callback => callback(), playbackDirection: () => null,
+    syncNotationOverflow() {},
     playbackCursorBounds: () => null, updateTransportHeight() {}, scrollToPlayback: (...args) => scrolls.push(args),
     savePreferences: () => saved.push({loopStart:c.loopStartMeasure, loopEnd:c.loopEndMeasure,
       loopStartTick:c.loopStartTick, loopEndTick:c.loopEndTick}),
@@ -104,6 +105,20 @@ test('loop reveal waits for active final layout, then stops following', () => {
   c.engine.seek(9);
   c.revealPendingLoopStart();
   assert.equal(c.pendingLoopRevealTick, null, 'a manual seek cancels delayed restoration');
+});
+
+test('loop reveal synchronizes extent and paused cursor before reading scroll geometry', () => {
+  const {c} = fixture(), calls = [];
+  c.flow = 'continuous';
+  c.syncNotationOverflow = () => calls.push('extent');
+  c.api.customCursorHandler = {
+    sync: tick => calls.push(['cursor', tick]), release: () => calls.push('release'),
+  };
+  c.playbackCursorBounds = () => { calls.push('bounds'); return {width: 3, height: 200}; };
+  c.scrollToPlayback = direction => calls.push(direction);
+  c.applyLoopLink('2-4');
+  assert.deepEqual(calls, ['extent', ['cursor', 3840], 'release', 'bounds', 'down', 'left']);
+  assert.equal(c.pendingLoopRevealTick, null);
 });
 
 test('URL endpoints are exclusive positions with optional beat and fraction precision', () => {

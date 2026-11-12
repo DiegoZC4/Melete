@@ -3,25 +3,7 @@ const path = require('node:path');
 
 const loopReloadProbe = `loopReload: { get pending() { return pendingLoopRevealTick; },
   get restored() { return initialLoopRestored; }, bounds: playbackCursorBounds, scheduleRender,
-  trace: (() => {
-    const log = [], sample = phase => {
-      const surface = scoreView === 'bars' ? elements.barScore : elements.score;
-      log.push({phase, pending: pendingLoopRevealTick, flow, view: scoreView,
-        width: surface.scrollWidth, client: surface.clientWidth, left: surface.scrollLeft,
-        classes: surface.className, overflow: getComputedStyle(surface).overflowX,
-        bounds: playbackCursorBounds(), inflight: notationRenderInFlight,
-        queued: notationRenderQueued, timer: Boolean(renderTimer)});
-      if (log.length > 12) log.shift();
-    };
-    const reveal = revealPendingLoopStart, overflow = syncNotationOverflow;
-    revealPendingLoopStart = () => {
-      if (pendingLoopRevealTick === null) return reveal();
-      sample('reveal-before'); reveal(); sample('reveal-after');
-    };
-    syncNotationOverflow = () => { overflow(); sample('overflow'); };
-    elements.score.addEventListener('scroll', () => sample('scroll'));
-    return log;
-  })() },`;
+  reveal: revealPendingLoopStart, request: tick => { pendingLoopRevealTick = tick; } },`;
 
 async function checkLoopReload(frame, page, {probe = '__qa', reload, output, label}) {
   if (await frame.locator('#partChooser').isVisible()) await frame.locator('#partChooserDismiss').click();
@@ -63,7 +45,7 @@ async function checkLoopReload(frame, page, {probe = '__qa', reload, output, lab
           height: innerHeight, width: innerWidth, scrollY, scoreX: document.getElementById('score').scrollLeft,
           barsX: document.getElementById('barScore').scrollLeft, playing: q.engine.playing,
           surfaceLeft: surface.getBoundingClientRect().left, maxScroll: surface.scrollWidth - surface.clientWidth,
-          settings, trace: q.loopReload.trace};
+          settings};
       }, probe);
       assert.equal(actual.playing, false, 'restore never starts audio');
       assert.ok(actual.bounds.top >= actual.top - 2 && actual.bounds.top < actual.height - 20,
@@ -77,6 +59,21 @@ async function checkLoopReload(frame, page, {probe = '__qa', reload, output, lab
         // cursor must reach the reading margin or the actual end of the scroll track.
         const target = Math.max(0, Math.min(actual.maxScroll, left + actual.bounds.left - actual.surfaceLeft - 10));
         assert.ok(Math.abs(left - target) < 2, JSON.stringify({view, flow, left, target, actual}));
+        if (view === 'standard') {
+          const delayed = await frame.evaluate(({name, tick}) => {
+            const q = window[name], score = document.getElementById('score');
+            score.scrollLeft = 0;
+            // A seek can update the engine before AlphaTab paints its cursor.
+            q.api.customCursorHandler.sync(0);
+            q.api.customCursorHandler.release();
+            q.loopReload.request(tick);
+            q.loopReload.reveal();
+            return {left: score.scrollLeft, bounds: q.loopReload.bounds(), pending: q.loopReload.pending};
+          }, {name: probe, tick: expected});
+          assert.equal(delayed.pending, null);
+          assert.ok(Math.abs(delayed.left - target) < 2,
+            `a stale pre-seek cursor must not consume loop reveal: ${JSON.stringify({target, delayed})}`);
+        }
       }
       assert.equal(actual.settings.scoreView, view);
       assert.equal(actual.settings.flow, flow);

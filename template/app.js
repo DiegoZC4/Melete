@@ -5234,6 +5234,13 @@
     if (window.frameElement?.inert || window.frameElement?.getAttribute("aria-hidden") === "true"
       || pendingNotationReload || (scoreView === "bars" ? barRenderFrame
         : renderTimer || notationRenderInFlight || notationRenderQueued)) return;
+    if (scoreView === "standard") {
+      // The engine can seek before AlphaTab paints its paused cursor or final
+      // scroll extent. Position both before consuming this one-time reveal.
+      syncNotationOverflow();
+      api?.customCursorHandler?.sync?.(pendingLoopRevealTick);
+      api?.customCursorHandler?.release?.();
+    }
     const bounds = playbackCursorBounds();
     if (!bounds || bounds.width <= 0 || bounds.height <= 0) return;
     updateTransportHeight();
