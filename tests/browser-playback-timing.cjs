@@ -195,13 +195,20 @@ async function checkMotionTransport(frame,page,probe) {
   const boundarySetup = await frame.evaluate(name=>{
     const qa=window[name];qa.engine.setLoop(null,null);
     const boundary=qa.pitchbar.systems.length>1 ? qa.pitchbar.systems[0].endTick : qa.pitchbar.sequence.measures[1][0];
-    qa.engine.seek(qa.engine.secondsAtTick(boundary)-.15);
-    // Reproduce missing JS presentation callbacks without freezing the audio.
-    cancelAnimationFrame(qa.engine.presentationFrame);qa.engine.presentationFrame=0;
+    qa.engine.seek(qa.engine.secondsAtTick(boundary)-.4);
     return {boundary, duration:qa.engine.duration, position:qa.engine.currentSeconds(),playing:qa.engine.playing};
   },probe);
+  // Let the seek reach the output and its first audible presentation frame.
+  // Freezing at seek() instead measures the device's output queue, not whether
+  // established compositor motion survives missing JS presentation callbacks.
+  await frame.waitForFunction(({name,position})=>window[name].engine.visualSeconds>position+.05,
+    {name:probe,position:boundarySetup.position});
+  await frame.evaluate(name=>{
+    const engine=window[name].engine;
+    cancelAnimationFrame(engine.presentationFrame);engine.presentationFrame=0;
+  },probe);
   if (process.env.QA_TIMING_TRACE) console.log('Transport boundary', boundarySetup);
-  await page.waitForTimeout(300);await sample('boundary crossing without presentation callbacks');
+  await page.waitForTimeout(450);await sample('boundary crossing without presentation callbacks');
   await frame.evaluate(name=>window[name].engine.startPresentation(),probe);
   for(const rate of [.5,1.5]) {
     // The UI changes AlphaTab's speed, which synchronizes the external engine.
