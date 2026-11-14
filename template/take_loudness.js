@@ -8,6 +8,57 @@
   "use strict";
   const TARGET = -14, CEILING = -2, MAX_BOOST = 30;
   const cache = new WeakMap();
+  const VERSION = 1;
+  let database;
+  function metricsStore() {
+    if (!globalThis.indexedDB) return Promise.resolve(null);
+    return database ||= new Promise(resolve => {
+      const request = indexedDB.open("melete-loudness-cache", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("metrics", {keyPath:"key"}).createIndex("at","at");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = request.onblocked = () => resolve(null);
+    });
+  }
+  async function stored(buffer, key, result) {
+    if (!key) return null;
+    try {
+      const db = await metricsStore();
+      if (!db) return null;
+      const identity = JSON.stringify([VERSION, key, buffer.sampleRate, buffer.length, buffer.numberOfChannels]);
+      const id = [...new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(identity)))]
+        .map(n=>n.toString(16).padStart(2,"0")).join("");
+      return await new Promise(resolve => {
+        const tx = db.transaction("metrics", result ? "readwrite" : "readonly"), store = tx.objectStore("metrics");
+        const request = result ? store.put({key:id, result, at:Date.now()}) : store.get(id);
+        if (result) {
+          const count = store.count();
+          count.onsuccess = () => {
+            let extra = count.result - 256;
+            if (extra > 0) store.index("at").openCursor().onsuccess = event => {
+              const cursor = event.target.result;
+              if (cursor && extra-- > 0) { cursor.delete(); cursor.continue(); }
+            };
+          };
+        }
+        tx.oncomplete = () => resolve(result || request.result?.result || null);
+        tx.onerror = tx.onabort = () => resolve(null);
+      });
+    } catch { return null; } // A disposable analysis cache must never block playback.
+  }
+  // Independent voices add energy. Sum peaks conservatively so correlated
+  // doubles cannot clip; exact integrated mix loudness is measured on export.
+  function mix(plans, {reverb = 0} = {}) {
+    let energy = 0, peak = 0;
+    for (const p of plans) {
+      if (!p) continue;
+      if (Number.isFinite(p.outputLufs)) energy += 10 ** (p.outputLufs / 10);
+      if (Number.isFinite(p.truePeakDbtp)) peak += 10 ** (p.truePeakDbtp / 20) * p.gain;
+    }
+    const wet = 1 + Math.max(0, Math.min(100, reverb)) / 100 * .6;
+    const gain = Math.min(1, energy ? Math.sqrt(10 ** (TARGET / 10) / energy) : 1,
+      peak ? 10 ** (CEILING / 20) / (peak * wet) : 1);
+    return {gain, gainDb:20*Math.log10(gain), estimated:true};
+  }
   function plan(result, {dualMono = false} = {}) {
     const stereo = dualMono ? 10 * Math.log10(2) : 0;
     const audible = Number.isFinite(result.integratedLufs) && result.integratedLufs > -60;
@@ -60,15 +111,21 @@
       });
     } finally { clearTimeout(timer); worker.terminate(); URL.revokeObjectURL(url); }
   }
-  async function measure(buffer, offset = 0) {
+  async function measure(buffer, offset = 0, key = null) {
     if (!cache.has(buffer)) cache.set(buffer, new Map());
     const entries = cache.get(buffer);
     if (!entries.has(offset)) {
-      const pending = run(buffer, {measureOffset:offset}).then(({result}) => result).catch(error => { entries.delete(offset); throw error; });
+      const pending = (async () => {
+        const saved = await stored(buffer, key && [key,offset]);
+        if (saved) return saved;
+        const {result} = await run(buffer, {measureOffset:offset});
+        await stored(buffer, key && [key,offset], result);
+        return result;
+      })().catch(error => { entries.delete(offset); throw error; });
       entries.set(offset, pending);
     }
     return entries.get(offset);
   }
-  const track = async buffer => plan(await measure(buffer), {dualMono:buffer.numberOfChannels === 1});
-  return {TARGET, CEILING, MAX_BOOST, plan, analyze, encode, workerSource, measure, track, run};
+  const track = async (buffer, key = null) => plan(await measure(buffer, 0, key), {dualMono:buffer.numberOfChannels === 1});
+  return {TARGET, CEILING, MAX_BOOST, plan, mix, analyze, encode, workerSource, measure, track, run};
 });

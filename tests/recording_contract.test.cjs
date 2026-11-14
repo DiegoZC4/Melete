@@ -25,7 +25,7 @@ test('audio diagnostics are bounded, local, and optional when storage is blocked
 test('a station visit neither grants audio permission to ordinary practice nor clears a previous explicit choice',()=>{
   for(const saved of [null,{sing:true},{sing:true,singRecordsAudio:true},{sing:false,singRecordsAudio:true}]){
     let value=JSON.stringify(saved);
-    const c=vm.createContext({parts:[{}],rehearsalReview:null,compPanel:null,linkedPracticeState:null,preferenceKey:'song',rememberReviewMix(){},
+    const c=vm.createContext({parts:[{}],rehearsalReview:null,compPanel:null,linkedPracticeState:null,preferenceKey:'song',rememberReviewMix(){},rememberRecordingRole(){},
       window:{MeleteStation:{requested:()=>true}},currentPreferenceState:()=>({sing:true,singRecordsAudio:true}),
       localStorage:{getItem:()=>value,setItem:(_k,v)=>{value=v;}}});
     vm.runInContext(fn('savePreferences'),c);c.savePreferences();

@@ -7,6 +7,7 @@ const {recordingProbe} = require('./browser-loop-recorder.cjs');
 
 async function main() {
   const origin = process.env.NATIVE_STATION_ORIGIN;
+  const silent = process.env.NATIVE_SILENT === '1';
   assert.match(origin || '', /^http:\/\/127\.0\.0\.1:\d+$/);
   const htmlPath = process.env.NATIVE_STATION_PLAYER;
   assert.ok(htmlPath, 'provide a freshly built player');
@@ -18,6 +19,7 @@ async function main() {
   const marker = 'engine = new GuideEngine(sequence);';
   assert.equal(html.split(marker).length, 2);
   html = html.replace(marker, marker+`window.__qa = {engine, api, ${recordingProbe}
+    silence(){audibleTracks.clear(); trackVolumes.fill(0); engine.setMetronome(0); engine.native.volume=0; engine.updateMix(audibleTracks,trackVolumes,trackPans);},
     get mixerIndex(){return practiceMixerIndex();},
     get busy(){return Boolean(renderTimer || barRenderFrame || notationRenderInFlight || notationRenderQueued);}};`);
   html = html.replaceAll('const buffer = await context.startRendering();', 'window.__nativeOfflineContext=context; const buffer = await context.startRendering();');
@@ -51,25 +53,29 @@ async function main() {
     const calibratedDelay = await page.evaluate(() => __qa.engine.native.state.latency);
     report.checks.noBrowserCapture = await page.evaluate(() => __browserMicRequests === 0);
     assert.equal(report.checks.noBrowserCapture, true);
-    await page.evaluate(() => {
+    await page.evaluate(silent => {
       const q=__qa,e=q.engine;
       e.setMetronome(0);
       const n=e.trackStrips.length;
-      e.updateMix(new Set([q.mixerIndex]), Array(n).fill(150), Array(n).fill(-100));
+      if(silent)q.silence();else e.updateMix(new Set([q.mixerIndex]), Array(n).fill(150), Array(n).fill(-100));
       q.api.tickPosition = e.tickAtSeconds(q.compDescriptor.reference.notes[0][0]);
-    });
+    },silent);
     const startedAt=Date.now();
     await page.locator('#playPause').click();
     await page.waitForFunction(() => __qa.recording.state === 'recording',null,{timeout:120000});
     report.checks.preparationMs=Date.now()-startedAt;
-    await page.evaluate(async () => {
+    await page.evaluate(async silent => {
       const e=__qa.engine,n=e.trackStrips.length;
-      await e.native.mix(new Set([__qa.mixerIndex]),Array(n).fill(200),Array(n).fill(-100));
-    });
+      if(silent)__qa.silence();else await e.native.mix(new Set([__qa.mixerIndex]),Array(n).fill(200),Array(n).fill(-100));
+    },silent);
+    for(let i=0;i<24;i++)await page.locator('[data-pan-index="0"]').press(i%2?'ArrowLeft':'ArrowRight');
+    await page.locator('[data-pan-index="0"]').press('Shift+Enter');
+    assert.equal(await page.evaluate(()=>__qa.recording.state),'recording');
     await page.waitForFunction(() => __qa.engine.native.frame-__qa.engine.native.startFrame >= 48000*3);
     const moving = await page.evaluate(() => ({position:__qa.engine.currentSeconds(),
       native:__qa.engine.native.state, browserMic:__browserMicRequests, live:__qa.recording.frames?.length}));
     assert.equal(moving.native.fault, null);
+    if(silent)assert.equal(moving.native.outputPeak,0,'silent test never plays headphone audio');
     assert.ok(moving.native.frame > 0);
     report.checks.inputPeak = moving.native.peak;
     await page.locator('#playPause').click();
@@ -83,6 +89,15 @@ async function main() {
     assert.ok(report.checks.recording.every(t => !t.gap && t.frames > 48000 && Math.abs(t.latency-calibratedDelay)<1e-7));
     await page.locator('#pitchCapture').click();
     await page.waitForFunction(() => __qa.recording.pitch === 'off');
+    if(silent){
+      const ids=report.checks.recording.map(t=>t.id);
+      await page.reload();
+      await page.waitForFunction(ids=>window.__qa&&ids.every(id=>__qa.recording.takes.some(t=>t.id===id&&t.finalized)),ids);
+      report.checks.reload=true;report.checks.panDuringRecording=true;
+      report.errors=errors;assert.deepEqual(errors,[]);
+      await fs.writeFile(path.join(output,'result.json'),JSON.stringify(report,null,2));
+      console.log(JSON.stringify({checks:report.checks,client:report.client}));return;
+    }
     await page.evaluate(() => __qa.refreshComp());
     const saved = await (await page.waitForFunction(async () => (await __qa.takeStore.comps(__qa.takeSong)).find(s => s.segments.length)||false, null, {timeout:15000})).jsonValue();
     report.checks.adoption = {slot:saved.descriptor.slot,segments:saved.segments.length};
@@ -90,7 +105,7 @@ async function main() {
     await page.evaluate(from => __qa.engine.seek(from), saved.segments[0].from);
     await page.locator('#playPause').click();
     await page.waitForFunction(() => __qa.engine.playing);
-    await page.waitForFunction(() => __qa.engine.native.assets.recordings);
+    await page.waitForFunction(() => Object.keys(__qa.engine.native.assets).some(k=>k.startsWith('recording:')));
     await page.evaluate(async () => {
       const e=__qa.engine,n=e.trackStrips.length;
       await e.native.mix(new Set(),Array(n).fill(100),Array(n).fill(0));

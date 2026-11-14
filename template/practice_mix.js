@@ -65,6 +65,49 @@
   const audioKeys=["metronome","audible","volumes","pans","takeVolume","takeReverb","reference",
     "practiceMixMode","practiceMixPart","practiceMixUndo"];
   const audioState=state=>structuredClone(Object.fromEntries(audioKeys.filter(k=>k in state).map(k=>[k,state[k]])));
+  const roleFields=["audible","volumes","pans"];
+  function roleKey(song,channels,scope) {
+    return `melete:role-mix:v1:${JSON.stringify([song,channels.map(c=>[c.source,c.line??null,c.short]),scope])}`;
+  }
+  function common(values,fallback) {
+    const counts=new Map();
+    for(const value of values) counts.set(value,(counts.get(value)||0)+1);
+    return [...counts].sort((a,b)=>b[1]-a[1] || Number(b[0]===fallback)-Number(a[0]===fallback))[0]?.[0] ?? fallback;
+  }
+  // Remember the backing value underneath the guide. Otherwise moving the
+  // guide onto a deliberately quiet part would transplant its exception.
+  function follow(channels,state,old,index,previous=null,layout=null,roles=[]) {
+    if(!channels[old] || !channels[index]) return null;
+    const settings=audioState(state), shadow={}, base={};
+    const seats=i=>layout?.layout==="choir"?project(channels,i,layout,roles).pans:channels.map(()=>0);
+    const from=seats(old),to=seats(index),prior=previous?.index===old ? previous : null;
+    let panCarry;
+    for(const field of roleFields){
+      const src=state[field];
+      const values=src.map((v,i)=>{
+        if(field!=="pans") return v;
+        // A seat change can pin a dial at its limit. Recover its excess only
+        // while the displayed pan and seat still match; a manual edit wins.
+        const carry=prior?.panCarry?.[i];
+        const pinned=prior?.panSeats?.[i]===from[i] && Number.isFinite(carry) && v===100*Math.sign(carry);
+        return v-from[i]+(pinned?carry:0);
+      });
+      const others=values.filter((_,i)=>i!==old);
+      base[field]=common(others,prior?.base?.[field] ?? values[old]);
+      const priorValue=prior?.shadow?.[field];
+      const hidden=priorValue===undefined || priorValue===prior.base[field] ? base[field] : priorValue;
+      const guide=values[old];
+      values[old]=hidden;
+      shadow[field]=values[index];
+      values[index]=guide;
+      if(field==="pans"){
+        const raw=values.map((v,i)=>v+to[i]);
+        settings.pans=raw.map(v=>Math.max(-100,Math.min(100,v)));
+        panCarry=raw.map((v,i)=>v-settings.pans[i]);
+      }else settings[field]=values;
+    }
+    return {index,settings,base,shadow,...(panCarry.some(Boolean)?{panCarry,panSeats:to}:{})};
+  }
   function reviewKey(song,channels,index) {
     return `melete:review-mix:v1:${JSON.stringify([song,channels.map(c=>[c.source,c.line??null,c.short]),index])}`;
   }
@@ -90,6 +133,6 @@
     return url.href;
   }
   const api={keys,read,fromMixer,address,factory,defaultWidth,stationDefault,setStationDefault,seatOrder,project,fullPreset,
-    audioState,reviewKey,reviewProfile};
+    audioState,reviewKey,reviewProfile,roleKey,follow};
   if(typeof module==="object" && module.exports) module.exports=api; else root.MeletePracticeMix=api;
 })(globalThis);

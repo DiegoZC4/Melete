@@ -36,3 +36,13 @@ test('loudness meter matches the BS.1770 1kHz -23 LUFS stereo reference',()=>{
   const decoded=meter.decodeWav(wave);
   assert.equal(decoded.sampleRateHz,48000);
 });
+test('Hear balances from cached loudness and peak metrics without rendering audio',()=>{
+  const p=L.plan({integratedLufs:-30,truePeakDbtp:-20},{dualMono:true});
+  const one=L.mix([p]),eight=L.mix(Array(8).fill(p));
+  assert.equal(one.gain,1);
+  assert.ok(eight.gain<one.gain);
+  const worstPeak=8*10**(p.truePeakDbtp/20)*p.gain*eight.gain;
+  assert.ok(worstPeak<=10**(L.CEILING/20)+1e-9);
+  assert.equal(L.mix([]).gain,1);
+  assert.ok(L.mix([p],{reverb:100}).gain<=one.gain);
+});

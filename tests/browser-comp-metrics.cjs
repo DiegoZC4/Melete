@@ -7,6 +7,7 @@ async function checkCompMetrics(page, frame, {output, label}) {
   await choosePart(frame, 0);
   const toggle = frame.locator('[data-settings-section="takes"] .settings-section-toggle');
   if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
+  await require('./browser-show-columns.cjs').showAllColumns(frame);
   await frame.waitForFunction(() => (window.__qa || window.__probe).compState);
   const seed = (error, coverage, outliers = false) => frame.evaluate(async ({error, coverage, outliers}) => {
     const q = window.__qa || window.__probe, d = q.compDescriptor, rate = d.reference.rate;
@@ -71,10 +72,10 @@ async function checkCompMetrics(page, frame, {output, label}) {
   }
   await seed(40, 0);
   assert.deepEqual(await read(), worsened, 'a rejected silent capture does not replace the comparison');
-  await frame.locator('#undoComp').click();
+  await require('./browser-history-control.cjs').historyControl(frame,'undo');
   await frame.waitForFunction(() => [...document.querySelectorAll('#compRows .is-armed .take-metric')].every(m => m.dataset.change === 'better'));
   assert.ok(Object.values(await read()).every(m => m.change === 'better'), 'Undo compares against the state it replaced');
-  await frame.locator('#redoComp').click();
+  await require('./browser-history-control.cjs').historyControl(frame,'redo');
   await frame.waitForFunction(() => [...document.querySelectorAll('#compRows .is-armed .take-metric')].every(m => m.dataset.change === 'worse'));
   assert.ok(Object.values(await read()).every(m => m.change === 'worse'), 'Redo reverses the metric changes');
   await frame.locator('.take-review').screenshot({path:path.join(output, `${label}-comp-metrics-worse.png`)});

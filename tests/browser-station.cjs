@@ -100,10 +100,8 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     assert.equal(await page.locator('#stationStage, #stationBar, #stationNewSinger').count(), 0);
     assert.equal(await panelHeight(), ordinaryHeight, 'station does not add a row to Record');
     assert.equal(await page.locator('label[for="stationSinger"]').innerText(), 'Singer');
-    assert.ok(await page.evaluate(() => {
-      const a = downloadMix.getBoundingClientRect(), b = stationExport.getBoundingClientRect();
-      return a.top === b.top && b.left - a.right <= 4 && b.left >= a.right;
-    }), 'CSV is directly right of the mix on the same grid row');
+    assert.ok(await page.locator('#takeActions #stationExport').isVisible());
+    assert.ok(await page.locator('.comp-columns #downloadMix').isVisible());
 
     const input = page.locator('#stationSinger');
     await input.click();
@@ -264,11 +262,11 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     assert.deepEqual([demoa.tempo < ordinary.tempo, demoa.volumes[last] > initialA.volumes[last], demoa.pans[last] > initialA.pans[last],
       demoa.audible[0] !== initialA.audible[0]], [true, true, true, true], JSON.stringify({ordinary, demoa}));
     await pick(page, 'DemoS');
-    assert.deepEqual((await mix()).volumes,[150,35,35]); assert.deepEqual((await mix()).pans,[100,-35,-35]);
+    assert.deepEqual((await mix()).volumes,[150,35,demoa.volumes[last]]); assert.deepEqual((await mix()).pans,[100,-35,demoa.pans[last]]);
     await page.locator(`[data-pan-index="${last}"]`).press('ArrowLeft');
     const demos = await mix();
     await pick(page, 'demoa');
-    assert.deepEqual(await mix(), demoa, 'a returning singer hears their own mix');
+    assert.deepEqual(await mix(), {...demoa,pans:[...demoa.pans.slice(0,last),demos.pans[last]]}, 'tempo belongs to the singer; a backing edit belongs to the mix');
     await pick(page, 'DemoS');
     assert.deepEqual(await mix(), demos);
     await open(page, origin);

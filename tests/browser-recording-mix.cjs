@@ -21,7 +21,7 @@ async function checkRecordingMix(page, frame, {output,label}) {
   const editHistory = await checkCompHistory(frame);
   assert.equal(await frame.locator('#compCloud, #compAccount').count(),0);
   assert.equal(await frame.locator('#downloadMix').innerText(),'');
-  assert.equal(await frame.locator('#downloadMix svg').count(),2);
+  assert.equal(await frame.locator('.comp-columns #downloadMix svg').count(),1);
   assert.equal(await frame.locator('#downloadMix').getAttribute('aria-label'),'Download audible recording mix');
   const positions=await frame.evaluate(()=>{
     const vol=document.querySelector('.take-volume'),reverb=document.querySelector('.take-reverb');
@@ -115,6 +115,11 @@ async function checkRecordingMix(page, frame, {output,label}) {
   assert.ok(await frame.evaluate(beats=>window.__countClicks.filter(c=>[880,1320].includes(c.hz)).length>=beats,beats),'ordinary metronome clicks cover the lead-in');
   assert.notEqual(await frame.locator('#microphoneCheck').getAttribute('data-state'),'error');
   if(await frame.locator('#settingsToggle').getAttribute('aria-expanded')!=='true')await frame.locator('#settingsToggle').click();
+  const pan=frame.locator('[data-pan-index="0"]');
+  for(let i=0;i<8;i++)await pan.press('ArrowRight');
+  await pan.press('Shift+Enter');
+  assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).recording.state),'recording','pan edits never stop an active capture');
+  assert.ok(await frame.evaluate(()=>(window.__qa||window.__probe).engine.playing));
   await frame.locator('#pitchCapture').click();
   await frame.waitForFunction(()=>(window.__qa||window.__probe).recording.state==='off');
   await frame.waitForFunction(before=>Number(document.querySelector('#recordingToday').dataset.seconds)>before,recordedBefore);
@@ -227,8 +232,7 @@ async function checkRecordingMix(page, frame, {output,label}) {
     __batchMixProof.running=false;MeleteTakeMix.prepare=original;
     return {calls,counts:[...new Set(counts)]};
   });
-  assert.equal(batchMix.calls.length,1,JSON.stringify(batchMix));
-  assert.equal(batchMix.calls[0].length,available,JSON.stringify(batchMix));
+  assert.equal(batchMix.calls.length,0,'Hear uses cached measurements, never a full-mix render');
   assert.ok(batchMix.counts.every(count=>count===1||count===available),JSON.stringify(batchMix));
   const audibleButtons=frame.locator('#compRows .take-hear[aria-pressed="true"], #takeList .take-hear[aria-pressed="true"]');
   while(await audibleButtons.count()) await audibleButtons.first().click();
@@ -240,6 +244,7 @@ async function checkRecordingMix(page, frame, {output,label}) {
   await holdHear();
   await frame.waitForFunction(count=>(window.__qa||window.__probe).engine.takeLayers.size===count,available);
   assert.equal(await firstRow.locator('.take-hear').getAttribute('aria-pressed'),'true','hold from all muted enables everyone');
+  await require('./browser-show-columns.cjs').showAllColumns(frame);
   const octave=firstRow.locator('.take-octave');
   for(const value of ['-','8va','8vb','-']){
     assert.equal(await octave.textContent(),value);
@@ -266,15 +271,25 @@ async function checkRecordingMix(page, frame, {output,label}) {
   },latestTrack);
   assert.equal(await frame.locator('#compRows .take-number').allTextContents().then(labels=>labels.includes('Comp')),false);
   assert.equal(await frame.locator('#addTrack').evaluate(el=>!!el.closest('.take-controls')),true);
-  const cellWidths=await frame.evaluate(()=>['addTrack','undoComp','redoComp','downloadMix','loopToggle'].map(id=>({id,width:document.getElementById(id).getBoundingClientRect().width})));
+  const cellWidths=await frame.evaluate(()=>['addTrack','loopToggle',...(matchMedia('(hover:hover) and (pointer:fine)').matches?[]:['undoComp','redoComp'])].map(id=>({id,width:document.getElementById(id).getBoundingClientRect().width})));
   assert.ok(cellWidths.every(cell=>cell.width>=44),JSON.stringify(cellWidths));
   await frame.waitForFunction(()=>!(window.__qa||window.__probe).engine.takeBalanceJob);
   const levels=await frame.evaluate(()=>{
     const e=(window.__qa||window.__probe).engine;
     return {mix:e.takeMixLoudness,tracks:[...e.takeLayers.values()].map(t=>({gain:t.gain.gain.value,lufs:t.loudness?.outputLufs}))};
   });
-  assert.ok(levels.mix&&Math.abs(levels.mix.outputLufs+14)<.2,JSON.stringify(levels));
+  assert.ok(levels.mix?.estimated&&levels.mix.gain>0&&levels.mix.gain<=1,JSON.stringify(levels));
   assert.ok(levels.tracks.every(t=>t.gain>1&&Math.abs(t.lufs+14)<.2),JSON.stringify(levels));
+  await frame.evaluate(async()=>{
+    const context=(window.__qa||window.__probe).engine.context, sr=context.sampleRate;
+    const make=()=>{const b=context.createBuffer(1,sr,sr);b.getChannelData(0).set(Float32Array.from({length:sr},(_,i)=>.01*Math.sin(i*440*2*Math.PI/sr)));return b;};
+    const key='browser-persistent-loudness-fixture', first=await MeleteTakeLoudness.track(make(),key), Worker=window.Worker;
+    try {
+      window.Worker=class{constructor(){throw Error('Unexpected repeated loudness analysis');}};
+      const next=await MeleteTakeLoudness.track(make(),key);
+      if(next.gain!==first.gain)throw Error('Persistent loudness metrics changed');
+    }finally{window.Worker=Worker;}
+  });
   // Offline mix preserves alignment, duration, octave shifts and phrasing.
   const mix=await frame.evaluate(async()=>{
     const q=window.__qa||window.__probe; q.engine.ensureAudio();
@@ -286,8 +301,11 @@ async function checkRecordingMix(page, frame, {output,label}) {
       const result=await MeleteTakeMix.render([{...layer,octave}],{duration:1,sampleRate:sr});
       const audio=await ctx.decodeAudioData(await result.blob.arrayBuffer());
       const a=audio.getChannelData(0),from=Math.floor(.3*sr),to=Math.floor(.8*sr);
-      let crossings=0,peak=0;for(let i=from+1;i<to;i++){if(a[i-1]<0&&a[i]>=0)crossings++;peak=Math.max(peak,Math.abs(a[i]));}
-      out.push({octave,hz:crossings/.5,peak,seconds:audio.duration,lufs:(await MeleteTakeLoudness.measure(audio)).integratedLufs});
+      let crossings=0,peak=0,first,last;for(let i=from+1;i<to;i++){
+        if(a[i-1]<0&&a[i]>=0){last=i-a[i]/(a[i]-a[i-1]);first??=last;crossings++;}
+        peak=Math.max(peak,Math.abs(a[i]));
+      }
+      out.push({octave,hz:(crossings-1)*sr/(last-first),peak,seconds:audio.duration,lufs:(await MeleteTakeLoudness.measure(audio)).integratedLufs});
     }
     const wet=await MeleteTakeMix.render([layer],{duration:1,reverb:40,sampleRate:sr});
     const resampled=await MeleteTakeMix.render([{...layer,octave:1}],{duration:1,sampleRate:sr===48000?44100:48000});
@@ -309,12 +327,28 @@ async function checkRecordingMix(page, frame, {output,label}) {
   assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).pitchbar.captureSettingsState().takeReverb),10);
   await frame.locator('#takeVolume').click();
   assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).pitchbar.captureSettingsState().takeVolume),110);
+  const hearRows=frame.locator('#compRows .take-hear:enabled');
+  assert.ok(await hearRows.count()>=2,'use separate heard and muted recordings for export');
+  for(const [i,b] of (await hearRows.all()).entries()){
+    if((await b.getAttribute('aria-pressed')==='true')!==(i===0))await b.click();
+  }
+  await frame.waitForFunction(()=>(window.__qa||window.__probe).engine.takeLayers.size===1);
+  const heardId=await hearRows.first().evaluate(b=>b.closest('.comp-row').querySelector('.take-octave').dataset.takeId);
+  assert.ok(heardId);
+  await frame.evaluate(()=>{
+    const render=MeleteTakeMix.render;
+    MeleteTakeMix.render=function(layers,...options){
+      window.__headerExportIds=layers.map(l=>l.id);MeleteTakeMix.render=render;
+      return render.call(this,layers,...options);
+    };
+  });
   const downloadReady=page.waitForEvent('download');
   await frame.locator('#downloadMix').click();
   const download=await downloadReady;
   assert.match(download.suggestedFilename(),/-mix\.wav$/);
   assert.equal(await download.failure(),null);
   await download.delete();
+  assert.deepEqual(await frame.evaluate(()=>window.__headerExportIds),[heardId]);
   await frame.evaluate(async()=>{await (window.__qa||window.__probe).refreshComp();document.activeElement?.blur();});
   const savedSegments=await frame.evaluate(()=>JSON.stringify((window.__qa||window.__probe).compState.segments));
   await frame.locator('body').press('Meta+z');
@@ -324,7 +358,7 @@ async function checkRecordingMix(page, frame, {output,label}) {
   await frame.waitForFunction(before=>JSON.stringify((window.__qa||window.__probe).compState.segments)===before,savedSegments);
   await frame.locator('body').press('Control+z');
   await frame.waitForFunction(before=>JSON.stringify((window.__qa||window.__probe).compState.segments)!==before,savedSegments);
-  await frame.locator('#redoComp').click();
+  await require('./browser-history-control.cjs').historyControl(frame,'redo');
   await frame.waitForFunction(before=>JSON.stringify((window.__qa||window.__probe).compState.segments)===before,savedSegments);
   await frame.evaluate(()=>{
     const input=document.createElement('textarea');input.id='history-input-test';document.body.append(input);
@@ -358,7 +392,7 @@ async function checkRecordingMix(page, frame, {output,label}) {
   assert.match(await privateButton.getAttribute('title'),/Kept on this device/);
   await page.screenshot({path:require('node:path').join(output,`${label}-recording-mix.png`)});
   return {partOrder:labels,countInBeats:beats,countInRecorded:true,noLegacyContour:true,hearIsolationCycle:true,centeredOctaveCycle:true,
-    batchMix,
+    batchMix,headerExport:{enabled:1,muted:available-1,onlyHeardExported:true},
     allMidiMuted:true,practiceFromSee:true,automaticMeter:true,independentClones:true,audibleGreyContours:true,mixDownload:true,reverbControl:true,mix,levels,cleanNotation:true,dailyTime,editHistory,keyboardHistory:true};
 }
 module.exports={checkRecordingMix};

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 
 async function checkTakeColumnLayout(page, frame, row, {output, label}) {
+  await require('./browser-show-columns.cjs').showAllColumns(frame);
   const octave = row.locator('.take-octave');
   const initial = await octave.getAttribute('data-value');
   const measurements = [];

@@ -1272,7 +1272,17 @@
     }
   }
 
-  return {TakeBuffer, TakeStore, TakeJournal, wavBytes, PcmCapture, CountIn, countInPlan,
+  async function finishCapture({capture, pause, frame, finish, flush}) {
+    let stopped, captureError;
+    try { stopped = await pause?.(); } catch (error) { captureError = error; }
+    try { await capture?.stop(); } catch (error) { captureError ||= error; }
+    // A disconnected audio device must not skip finalizing audio already in RAM.
+    if (finish) finish(captureError ? frame() : stopped?.stopFrame ?? frame());
+    await flush();
+    return captureError;
+  }
+
+  return {TakeBuffer, TakeStore, TakeJournal, wavBytes, PcmCapture, CountIn, countInPlan, finishCapture,
     recordingEntrance, auditionEntrances, takeBytes, takeFilename, takeArchive, takePlaybackWindow, takePlaybackGain, DELETE_UNDO_MS,
     recordingDay, recordingDays, compSnapshot, recordCompEdit, historySources, trimCompHistories,
     COMP_HISTORY_LIMIT, COMP_HISTORY_BYTES, MAX_LOOP_SECONDS, WORKLET_SOURCE};

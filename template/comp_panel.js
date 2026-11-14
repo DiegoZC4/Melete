@@ -713,7 +713,9 @@
           controller.signal.throwIfAborted();
           const latest=tracks.get(state.key);
           if (!latest || audioKey(latest.state,latest.sources) !== audioKey(state,sources)) throw new DOMException("Cancelled", "AbortError");
-          const review = {...visualReview(track), ...audio};
+          const review = {...visualReview(track), ...audio,
+            loudnessKey:JSON.stringify(["comp", state.key, cacheKey, root.MeleteTakeCleanup?.VERSION])};
+          if (root.MeleteTakeLoudness) review.loudness = await root.MeleteTakeLoudness.track(audio.buffer, review.loudnessKey);
           prepared.set(state.key, {cacheKey, review});
           return review;
         } finally { if (preparing.get(state.key) === job) preparing.delete(state.key); }

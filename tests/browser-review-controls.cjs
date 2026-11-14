@@ -26,6 +26,7 @@ async function checkReviewControls(context,url,options={}) {
     assert.equal(await only.locator('.take-hear').getAttribute('aria-pressed'),'false','clicking again cancels this track only');
     assert.equal(await other.locator('.take-hear').getAttribute('aria-pressed'),'true');
 
+    await require('./browser-show-columns.cjs').showAllColumns(frame);
     await kathleen.locator('.take-octave').click();
     assert.equal(await kathleen.locator('.take-octave').getAttribute('data-value'),'1');
     const downloading=page.waitForEvent('download');await kathleen.locator('.take-download').click();

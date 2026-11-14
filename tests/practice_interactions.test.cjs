@@ -30,14 +30,14 @@ test('restoring a collection position bypasses chapter magnets and validates the
 
 function mixFixture() {
   const c = vm.createContext({
-    stationReview:null, changingReviewFocus:false,
+    stationReview:null,reviewMix:null,lastGuideChannel:0,relativeMix:null,changingReviewFocus:false,
     parts: ['S', 'A', 'T', 'B'].map(name => ({name})), practicePartIndex: 0,
     visibleChannels:new Set([0]), visibleTracks:new Set([0]),
     pitchCaptureWorker: null,
     sequence: {}, pitchTraceBaseKey: '', pitchTraceKey: '',
     activePracticeMix: null, practiceMixPartIndex: null, practiceMixUndo: null,
     audibleTracks: new Set([0, 2, 3]), trackVolumes: [85, 70, 110, 45],
-    volumeControls: [], elements: {practicePart: {focus() {}}},
+    volumeControls: [], panControls:[],trackPans:[0,0,0,0], elements: {practicePart: {focus() {}}},
     VOLUME_VALUES: Array.from({length: 41}, (_, i) => i * 5),
     nearestAllowed: (value, values) => values.reduce((a, b) => Math.abs(a - value) <= Math.abs(b - value) ? a : b),
     clamp: (v, min, max) => Math.min(max, Math.max(min, v)),
@@ -45,7 +45,10 @@ function mixFixture() {
   });
   for (const name of ['practiceMixMatches', 'normalizePracticeMixUndo', 'cancelPracticeMixSession',
     'snapshotPracticeMix', 'restorePracticeMix', 'currentPracticeMix', 'applyPracticeMix', 'nextPartVolumeMix', 'cyclePartVolumeMix',
-    'roleTraceKey', 'assignPracticePart', 'syncPracticeFromSee', 'setPracticePart', 'setTrackAudible']) vm.runInContext(source(name), c);
+    'roleTraceKey', 'assignPracticePart', 'syncPracticeFromSee','followVisibleGuide', 'setPracticePart', 'setTrackAudible']) vm.runInContext(source(name), c);
+  const roles=require('../template/practice_mix.js');let memory=null;
+  c.recordingScope=()=>'practice';c.captureSettingsState=()=>({...c.snapshotPracticeMix(),pans:[...c.trackPans]});
+  c.followRole=(_,state,old,i)=>(memory=roles.follow(c.mixerParts,state,old,i,memory)).settings;
   Object.defineProperty(c, 'mixerParts', {get: () => c.parts.map((p,source) => ({...p,source,line:null}))});
   c.practiceMixerIndex = () => c.practicePartIndex;
   c.practiceDivisi = c.parts.map(() => null);
@@ -143,19 +146,21 @@ test('switching Learn/Check or clearing the chosen part keeps the same restore p
   assert.equal(c.practicePartIndex, null);
 });
 
-test('changing practice part without a preset preserves a manual mix', () => {
+test('changing practice part without a preset follows manual levels and leaves backing exceptions in place', () => {
   const c = mixFixture(), original = plain(c.snapshotPracticeMix());
   c.setPracticePart(2);
-  assert.deepEqual(plain(c.snapshotPracticeMix()), original);
+  assert.equal(c.trackVolumes[2],original.volumes[0]);
+  assert.equal(c.trackVolumes[1],original.volumes[1]);assert.equal(c.trackVolumes[3],original.volumes[3]);
   c.applyPracticeMix('learn');
   c.setTrackAudible(1, false);
   const manual = plain(c.snapshotPracticeMix());
   c.setPracticePart(1);
-  assert.deepEqual(plain(c.snapshotPracticeMix()), manual);
+  assert.equal(c.trackVolumes[1],manual.volumes[2]);
+  const moved=plain(c.snapshotPracticeMix());
   c.applyPracticeMix('check');
   c.setPracticePart(3);
   c.applyPracticeMix('check');
-  assert.deepEqual(plain(c.snapshotPracticeMix()), manual);
+  assert.deepEqual(plain(c.snapshotPracticeMix()), moved);
 });
 
 test('holding a volume cycles its own part without changing the practice selection', () => {
@@ -327,18 +332,19 @@ test('pitchbar hyphens respect italic ink bearings and leave a readable gap', ()
 });
 
 test('See alone selects practice; the practice part is never forced visible', () => {
-  const c = vm.createContext({scoreView: 'bars', stationReview:null, practicePartIndex: 1, parts: [{}, {}, {}, {}],
+  const c = vm.createContext({scoreView: 'bars', stationReview:null,reviewMix:null,lastGuideChannel:null,practiceMixerIndex:()=>c.practicePartIndex,
+    followVisibleGuide(){}, practicePartIndex: 1, parts: [{}, {}, {}, {}],
     mixerParts:[0,1,2,3].map(source=>({source,line:null})),visibleChannels:new Set([0]),practiceDivisi:[],
     visibleTracks: new Set([0]), updateMixerAppearance() {}, updateNoteActionLabel() {},
     assignPracticePart(i){c.practicePartIndex=i;},renderTakePanel(){},savePreferences() {}, scheduleRender() {}, showToast() {}});
-  for (const name of ['syncPracticeFromSee', 'setTrackVisibility', 'aloneOnItsRow', 'turnOnEveryPart', 'soloRow','pressRow']) {
+  for (const name of ['syncPracticeFromSee','finishSeeChange','setTrackVisibility', 'aloneOnItsRow', 'turnOnEveryPart', 'soloRow','pressRow']) {
     vm.runInContext(source(name), c);
   }
   c.syncPracticeFromSee();
   assert.equal(c.practicePartIndex,0);
   c.setTrackVisibility(0,false);
   assert.equal(c.practicePartIndex,null);assert.equal(c.visibleTracks.size,0);
-  const row = {index: 2, on: i => c.visibleChannels.has(i), set: c.setTrackVisibility};
+  const row = {name:'see',index: 2, on: i => c.visibleChannels.has(i), set: c.setTrackVisibility};
   c.soloRow(row, 4);
   assert.deepEqual([...c.visibleTracks].sort(), [2]);assert.equal(c.practicePartIndex,2);
   c.soloRow(row, 4);

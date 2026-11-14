@@ -22,6 +22,8 @@
       this.history = new Float32Array(8192);
       this.listeners = new Set();
       this.assets = {};
+      this.layerAssets = new Map();
+      this.bufferIds = new WeakMap();
       this.counter = 0;
       this.inputEnabled = false;
       this.clock = {sampleRate: RATE, get currentTime() { return self.frame / RATE; },
@@ -68,6 +70,7 @@
         this.frame = 0;
         this.sequence = 0;
         this.assets = {};
+        this.layerAssets.clear();
         this.guideKey = null;
         this.layerKey = null;
         this.pausePromise = null;
@@ -222,46 +225,66 @@
       const layers = [...engine.takeLayers.values()].filter(layer => layer.id !== engine.overdubLayerId
         && (!engine.recordingSingerId || layer.singerId === engine.recordingSingerId));
       const refs = [...engine.referenceLayers.values()];
-      const key = JSON.stringify([engine.rate, engine.takeBalanceRevision, engine.overdubLayerId, engine.recordingSingerId,
-        this.reverb || 0, layers.map(x => [x.id, x.octave, x.buffer.length]), refs.map(x => [x.id, x.playbackGain, x.pan])]);
-      if (key === this.layerKey) return;
-      delete this.assets.recordings;
-      delete this.assets.reference;
-      if (layers.length) {
-        const rendered = await root.MeleteTakeMix.prepare(layers, {duration: engine.duration, rate: engine.rate,
-          reverb: this.reverb || 0, sampleRate: RENDER_RATE});
-        this.assets.recordings = await this.upload("recordings-"+(++this.counter), rendered.buffer,
-          {origin: Math.min(0, ...layers.map(x => x.start)), offset: rendered.offset, gain: rendered.normalization.gain});
+      const assets = {};
+      for (const [prefix, group] of [["recording", layers], ["reference", refs]]) {
+        for (const [index, layer] of group.entries()) {
+          if (!this.bufferIds.has(layer.buffer)) this.bufferIds.set(layer.buffer, ++this.counter);
+          const gain = prefix === "reference" ? layer.playbackGain ?? 1 : layer.loudness?.gain ?? 1;
+          const reverb = prefix === "recording" ? this.reverb || 0 : 0;
+          const key = JSON.stringify([layer.loudnessKey || this.bufferIds.get(layer.buffer), layer.start, layer.end, layer.latency,
+            layer.rate, layer.octave, layer.pan, gain, engine.rate, engine.duration, reverb]);
+          let asset = this.layerAssets.get(key);
+          if (!asset) {
+            const rendered = await root.MeleteTakeMix.renderAudio([{...layer, loudness:{gain}}],
+              {duration:engine.duration, rate:engine.rate, reverb, sampleRate:RENDER_RATE});
+            asset = await this.upload("layer-"+(++this.counter), rendered.buffer,
+              {origin:Math.min(0, layer.start), offset:rendered.offset});
+            this.layerAssets.set(key, asset);
+          }
+          assets[`${prefix}:${index}`] = asset;
+        }
       }
-      if (refs.length) {
-        // Reference levels are user-set, not normalized to the singer's bus.
-        const rendered = await root.MeleteTakeMix.renderAudio(refs.map(x => ({...x, loudness: {gain: x.playbackGain ?? 1}})),
-          {duration: engine.duration, rate: engine.rate, sampleRate: RENDER_RATE});
-        this.assets.reference = await this.upload("reference-"+(++this.counter), rendered.buffer,
-          {origin: Math.min(0, ...refs.map(x => x.start)), offset: rendered.offset});
-      }
-      this.layerKey = key;
+      this.recordingNormalization = root.MeleteTakeLoudness.mix(layers.map(x=>x.loudness), {reverb:this.reverb || 0}).gain;
+      this.assets = {...(this.assets.guide ? {guide:this.assets.guide} : {}), ...assets};
     }
     async prepare() {
       await this.open();
       if (this.preparing) return this.preparing;
       this.preparing = (async () => {
         if (!this.state.playing && this.guideKey !== `${this.engine.rate}:${this.engine.divisiPlaybackKey}`) {
-          await this.control("assets", {assets:{}});
+          this.pruneLayerCache(await this.control("assets", {assets:{}}));
           this.assets = {};
           this.layerKey = null;
         }
         await this.guide();
         await this.layers();
-        await this.control("assets", {assets: this.assets});
+        const state = await this.control("assets", {assets: this.assets});
+        this.pruneLayerCache(state);
         await this.mix();
       })().finally(() => { this.preparing = null; });
       return this.preparing;
     }
+    pruneLayerCache(state) {
+      if (state?.cachedAssets) for (const [key, asset] of this.layerAssets) {
+        if (!state.cachedAssets.includes(asset)) this.layerAssets.delete(key);
+      }
+    }
     async mix(audible, volumes, pans) {
       if (audible) this.mixSettings = {gains: volumes.map((v, i) => audible.has(i) ? v/100 : 0), pans: pans.map(v => v/100)};
       if (!this.state?.session || !this.mixSettings) return;
-      return this.control("mix", {...this.mixSettings, metronome: this.engine.metronomeVolume, recordings: this.volume ?? 1});
+      this.pendingMix = {...this.mixSettings, metronome: this.engine.metronomeVolume,
+        recordings:(this.volume ?? 1)*(this.recordingNormalization ?? 1)};
+      if (!this.mixing) this.mixing = (async () => {
+        do {
+          const values = this.pendingMix;
+          this.pendingMix = null;
+          await this.control("mix", values);
+          // Drag events (including all-part pans) replace obsolete values;
+          // they never restart transport or flood the capture connection.
+          await sleep(25);
+        } while (this.pendingMix && this.state?.session);
+      })().finally(() => { this.mixing = null; });
+      return this.mixing;
     }
     refreshLayers() {
       if (!this.state?.session) return;

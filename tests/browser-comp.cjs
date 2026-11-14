@@ -88,6 +88,7 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
     'a track built from two recordings keeps its first take number');
   assert.notEqual(await row.locator('.take-part').textContent(), '');
   assert.doesNotMatch(await frame.locator('#compView').innerText(), /\bBest\b/);
+  await require('./browser-show-columns.cjs').showAllColumns(frame);
   assert.equal(await frame.locator('#compView [data-take-sort]:visible').count(), 9, 'all track columns are sortable');
   assert.equal(await frame.locator(created.ids.map(id => `#takeList [data-take-id="${id}"]`).join(', ')).count(), 0,
     'track recordings are not listed as loose takes');
@@ -197,7 +198,7 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   assert.deepEqual(removed,{segments:0,undo:created.state.segments.length,stored:[true,true]},'a removed track keeps its recordings for Undo');
 
   assert.match(await frame.locator('#undoComp').getAttribute('aria-label'),/^Undo .+ change$/);
-  await frame.locator('#undoComp').click();
+  await require('./browser-history-control.cjs').historyControl(frame,'undo');
   await frame.waitForFunction(()=>(window.__qa||window.__probe).compState.segments.length>0);
   assert.deepEqual(await frame.evaluate(()=>(window.__qa||window.__probe).compState.segments),created.state.segments);
   await frame.waitForFunction(()=>Number.isFinite(Number(document.querySelector('#compRows > .comp-row.is-armed .comp-mean').textContent)));
@@ -208,9 +209,9 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   });
   assert.ok(geometry.value <= geometry.region + 1, 'track metrics fit without scrolling');
   const columns = await frame.evaluate(() => {
-    const headers=[...document.querySelectorAll('.comp-columns > span')].map(e=>e.getBoundingClientRect());
+    const headers=[...document.querySelectorAll('.comp-columns > span:not(.take-download-heading), .comp-columns #downloadMix')].map(e=>e.getBoundingClientRect());
     const values=[...document.querySelector('#compRows > .comp-row.is-armed').querySelectorAll(
-      '.comp-review > span:not(.take-detail), .take-detail > span, .take-octave, .take-hear')].map(e=>e.getBoundingClientRect());
+      '.comp-review > span:not(.take-detail), .take-detail > span, .take-octave, .take-hear, .take-download')].map(e=>e.getBoundingClientRect());
     return {headers:headers.length,deltas:values.map((v,i)=>Math.abs(headers[i].x+headers[i].width/2-v.x-v.width/2))};
   });
   assert.ok(columns.deltas.length===columns.headers&&columns.deltas.every(delta=>delta<1),
@@ -416,7 +417,7 @@ async function checkPhraseMargins(frame,page,{output,label,reload}) {
     await frame.waitForFunction(()=>{const s=(window.__qa||window.__probe).compState;return s&&!s.segments.length;});
     const kept=await frame.evaluate(()=>(window.__qa||window.__probe).recording.takes.map(t=>t.id));
     assert.ok(result.ids.every(id=>kept.includes(id)),'removing the track keeps its sources for Undo');
-    await frame.locator('#undoComp').click();
+    await require('./browser-history-control.cjs').historyControl(frame,'undo');
     await frame.waitForFunction(()=>(window.__qa||window.__probe).compState?.segments.length);
     assert.equal(await row.count(),1,'Undo restores the track in its row');
   } finally {

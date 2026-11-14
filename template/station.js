@@ -230,12 +230,12 @@
     }
     // Ownership is local to this player. Independent storage keys also prevent
     // two tabs saving different singers from overwriting each other's profiles.
-    function own(next, startup = false) {
+    function own(next, startup = false, resetPreset = false) {
       owner = next;
       const personal = storedMix(next), mix = personal || (next && storedMix(""));
       guidePreset = mixes.stationDefault();
       applying = true;
-      try { if (mix || next) playback.apply(mix || playback.capture(), {startup, singer:next ? singer : null, personal}); }
+      try { if (mix || next) playback.apply(mix || playback.capture(), {startup, singer:next ? singer : null, personal,resetPreset}); }
       finally { applying = false; }
       lastMix = profile();
       write(profileKey(next), lastMix);
@@ -425,7 +425,7 @@
         picker.hidden=!enabled && !data;sync();
       },
       needsSinger:()=>enabled && !singer && root.MeleteLocalStationRoster?.requireSinger===true,
-      refreshMix:()=>{if(enabled && settled && owner)own(owner);},
+      refreshMix:()=>{if(enabled && settled && owner)own(owner,false,true);},
       handoffReady:()=>handoffReady,
       verifyStage() {
         if (!singer) return false;

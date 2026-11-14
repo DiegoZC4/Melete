@@ -1,4 +1,5 @@
 import importlib.util
+from contextlib import contextmanager
 import io
 import json
 from pathlib import Path
@@ -23,18 +24,127 @@ class NativeTimelineTests(unittest.TestCase):
     def test_optional_windows_enhancement_preflight(self):
         native.require_unprocessed_input({})
         registry = MagicMock()
-        config = {'inputEndpointId':'{547eaa24-f267-4aac-9dd3-8569920fdae6}'}
-        with patch.object(native.sys, 'platform', 'win32'), patch.dict(sys.modules, {'winreg':registry}):
+        registry.REG_DWORD = 4
+        config = {'inputEndpointId':'{00000000-0000-4000-8000-000000000001}',
+                  'input':'Mic/Inst (Samson G-Track Pro)'}
+        with patch.object(native.sys, 'platform', 'win32'), patch.dict(sys.modules, {'winreg':registry}), \
+                patch.object(native, 'windows_input_endpoint', return_value=config['inputEndpointId']):
             registry.QueryValueEx.return_value = (1, 4)
             native.require_unprocessed_input(config)
             registry.QueryValueEx.return_value = (0, 4)
             with self.assertRaisesRegex(RuntimeError, 'enhancements are enabled'):
                 native.require_unprocessed_input(config)
             registry.QueryValueEx.side_effect = OSError('missing endpoint')
-            with self.assertRaisesRegex(RuntimeError, 'Cannot verify'):
+            with self.assertRaisesRegex(RuntimeError, 'Cannot read'):
                 native.require_unprocessed_input(config)
         with self.assertRaises(RuntimeError):
             native.require_unprocessed_input({'inputEndpointId':'invalid'})
+
+
+class WindowsInputEndpointTests(unittest.TestCase):
+    old = '{00000000-0000-4000-8000-000000000001}'
+    current = '{00000000-0000-4000-8000-000000000002}'
+    name = 'Mic/Inst (Samson G-Track Pro)'
+
+    def setUp(self):
+        self.config = {'inputEndpointId':self.old, 'input':self.name, 'seconds':.0405}
+        self.keys = {}
+        self.endpoints = []
+        self.registry = types.SimpleNamespace(HKEY_LOCAL_MACHINE='HKLM', REG_DWORD=4,
+            OpenKey=self.open, QueryValueEx=self.query, QueryInfoKey=lambda key:(len(self.endpoints), 0, 0),
+            EnumKey=lambda key, index:self.endpoints[index])
+        self.addCleanup(patch.stopall)
+        patch.object(native.sys, 'platform', 'win32').start()
+        patch.dict(sys.modules, {'winreg':self.registry}).start()
+
+    @contextmanager
+    def open(self, parent, child):
+        path = child if parent == 'HKLM' else parent+'\\'+child
+        if path != native.WINDOWS_CAPTURE and path not in self.keys:
+            raise FileNotFoundError(path)
+        yield path
+
+    def query(self, key, name):
+        if name not in self.keys.get(key, {}):
+            raise FileNotFoundError(name)
+        value = self.keys[key][name]
+        if isinstance(value, Exception):
+            raise value
+        return value, 4 if isinstance(value, int) else 1
+
+    def endpoint(self, endpoint, state=1, disabled=1, friendly=None, adapter='Samson G-Track Pro'):
+        self.endpoints.append(endpoint)
+        root = native.WINDOWS_CAPTURE+'\\'+endpoint
+        self.keys[root] = {'DeviceState':state}
+        self.keys[root+'\\Properties'] = {
+            '{a45c254e-df1c-4efd-8020-67d146a850e0},2':'Mic/Inst',
+            '{b3f8fa53-0004-438e-9003-51a46e139bfc},6':adapter}
+        if friendly:
+            self.keys[root+'\\Properties']['{a45c254e-df1c-4efd-8020-67d146a850e0},14'] = friendly
+        self.keys[root+'\\FxProperties'] = {native.WINDOWS_DISABLE_FX:disabled}
+
+    def test_reinstalled_input_resolves_new_guid_without_changing_calibration(self):
+        self.endpoint(self.current)
+        before = dict(self.config)
+        self.assertTrue(native.require_unprocessed_input(self.config))
+        self.assertEqual(self.config, before)
+
+    def test_checks_current_device_not_old_disabled_enhancements(self):
+        self.endpoint(self.old, state=4, disabled=1)
+        self.endpoint(self.current, disabled=0)
+        with self.assertRaisesRegex(RuntimeError, 'enhancements are enabled'):
+            native.require_unprocessed_input(self.config)
+
+    def test_stale_device_cannot_block_current_raw_input(self):
+        self.endpoint(self.old, state=8, disabled=0)
+        self.endpoint(self.current)
+        self.assertTrue(native.require_unprocessed_input(self.config))
+
+    def test_ambiguous_or_disconnected_input_is_not_guessed(self):
+        self.endpoint(self.old)
+        self.endpoint(self.current)
+        with self.assertRaisesRegex(RuntimeError, 'uniquely identify'):
+            native.require_unprocessed_input(self.config)
+        for endpoint in (self.old, self.current):
+            self.keys[native.WINDOWS_CAPTURE+'\\'+endpoint]['DeviceState'] = 8
+        with self.assertRaisesRegex(RuntimeError, 'uniquely identify'):
+            native.require_unprocessed_input(self.config)
+
+    def test_unrelated_or_renamed_input_is_not_substituted(self):
+        self.endpoint(self.current, adapter='Other USB microphone')
+        with self.assertRaisesRegex(RuntimeError, 'uniquely identify'):
+            native.require_unprocessed_input(self.config)
+        self.endpoint(self.old, friendly='Renamed microphone')
+        with self.assertRaisesRegex(RuntimeError, 'uniquely identify'):
+            native.require_unprocessed_input(self.config)
+
+    def test_explicit_friendly_name_matches(self):
+        self.endpoint(self.current, friendly=self.name, adapter='Other adapter label')
+        self.assertTrue(native.require_unprocessed_input(self.config))
+
+    def test_missing_unreadable_or_malformed_fx_flag_is_not_accepted(self):
+        self.endpoint(self.current)
+        path = native.WINDOWS_CAPTURE+'\\'+self.current+'\\FxProperties'
+        self.keys[path] = {}
+        with self.assertRaisesRegex(RuntimeError, 'Cannot read'):
+            native.require_unprocessed_input(self.config)
+        self.keys[path][native.WINDOWS_DISABLE_FX] = PermissionError('denied')
+        with self.assertRaisesRegex(RuntimeError, 'Cannot read'):
+            native.require_unprocessed_input(self.config)
+        self.keys[path][native.WINDOWS_DISABLE_FX] = '1'
+        with self.assertRaisesRegex(RuntimeError, 'enhancements are enabled'):
+            native.require_unprocessed_input(self.config)
+
+    def test_identity_is_resolved_again_after_reconnection(self):
+        self.endpoint(self.old)
+        self.assertTrue(native.require_unprocessed_input(self.config))
+        self.keys[native.WINDOWS_CAPTURE+'\\'+self.old]['DeviceState'] = 8
+        self.endpoint(self.current, disabled=0)
+        with self.assertRaisesRegex(RuntimeError, 'enhancements are enabled'):
+            native.require_unprocessed_input(self.config)
+
+
+class NativeTimelineBehaviorTests(unittest.TestCase):
 
     def test_frame_alignment_does_not_use_callback_or_network_time(self):
         t = native.Timeline()
@@ -83,6 +193,22 @@ class NativeAudioTests(unittest.TestCase):
         self.host.callback(inputs, output, 480, None, status)
         return output
 
+    def test_failed_input_check_never_opens_the_audio_stream(self):
+        self.host.session = None
+        self.host.sd.Stream = MagicMock()
+        with patch.object(self.host, 'devices', return_value=[]), \
+                patch.object(native, 'require_unprocessed_input', side_effect=RuntimeError('enhancements are enabled')):
+            with self.assertRaisesRegex(RuntimeError, 'enhancements are enabled'):
+                self.host.open('new-client')
+        self.host.sd.Stream.assert_not_called()
+        self.assertIsNone(self.host.session)
+
+    def test_status_reports_actual_input_check_result(self):
+        self.host.input_enhancements_verified = True
+        self.assertIs(self.host.status()['windowsInputEnhancementsVerifiedOff'], True)
+        self.host.input_enhancements_verified = None
+        self.assertIsNone(self.host.status()['windowsInputEnhancementsVerifiedOff'])
+
     def play(self, **kwargs):
         self.asset()
         self.command('assets', assets={'guide': 'g'})
@@ -102,6 +228,27 @@ class NativeAudioTests(unittest.TestCase):
         self.assertEqual(meta['firstFrame'], 0)
         self.assertEqual(meta['frame'], 480)
         self.assertTrue(self.np.all(samples == self.np.float32(.05)))
+
+    def test_pan_changes_preserve_recording_and_frame_continuity(self):
+        self.play(record=True,label={'test':'pan'})
+        for i in range(40):
+            self.command('mix',gains=[1],pans=[(i%3)-1],metronome=0)
+            self.callback()
+        self.assertTrue(self.host.timeline.playing)
+        self.assertIsNotNone(self.host.recording)
+        self.assertEqual(self.host.timeline.frame,40*480)
+        self.assertIsNone(self.host.fault)
+
+    def test_audible_layers_reuse_assets_and_mix_once(self):
+        self.asset('one');self.asset('two')
+        state=self.command('assets',assets={'recording:0':'one','recording:1':'two'})
+        self.command('mix',gains=[],pans=[],metronome=0,recordings=.5)
+        out=self.host.mix(self.np.array([0]))
+        self.assertAlmostEqual(float(out[0,0]),.2,places=6)
+        self.command('assets',assets={})
+        self.assertIn('one',self.host.assets)
+        self.assertIn('two',state['cachedAssets'])
+        self.command('assets',assets={'recording:0':'one'})
 
     def test_loop_event_uses_exact_boundary_inside_callback(self):
         self.play()

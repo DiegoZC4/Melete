@@ -421,7 +421,8 @@
           adapter.downloadBlob(new Blob([root.MeleteRecording.wavBytes(pcm,buffer.sampleRate)],{type:'audio/wav'}),`${adapter.song()}-${item.name}-${item.rehearsalDate}.wav`);
         }
         else{
-          if(root.MeleteTakeLoudness)review.loudness=await root.MeleteTakeLoudness.track(buffer);
+          review.loudnessKey=JSON.stringify(["rehearsal",id,item,root.MeleteTakeCleanup?.VERSION]);
+          if(root.MeleteTakeLoudness)review.loudness=await root.MeleteTakeLoudness.track(buffer,review.loudnessKey);
           return review;
         }
     }
@@ -448,7 +449,8 @@
           const review={id,label:item.name+": "+item.label,ref,buffer,blob,frames,origin:m.origin,latency:0,
             track:m.part,rate:m.rate,start:m.origin*m.rate,end:m.seconds*m.rate,ranges,
             timelineSegments:ranges.map(([from,to],i)=>({from,to,takeId:String(m.seams[i][2]),label:"Take "+m.seams[i][2]}))};
-          if(root.MeleteTakeLoudness)review.loudness=await root.MeleteTakeLoudness.track(buffer);
+          review.loudnessKey=JSON.stringify(["submission",id,m.audio]);
+          if(root.MeleteTakeLoudness)review.loudness=await root.MeleteTakeLoudness.track(buffer,review.loudnessKey);
           return review;
         }
     }

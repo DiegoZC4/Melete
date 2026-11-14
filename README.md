@@ -175,6 +175,12 @@ recordings also get local PCM recovery files in `native-recordings`; idle input
 is only a bounded in-memory ring. The host refuses recordings near a disk-space
 floor. Original browser takes and their timing are not rewritten.
 
+Stations with the Windows input-enhancement guard resolve the currently active,
+exact-name microphone each time audio opens. Saved endpoint installation IDs
+can change after a Windows/driver update. Disconnected entries are ignored;
+ambiguous devices, unreadable settings and enabled enhancements still block
+capture. This check does not change Windows settings or the saved calibration.
+
 Exclusive mode temporarily reserves those endpoints, so other apps may not be
 able to play through them. Close the station to release them. Remove/rename its
 private native config and restart to use the existing browser path again.
@@ -313,6 +319,13 @@ optional and is not installed or needed on other machines.
   `?song=the-seed&myVol=150&otherVol=50&myPan=90&otherPan=-90` asks each
   singer for their part. Add `&part=B2` to bypass the picker. A refresh
   retains personal adjustments. Backing volume is per voice, not a bus gain.
+- When you isolate another part, the guide's volume, pan and MIDI Hear setting
+  move with you. Each part gets its backing settings back when it stops being
+  the guide. Recorded **Hear** layers are independent of this handoff.
+- With one part isolated, **Practice > Step** parks the score on a sung note.
+  Tap either arrow to move silently; hold either to hear the current note.
+  With Sing armed you can check your cents without saving a take. Space or
+  Play leaves Step and starts normal timed practice from that note.
 - For one-to-one practice, open the player with `?mode=station`. Pick a singer in
   **Practice → Singer** by tap, click, or arrow keys and Enter. Search a name,
   a part code such as A2, or the full part name. The first audio take is the baseline;
@@ -321,16 +334,21 @@ optional and is not installed or needed on other machines.
   is isolated in **See**. The beginner guide starts at **150% / fully right**;
   each other MIDI voice stays audible at **35% / 35% left**. Volume is playback
   gain, not headphone SPL or mic gain. Adjust during a sung phrase; the station
-  remembers each singer's mix separately for each song. An uncertain part is
+  carries your guide/backing balance to the next singer's assigned part.
+  Each singer can still have their own practice speed. An uncertain part is
   chosen explicitly instead of silently recording against the last singer's notes.
   Named recordings stay on the device. A roster is optional and is not embedded.
-- Clicking a saved take uses a separate **review mix**, remembered per song and
-  voice part on this browser. Initially its MIDI part is muted, the other MIDI
+- Clicking a saved take uses a separate **review mix**, remembered per song
+  on this browser. Initially its MIDI part is muted, the other MIDI
   parts are centered at 35%, and the metronome is off. Adjust the ordinary Parts
   controls, recorded-audio volume or reverb without changing the recording mix.
   Tap the faded Practice part to return to recording. In station mode this also
   restores the chosen singer, and review playback never records over their track.
   Outside station mode, arming Sing or starting a pass restores the recording mix.
+- The Record table fits columns by available width. Choosing columns manually
+  (or **Show all**) overrides fitting. Download in the header exports the
+  mastered mix of heard recordings; download in a row exports that take.
+  Desktop history uses Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z; touch keeps buttons.
 - In station mode, the **link icon** opens **Practice mix**. **Guide split** puts
   your guide and the other voices at two pan positions. **Choir layout** centers
   your seat, with higher sections to your right and lower ones to your left;

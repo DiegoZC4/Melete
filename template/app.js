@@ -137,6 +137,34 @@
   let practicePartPager = null;
   let stationReview = null, changingReviewFocus = false, reviewMix = null;
   let lastGuideChannel = null, relativeMix = null, relativeGuide = null;
+  let stationMixOwned=false;
+  const roleMemories=new Map();
+  function roleMemory(scope,value) {
+    const key=window.MeletePracticeMix.roleKey(takeSongKey(),mixerParts,scope);
+    if(value){
+      const encoded=JSON.stringify(value);
+      if(roleMemories.get(key)!==encoded){
+        roleMemories.set(key,encoded);
+        try{localStorage.setItem(key,encoded);}catch{}
+      }
+    } else if(!roleMemories.has(key)){
+      try{roleMemories.set(key,localStorage.getItem(key));}catch{}
+    }
+    try{return JSON.parse(roleMemories.get(key)||"null");}catch{return null;}
+  }
+  const recordingScope=()=>stationMixOwned?"station":"practice";
+  function followRole(scope,state,old,index,{reset=false}={}) {
+    const mix=window.MeletePracticeMix;
+    const layout=scope==="review"?null:scope==="station"?mix.stationDefault():relativeMix;
+    const result=mix.follow(mixerParts,state,old,index,reset?null:roleMemory(scope),layout,sequence.practiceRoles);
+    if(result)roleMemory(scope,result);
+    return result?.settings;
+  }
+  function rememberRecordingRole(){
+    if(!ready || reviewMix || stationReview || rehearsalReview)return;
+    const index=practiceMixerIndex(),scope=recordingScope(),old=roleMemory(scope);
+    if(mixerParts[index] && (!old || index===old.index))followRole(scope,captureSettingsState(),index,index);
+  }
   let practiceDivisi = [];
   let practiceDivisiPager = null;
   let activePracticeMix = null;
@@ -2370,10 +2398,11 @@
       const state = cloneSettingsState(stationReview?.mix || {...captureSettingsState(), ...reviewMix?.recording});
       return Object.fromEntries(SINGER_PLAYBACK.map(key => [key, state[key]]));
     },
-    apply(saved, {startup = false, singer = null, personal = null} = {}) {
+    apply(saved, {startup = false, singer = null, personal = null, resetPreset = false} = {}) {
       const current = {...captureSettingsState(), ...reviewMix?.recording};
       rememberReviewMix();
       stationReview = null; reviewMix = null;
+      stationMixOwned=Boolean(singer);
       // A mix saved before the score's parts changed no longer lines up.
       if (["visible", "audible", "volumes", "pans"].some(key => saved?.[key]?.length !== current[key].length)) {
         if (!singer) return false;
@@ -2394,6 +2423,15 @@
           next.visibleChannels=mixerParts.map((_,i)=>i===index);
           if(window.MeleteStation.followsOldDefault(personal,mixerParts,index,preset,roles))
             Object.assign(next,window.MeletePracticeMix.project(mixerParts,index,preset,roles));
+        }
+        if(index>=0){
+          const memory=roleMemory("station");
+          if(resetPreset) Object.assign(next,window.MeleteStation.guideMix(mixerParts,index,preset,roles));
+          const shared=!resetPreset && !linked && memory && mixerParts[memory.index];
+          const source=shared?memory.settings:linked?current:next;
+          const moved=followRole("station",source,shared?memory.index:index,index,{reset:!shared});
+          Object.assign(next,{audible:moved.audible,volumes:moved.volumes,pans:moved.pans,
+            visibleChannels:mixerParts.map((_,i)=>i===index)});
         }
       }
       // Arrival links and first-visit choices can run before the player is
@@ -2853,6 +2891,7 @@
 
   function savePreferences() {
     rememberReviewMix();
+    rememberRecordingRole();
     if (!parts.length || rehearsalReview) return;
     try {
       const state=currentPreferenceState();
@@ -3212,6 +3251,8 @@
   }
 
   function setPracticePart(selected) {
+    if(reviewMix && !stationReview)resumeRecordingMix();
+    const previous=practiceMixerIndex() ?? lastGuideChannel;
     pitchCaptureWorker?.invalidate();
     pitchOctaveHistory = [];
     const mode = currentPracticeMix();
@@ -3222,11 +3263,13 @@
     syncPracticeFromSee();
     selectedScorePartIndex = null;
     if (mode && practicePartIndex !== null) {
+      followVisibleGuide(previous);
       // Follow the new singer without replacing the pre-preset mix snapshot.
       applyPracticeMix(mode, { toggle: false });
     } else {
       if (mode) restorePracticeMix();
       else cancelPracticeMixSession();
+      followVisibleGuide(previous);
       updateMixerAppearance();
       savePreferences();
     }
@@ -3348,22 +3391,19 @@
     if(!applied){relativeMix=null;relativeGuide=null;}
     pendingMixReceipt=null;
   }
-  function applyRelativeGuide(index,{enable=false}={}) {
-    if (!relativeMix || !Number.isInteger(index) || index<0 || (!enable && relativeGuide===index)) return;
-    if(!enable && currentPracticeMix()){relativeGuide=index;return;}
+  function applyLinkedGuide(index) {
+    if (!relativeMix || !mixerParts[index]) return;
     cancelPracticeMixSession();
-    const follow=!enable && Number.isInteger(relativeGuide),old=relativeGuide,vol=[...trackVolumes],pan=[...trackPans];
     const seats=relativeMix.layout==="choir" && window.MeletePracticeMix.project(mixerParts,index,relativeMix,sequence.practiceRoles).pans;
     mixerParts.forEach((_,i)=>{
-      const other=i===old?index:i===index?old:i;
-      const v=follow ? ("myVol" in relativeMix || "otherVol" in relativeMix ? vol[other] : undefined) : relativeMix[i===index?"myVol":"otherVol"];
-      const p=seats ? seats[i] : follow ? ("myPan" in relativeMix || "otherPan" in relativeMix ? pan[other] : undefined) : relativeMix[i===index?"myPan":"otherPan"];
+      const v=relativeMix[i===index?"myVol":"otherVol"];
+      const p=seats ? seats[i] : relativeMix[i===index?"myPan":"otherPan"];
       if(v!==undefined) {trackVolumes[i]=v;volumeControls[i]?.setValue(v,false);}
       if(p!==undefined) {trackPans[i]=p;panControls[i]?.setValue(p,false);}
-      if(enable) audibleTracks.add(i);
+      audibleTracks.add(i);
     });
     relativeGuide=index;
-    if(follow){try{const h=mixHost().history;if(h.state?.meleteMix)h.replaceState({...h.state,meleteMix:{...h.state.meleteMix,guide:index}},"");}catch{}}
+    followRole(recordingScope(),captureSettingsState(),index,index,{reset:true});
     updateMixerAppearance();savePreferences();
   }
   function openMixLink(detail) {
@@ -3376,7 +3416,7 @@
       return true;
     }
     relativeMix=mix;relativeGuide=null;pendingMixReceipt=signature;
-    const accept=()=>{applyRelativeGuide(practiceMixerIndex(),{enable:true});finishMixReceipt(true);};
+    const accept=()=>{applyLinkedGuide(practiceMixerIndex());finishMixReceipt(true);};
     const named=detail.part!==undefined && (partsForLink(detail.part).length===1 || mixerParts.some(p=>partLinkKey(p.short)===partLinkKey(detail.part)));
     if(named && applyPartLink(detail) && elements.partChooser.hidden && practiceMixerIndex()!==null) accept();
     else if(mixerParts.length===1) {choosePracticePart(mixerParts[0].source,mixerParts[0].line);accept();}
@@ -3633,6 +3673,19 @@
     assignPracticePart(channel?.source ?? null);
   }
 
+  function followVisibleGuide(old) {
+    const index=practiceMixerIndex();
+    if(reviewMix || stationReview || index===null || old===index || !mixerParts[old])return;
+    const moved=followRole(recordingScope(),captureSettingsState(),old,index);
+    audibleTracks.clear();
+    moved.audible.forEach((on,i)=>{if(on)audibleTracks.add(i);});
+    trackVolumes=moved.volumes;trackPans=moved.pans;
+    trackVolumes.forEach((v,i)=>volumeControls[i]?.setValue(v,false));
+    trackPans.forEach((v,i)=>panControls[i]?.setValue(v,false));
+    if(relativeMix){relativeGuide=index;try{const h=mixHost().history;
+      if(h.state?.meleteMix)h.replaceState({...h.state,meleteMix:{...h.state.meleteMix,guide:index}},"");}catch{}}
+  }
+
   function updateMixerAppearance() {
     elements.mixer.querySelectorAll("[data-visible-index]").forEach((button) => {
       const index = Number(button.dataset.visibleIndex);
@@ -3654,9 +3707,15 @@
   }
 
   function setTrackVisibility(index, visible) {
+    if(reviewMix && !stationReview)resumeRecordingMix();
+    const previous=practiceMixerIndex() ?? lastGuideChannel;
     if (visible) visibleChannels.add(index);
     else visibleChannels.delete(index);
+    finishSeeChange(previous);
+  }
+  function finishSeeChange(previous){
     syncPracticeFromSee();
+    followVisibleGuide(previous);
     updateMixerAppearance();
     updateNoteActionLabel();
     savePreferences();
@@ -3682,6 +3741,14 @@
   }
 
   function soloRow(row, partCount) {
+    if(row.name==="see"){
+      if(reviewMix && !stationReview)resumeRecordingMix();
+      const previous=practiceMixerIndex() ?? lastGuideChannel, all=aloneOnItsRow(row,partCount);
+      visibleChannels.clear();
+      if(all)mixerParts.forEach((_,i)=>visibleChannels.add(i));else visibleChannels.add(row.index);
+      finishSeeChange(previous);
+      return;
+    }
     if (aloneOnItsRow(row, partCount)) return turnOnEveryPart(row, partCount);
     // The kept part goes on first: a row is not allowed to empty, so turning
     // the others off around a part that is itself off would be refused.
@@ -3737,7 +3804,6 @@
         gesture.held = true;
         learnShortcut("isolate");
         soloRow(gesture.row, gesture.row.count);
-        if(gesture.row.name==="see" && visibleChannels.size===1) applyRelativeGuide(practiceMixerIndex());
       }, MIXER_SOLO_HOLD_MS);
       event.preventDefault();
     });
@@ -3776,7 +3842,6 @@
       if (event.shiftKey) {
         learnShortcut("isolate");
         soloRow(row, row.count);
-        if(row.name==="see" && visibleChannels.size===1) applyRelativeGuide(practiceMixerIndex());
       } else press(row, "keyboard");
     });
   }
@@ -4096,6 +4161,7 @@
   }
 
   function updateNoteActionLabel() {
+    syncStepAvailability();
     const unavailable = scoreView === "bars";
     elements.noteMode.disabled = unavailable;
     if (unavailable) {
@@ -4524,6 +4590,7 @@
 
   function applyScoreScrubTarget(target) {
     if (!target || !engine || !ready) return;
+    if(parked && !target.fromStep){parkAt(stepIndexAt(parked.notes,target.tick));return;}
     cancelVerticalFollowAnimation(true);
     const rawTick = clamp(Math.round(Number(target.tick) || 0), pitchTraceOriginTick(), latestSeekTick());
     const requestedTick = target.exactTick ? rawTick : clamp(snapTickToEighth(
@@ -4648,6 +4715,107 @@
     keyboardAudition = null;
     hoverNote(null);
   }
+
+  const stepToggle=document.getElementById("noteStepToggle"),stepBar=document.getElementById("noteStepBar");
+  const stepNotes=new WeakMap();
+  let parked=null, stepTimer=0, stepGesture=null;
+  function stepLane(channel){
+    const part=mixerParts[channel];
+    if(!part?.barNotes)return [];
+    if(!stepNotes.has(part)){
+      const groups=new Map();
+      for(const [start,end,key] of part.barNotes){
+        if(end<=start)continue;
+        if(!groups.has(start))groups.set(start,{start,end,keys:new Set()});
+        const item=groups.get(start);item.keys.add(key);item.end=Math.max(item.end,end);
+      }
+      stepNotes.set(part,[...groups.values()].sort((a,b)=>a.start-b.start));
+    }
+    return stepNotes.get(part);
+  }
+  function syncStepAvailability(){
+    const c=practiceMixerIndex();
+    stepToggle.disabled=!ready || playing || Boolean(engine?.playing) || takeState!=="off" || !stepLane(c).length;
+    if(parked && (stepToggle.disabled || parked.channel!==c))leaveNoteStep();
+  }
+  function cancelStepGesture(){
+    if(!stepGesture)return;
+    const {timer,voices,button,pointer}=stepGesture;stepGesture=null;
+    clearTimeout(timer);
+    for(const v of voices)v.release();
+    if(Number.isInteger(pointer) && button?.hasPointerCapture(pointer))button.releasePointerCapture(pointer);
+  }
+  function leaveNoteStep(){
+    if(!parked)return;
+    parked=null;clearInterval(stepTimer);cancelStepGesture();
+    pitchCaptureWorker?.invalidate();
+    stepBar.hidden=true;stepToggle.setAttribute("aria-pressed","false");updateTransportHeight();
+  }
+  function parkAt(i){
+    const {notes,channel}=parked;
+    parked.i=clamp(i,0,notes.length-1);
+    const note=notes[parked.i],from=playbackCursorPlace();
+    document.getElementById("parkedNote").textContent=[...note.keys].map(pitchLabel).join("/");
+    document.getElementById("parkedCents").textContent="";
+    applyScoreScrubTarget({tick:note.start,exactTick:true,partIndex:mixerParts[channel].source,fromStep:true});
+    followCursorFrom(from);
+  }
+  function stepIndexAt(notes,tick){
+    const i=notes.findIndex(n=>n.end>tick);return i<0?notes.length-1:i;
+  }
+  function sampleParkedNote(){
+    if(!parked || playing || document.hidden || !pitchCapturePageActive || !pitchCaptureEnabled()
+      || !pitchInputIsLive() || !pitchCaptureWorker || !pitchCaptureBuffer || stepGesture?.held){
+      document.getElementById("parkedCents").textContent="";return;
+    }
+    if(pitchCaptureWorker.pending)return;
+    pitchCaptureAnalyser.getFloatTimeDomainData(pitchCaptureBuffer);
+    pitchCaptureWorker.submit(pitchCaptureBuffer,{sampleRate:pitchCaptureAnalyser.context.sampleRate,
+      minimum:PITCH_CAPTURE_MIN_FREQUENCY,maximum:PITCH_CAPTURE_MAX_FREQUENCY},{parked:parked.notes[parked.i]});
+  }
+  stepToggle.addEventListener("click",()=>{
+    if(parked){leaveNoteStep();return;}
+    syncStepAvailability();if(stepToggle.disabled)return;
+    const channel=practiceMixerIndex(),notes=stepLane(channel),tick=Math.round(engine.tickAtSeconds(engine.currentSeconds()));
+    parked={notes,channel,i:0};
+    stepToggle.setAttribute("aria-pressed","true");stepBar.hidden=false;updateTransportHeight();
+    parkAt(stepIndexAt(notes,tick));stepTimer=setInterval(sampleParkedNote,80);
+  });
+  function beginStepGesture(direction,button,pointer,x,y){
+    if(!parked)return;
+    cancelStepGesture();
+    const g=stepGesture={direction,button,pointer,x,y,voices:[],held:false};
+    g.timer=setTimeout(()=>{
+      if(!parked || stepGesture!==g)return;
+      g.held=true;
+      for(const key of parked.notes[parked.i].keys)
+        g.voices.push(engine.holdNote(key,mixerParts[parked.channel].source,{channel:parked.channel}));
+    },PITCH_AUDITION_HOLD_MS);
+  }
+  function finishStepGesture(){
+    if(!stepGesture)return;
+    const {held,direction}=stepGesture;
+    cancelStepGesture();
+    if(parked && !held)parkAt(parked.i+direction);
+  }
+  for(const button of stepBar.querySelectorAll("[data-note-step]")){
+    const dir=Number(button.dataset.noteStep);
+    button.onpointerdown=e=>{if(e.button!==0 || !e.isPrimary)return;e.preventDefault();
+      beginStepGesture(dir,button,e.pointerId,e.clientX,e.clientY);button.setPointerCapture(e.pointerId);};
+    button.onpointermove=e=>{if(stepGesture?.pointer===e.pointerId && Math.hypot(e.clientX-stepGesture.x,e.clientY-stepGesture.y)>12)cancelStepGesture();};
+    button.onpointerup=e=>{if(stepGesture?.pointer===e.pointerId)finishStepGesture();};
+    button.onpointercancel=button.onlostpointercapture=e=>{if(stepGesture?.pointer===e.pointerId)cancelStepGesture();};
+    button.oncontextmenu=e=>e.preventDefault();
+    button.onclick=e=>{if(!e.detail && parked)parkAt(parked.i+dir);};
+    button.onkeydown=e=>{if(e.key!=="Enter" && e.key!==" ")return;e.preventDefault();e.stopPropagation();if(!e.repeat)beginStepGesture(dir,button);};
+    button.onkeyup=e=>{if(e.key!=="Enter" && e.key!==" ")return;e.preventDefault();e.stopPropagation();finishStepGesture();};
+    button.onblur=cancelStepGesture;
+  }
+  window.addEventListener("keyup",e=>{if(parked && stepGesture?.key===e.key){finishStepGesture();e.preventDefault();}});
+  window.addEventListener("blur",cancelStepGesture);
+  window.addEventListener("pagehide",leaveNoteStep);
+  document.addEventListener("visibilitychange",()=>{if(document.hidden)cancelStepGesture();});
+  document.addEventListener("melete:deactivate",leaveNoteStep);
 
   function stepScoreNote(direction) {
     if (!ready || !engine || !api) return;
@@ -5492,7 +5660,8 @@
     updateSeekAppearance(value);
     if (updateScore && ready && engine && api) {
       cancelVerticalFollowAnimation(true);
-      seekPlaybackTick(seekTickFor(value));
+      if(parked)parkAt(stepIndexAt(parked.notes,seekTickFor(value)));
+      else seekPlaybackTick(seekTickFor(value));
     }
     return value;
   }
@@ -5799,6 +5968,7 @@
 
     async startTransport({ allowLoopLeadIn = false, recordingLeadIn = null } = {}) {
       if (!this.api || this.playing || this.starting || this.preparing) return;
+      recordingLeadIn=this.consumeParkedPosition?.() ?? recordingLeadIn;
       if (this.beforeStart?.()) return;
       const request = ++this.transportRequest;
       this.preparing = true;
@@ -6366,8 +6536,7 @@
     balanceTakeLayers() {
       this.takeBalanceRevision = (this.takeBalanceRevision || 0) + 1;
       if (!this.takeBus) return;
-      // Safe while the complete, actually summed mix is measured. No live
-      // envelope follower or per-phrase gain is used.
+      // Fixed per-recording measurements; no full-song render on Hear changes.
       this.takeBus.setNormalization(1 / Math.max(1, this.takeLayers.size));
       if (this.takeBalanceJob) return;
       this.takeBalanceJob = (async () => {
@@ -6377,15 +6546,14 @@
           const layers = [...this.takeLayers.values()];
           if (!layers.length) break;
           for (const layer of layers) {
-            layer.loudness ||= await window.MeleteTakeLoudness.track(layer.buffer);
+            layer.loudness ||= await window.MeleteTakeLoudness.track(layer.buffer, layer.loudnessKey);
             if (this.takeLayers.get(layer.id) === layer) layer.gain.gain.setTargetAtTime(layer.loudness.gain, this.context.currentTime, .03);
           }
           if (revision !== this.takeBalanceRevision) continue;
-          const result = await window.MeleteTakeMix.prepare(layers.map(layer => ({...layer})), {
-            duration:this.duration, rate:this.rate, reverb:takeReverbControl.value(), sampleRate:this.context.sampleRate});
+          const normalization = window.MeleteTakeLoudness.mix(layers.map(layer => layer.loudness), {reverb:takeReverbControl.value()});
           if (revision === this.takeBalanceRevision) {
-            this.takeMixLoudness = result.normalization;
-            this.takeBus.setNormalization(result.normalization.gain);
+            this.takeMixLoudness = normalization;
+            this.takeBus.setNormalization(normalization.gain);
           }
         } while (revision !== this.takeBalanceRevision);
       })().catch(error => {
@@ -8481,7 +8649,15 @@
     pitchCapturePreviousSeconds = scoreSeconds;
   }
 
-  function acceptPitchSample([frequency, clarity], {frame, seconds}, cost) {
+  function acceptPitchSample([frequency, clarity], {frame, seconds, parked:target}, cost) {
+    if(target){
+      if(!parked || target.start!==parked.notes[parked.i].start || playing)return;
+      const cents=6900+1200*Math.log2(frequency/440);
+      const delta=[...parked.notes[parked.i].keys].map(k=>Math.round(cents-k*100)).sort((a,b)=>Math.abs(a)-Math.abs(b))[0];
+      document.getElementById("parkedCents").textContent=frequency>0 && clarity>=0.85 && pitchCaptureEnabled()
+        ? (delta>0?"+":"")+delta+" \u00a2":"";
+      return;
+    }
     if (!pitchCaptureEnabled() || !playing || !engine?.playing || !pitchInputIsLive()) {
       pitchCaptureUnvoicedFrame = null;
       pitchOctaveHistory = [];
@@ -9064,10 +9240,7 @@
 
   function rememberReviewMix() {
     if (!reviewMix) return;
-    try {
-      localStorage.setItem(window.MeletePracticeMix.reviewKey(takeSongKey(),mixerParts,reviewMix.channel),
-        JSON.stringify(window.MeletePracticeMix.audioState(captureSettingsState())));
-    } catch { /* Review preferences are optional, just like recording preferences. */ }
+    followRole("review",captureSettingsState(),reviewMix.channel,reviewMix.channel);
   }
 
   function enterReviewMix(channel) {
@@ -9076,10 +9249,12 @@
     const mix = window.MeletePracticeMix, current = captureSettingsState();
     const recording = reviewMix?.recording || mix.audioState(current);
     const recordingChannel = reviewMix ? reviewMix.recordingChannel : practiceMixerIndex();
-    let saved;
-    try { saved=JSON.parse(localStorage.getItem(mix.reviewKey(takeSongKey(),mixerParts,channel))); } catch {}
+    const memory=roleMemory("review");
+    let saved=memory?.settings;
+    if(!saved)try { saved=JSON.parse(localStorage.getItem(mix.reviewKey(takeSongKey(),mixerParts,channel))); } catch {}
+    const old=memory && mixerParts[memory.index]?memory.index:channel;
+    const next=followRole("review",mix.reviewProfile(mixerParts,old,saved),old,channel);
     reviewMix = {channel,recording,recordingChannel};
-    const next = mix.reviewProfile(mixerParts,channel,saved);
     // A reference recording can mask the singer just as readily as their MIDI guide.
     if (!next.reference && current.reference) next.reference={...current.reference,enabled:false};
     applySettingsState({...current,...next});
@@ -9091,8 +9266,8 @@
     const previous=reviewMix, channel=practiceMixerIndex();
     reviewMix=null;
     const next={...captureSettingsState(),...previous.recording};
-    if (channel!==previous.recordingChannel && channel!==null)
-      Object.assign(next,window.MeleteStation.guideMix(mixerParts,channel,window.MeletePracticeMix.stationDefault(),sequence.practiceRoles));
+    if (channel!==previous.recordingChannel && channel!==null && mixerParts[previous.recordingChannel])
+      Object.assign(next,followRole(recordingScope(),next,previous.recordingChannel,channel));
     applySettingsState(next);
   }
 
@@ -9527,6 +9702,7 @@
     const blob = await takeBlob(take);
     const buffer = await engine.context.decodeAudioData(await blob.arrayBuffer());
     return {id: take.id, singerId:window.MeleteStation.sourceSinger(take)?.id, label: `Take ${take.number || "..."}`, ref, buffer, blob,
+      loudnessKey:JSON.stringify(["take",take.id,take.frames,take.updatedAt,take.pitchContour?.analysisVersion,window.MeleteTakeCleanup.VERSION]),
       frames: shiftedReviewFrames(window.MeleteTakePitch.readContour(take) || [],take),
       track: ref.part, rate: ref.rate, start: engine.secondsAtTick(captureStart),
       end: engine.secondsAtTick(ref.end), latency:ref.latency+window.MeleteStation.advanceMs(take)/1000};
@@ -9609,7 +9785,7 @@
         try {
           const review = await track.prepare();
           if (takeHearBatch !== batch) return;
-          review.loudness ||= await window.MeleteTakeLoudness.track(review.buffer);
+          review.loudness ||= await window.MeleteTakeLoudness.track(review.buffer, review.loudnessKey);
           if (takeHearBatch !== batch) return;
           if (takeLayerLoads.get(track.id) === batch) prepared.push(review);
         } catch (error) {
@@ -10372,7 +10548,7 @@
     const finishJournal = frame => journal?.finish(frame, {
       discardShortTail,
       trimStopNoise: discardShortTail,
-      segment: discardShortTail ? (record, seconds) => {
+      segment: discardShortTail || journal?.spec.mode === "segment" ? (record, seconds) => {
         const ref = record.pitchReference;
         const end = Math.min(record.end, engine.tickAtSeconds(engine.secondsAtTick(record.start) + seconds * record.rate));
         return {end, label: `${record.label.split("-")[0]}-${scoreLocationAtTick(end)}`,
@@ -10389,11 +10565,19 @@
     renderTakePanel();
     takeStopPromise = (async () => {
       try {
-        if (engine?.native) {
-          const stopped = await engine.native.pause();
-          finishJournal(stopped.stopFrame ?? engine.native.frame);
+        const captureError = await window.MeleteRecording.finishCapture({capture,
+          pause:engine?.native ? () => engine.native.pause() : null,
+          frame:() => engine?.native?.frame || 0,
+          finish:engine?.native ? finishJournal : null, flush:() => journal?.flush()});
+        if (captureError) {
+          console.error(captureError);
+          takeNotice = "Audio connection interrupted; captured audio saved locally";
+          showToast(takeNotice, "error");
         }
-        await capture?.stop(); await journal?.flush();
+      }
+      catch (error) {
+        takeNotice = takeSaveError(error);
+        showToast(takeNotice, "error");
       }
       finally {
         takeState = "off";
@@ -11266,6 +11450,7 @@
   }
 
   function syncPlaybackButton() {
+    syncStepAvailability();
     const preparing = Boolean(engine?.preparing);
     stationMixEditor?.transportChanged();
     elements.playPause.disabled = !ready;
@@ -11381,7 +11566,6 @@
     const selected = practicePartPager?.value();
     void stopTakeRecording("Stopped: practice part changed", true);
     setPracticePart(selected);
-    applyRelativeGuide(selected);
     updateNoteActionLabel();
     if (scoreView === "bars") scheduleBarRender();
     // Choosing here answers the first-visit question as well.
@@ -11699,7 +11883,9 @@
     const control = event.target instanceof Element
       ? event.target.closest("button, input, a, [role='button'], [role='spinbutton'], [role='slider'], [tabindex]")
       : null;
-    if (!(control instanceof HTMLElement) || isTextEntryTarget(control)) return;
+    // Step arrows retain keyboard focus; a delayed blur after a pointer-up
+    // would cancel a keyboard hold that started in the same frame.
+    if (!(control instanceof HTMLElement) || isTextEntryTarget(control) || control.closest("#noteStepBar")) return;
     requestAnimationFrame(() => {
       if (document.activeElement === control) control.blur();
     });
@@ -11761,6 +11947,8 @@
     }
     if (["ArrowLeft", "ArrowRight"].includes(event.key) && engine && api) {
       const direction = event.key === "ArrowRight" ? 1 : -1;
+      if(parked){if(!event.repeat){beginStepGesture(direction,null);stepGesture.key=event.key;}
+        event.preventDefault();return;}
       stepScoreNote(direction);
       event.preventDefault();
       return;
@@ -12115,6 +12303,11 @@
       api = new window.alphaTab.AlphaTabApi(elements.score, settings);
       api.customCursorHandler = createLeftEdgeCursorHandler(window.alphaTab, api);
       engine = new GuideEngine(sequence);
+      engine.consumeParkedPosition=()=>{
+        if(!parked)return null;
+        const time=engine.secondsAtTick(parked.notes[parked.i].start);
+        leaveNoteStep();return time;
+      };
       void referencePlayer?.sync();
       engine.beforeStart = () => {
         if (conductorMode || stationReview || !wantsPitchCapture()) return false;

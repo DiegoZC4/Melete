@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import queue
+import re
 import secrets
 import shutil
 import struct
@@ -18,6 +19,39 @@ import wave
 RATE = 48000
 RING_SECONDS = 12
 MAX_ASSET_BYTES = 768 * 1024**2
+WINDOWS_CAPTURE = r'SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture'
+WINDOWS_DISABLE_FX = '{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5'
+
+
+def windows_input_endpoint(name):
+    """Resolve the active, exact-name input; installation GUIDs can change."""
+    import winreg
+
+    def optional(key, property_name):
+        try:
+            return winreg.QueryValueEx(key, property_name)[0]
+        except FileNotFoundError:
+            return None
+
+    matches = []
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, WINDOWS_CAPTURE) as root:
+        for index in range(winreg.QueryInfoKey(root)[0]):
+            endpoint = winreg.EnumKey(root, index)
+            with winreg.OpenKey(root, endpoint) as key:
+                if winreg.QueryValueEx(key, 'DeviceState')[0] != 1:
+                    continue
+                with winreg.OpenKey(key, 'Properties') as properties:
+                    friendly = optional(properties, '{a45c254e-df1c-4efd-8020-67d146a850e0},14')
+                    if not friendly:
+                        description = optional(properties, '{a45c254e-df1c-4efd-8020-67d146a850e0},2')
+                        adapter = optional(properties, '{b3f8fa53-0004-438e-9003-51a46e139bfc},6')
+                        if description and adapter:
+                            friendly = f'{description} ({adapter})'
+                    if friendly == name:
+                        matches.append(endpoint)
+    if len(matches) != 1:
+        raise RuntimeError('Cannot uniquely identify the connected '+name+'. No substitute microphone was selected.')
+    return matches[0]
 
 
 def require_unprocessed_input(config):
@@ -27,13 +61,19 @@ def require_unprocessed_input(config):
     if sys.platform != 'win32' or len(endpoint) != 38 or any(c not in '{}-0123456789abcdefABCDEF' for c in endpoint):
         raise RuntimeError('Cannot verify the configured Windows microphone endpoint.')
     import winreg
-    path = '\\'.join([r'SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture', endpoint, 'FxProperties'])
+    name = config.get('input')
+    if not isinstance(name, str) or not name:
+        raise RuntimeError('Cannot verify the configured Windows microphone name.')
     try:
+        # Check the input selected by the audio host, not a detached device's
+        # saved settings. An OS/driver update may replace its endpoint GUID.
+        endpoint = windows_input_endpoint(name)
+        path = '\\'.join([WINDOWS_CAPTURE, endpoint, 'FxProperties'])
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path) as key:
-            disabled, _ = winreg.QueryValueEx(key, '{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5')
+            disabled, value_type = winreg.QueryValueEx(key, WINDOWS_DISABLE_FX)
     except OSError as error:
-        raise RuntimeError('Cannot verify Samson input enhancements. Check Windows Sound settings before recording.') from error
-    if disabled != 1:
+        raise RuntimeError('Cannot read Windows input-enhancement settings for '+name+'. Recording was not started.') from error
+    if value_type != winreg.REG_DWORD or disabled != 1:
         raise RuntimeError('Windows microphone enhancements are enabled. Set Samson Audio enhancements to Off before recording.')
     return True
 
@@ -124,8 +164,8 @@ class NativeAudio:
                     raise RuntimeError('Another Melete song/tab owns native audio. Stop it first.')
                 self.last_seen = time.monotonic()
                 return self.status()
-            self.input_enhancements_verified = require_unprocessed_input(self.config)
             self.devices_info = self.devices()
+            self.input_enhancements_verified = require_unprocessed_input(self.config)
             self.timeline = Timeline()
             self.events, self.sequence, self.fault = [], 0, None
             self.assets, self.pending, self.active_assets = {}, {}, {}
@@ -180,6 +220,7 @@ class NativeAudio:
                     peak=self.last_peak, events=list(self.events), stopFrame=self.stop_at,
                     input=self.config['input'], output=self.config['output'],
                     calibration=self.config.get('measuredAt'), spreadMs=self.config.get('spreadMs'),
+                    windowsInputEnhancementsVerifiedOff=self.input_enhancements_verified,
                     residualMs=self.config.get('residualMs'), outputRms=self.output_rms,
                     outputPeak=self.output_peak, limitedFrames=self.limited_frames, backend='WASAPI exclusive',
                     recording=self.recording is not None)
@@ -249,10 +290,18 @@ class NativeAudio:
                     metronome=finite(command['metronome'], 0, 4), recordings=finite(command.get('recordings', 1), 0, 2))
             elif kind == 'assets':
                 assets = command['assets']
-                if set(assets)-{'guide', 'recordings', 'reference'} or any(v not in self.assets for v in assets.values()):
+                if len(assets) > 64 or any(k != 'guide' and not re.fullmatch(r'(?:recording|reference):\d+', k)
+                                         for k in assets) or any(v not in self.assets for v in assets.values()):
                     raise ValueError('Missing native assets')
                 self.active_assets = dict(assets)
-                self.assets = {key: value for key, value in self.assets.items() if key in assets.values() or key in self.previews}
+                # Retain a bounded inactive PCM cache, so Hear is an asset swap.
+                inactive = [k for k in self.assets if k not in assets.values() and k not in self.previews]
+                size = sum(self.assets[k]['pcm'].nbytes for k in inactive)
+                for key in inactive:
+                    if size <= 128*1024**2:
+                        break
+                    size -= self.assets[key]['pcm'].nbytes
+                    del self.assets[key]
             elif kind == 'play':
                 if self.fault:
                     raise RuntimeError(self.fault)
@@ -302,7 +351,10 @@ class NativeAudio:
                 self.config = config
             else:
                 raise ValueError('Unknown native command')
-            return self.status()
+            result = self.status()
+            if kind == 'assets':
+                result['cachedAssets'] = list(self.assets)
+            return result
 
     def samples(self, key, positions):
         asset = self.assets[self.active_assets[key]]
@@ -325,9 +377,9 @@ class NativeAudio:
                 mixed[:, 0] += guide[:, c]*gain*math.cos((pan+1)*math.pi/4)*.92
                 mixed[:, 1] += guide[:, c]*gain*math.sin((pan+1)*math.pi/4)*.92
             mixed += guide[:, -1, None]*self.settings['metronome']*.92/math.sqrt(2)
-        for key in ('recordings', 'reference'):
-            if key in self.active_assets:
-                mixed += self.samples(key, positions)* (self.settings['recordings'] if key == 'recordings' else 1)
+        for key in self.active_assets:
+            if key != 'guide':
+                mixed += self.samples(key, positions)* (self.settings['recordings'] if key.startswith('recording:') else 1)
         return mixed
 
     def callback(self, indata, outdata, frames, clock, status):

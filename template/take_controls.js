@@ -60,7 +60,7 @@
   }
   const fields = {singer:"Singer", part:"Part", segments:"Segments", tracked:"Tracked (%)", mean:"Mean (\u00a2)",
     median:"Median (\u00a2)", within:"\u226450\u00a2 (%)", created:"Created", modified:"Modified", octave:"Octave"};
-  const priority = ["singer","part","mean","tracked","within","median","segments","modified","created","octave"];
+  const priority = ["singer","part","mean","tracked","within","segments","created","median","modified","octave"];
   const layouts = new WeakMap();
   function visibleFields(available, widths, budget, preference) {
     if (preference === "all") return available;
@@ -78,7 +78,7 @@
     const key = "melete:take-columns:v1:" + (stationMode ? "station" : "practice");
     let preference, visible = [], widths, lastWidth = -1;
     function restore() {
-      preference = stationMode ? "fit" : "all";
+      preference = "fit";
       try {
         const raw = JSON.parse(localStorage.getItem(key));
         if (raw === "fit" || raw === "all" || Array.isArray(raw)) preference = raw;
@@ -102,7 +102,7 @@
       const named = find("#compView").classList.contains("has-singers");
       const style = getComputedStyle(table), room = table.clientWidth - widths.number - widths.hear - parseFloat(style.getPropertyValue("--take-actions-width")) - 1;
       const available = Object.keys(fields).filter(id => named || id !== "singer");
-      const fitIdentity=named && stationMode && preference==="fit";
+      const fitIdentity=named && preference==="fit" && room>=36+widths.part;
       const nameWidth=Math.min(widths.singer,Math.max(36,room-widths.part));
       if (fitIdentity) {
         // Keep the identity columns together; spend the remaining width on stats.

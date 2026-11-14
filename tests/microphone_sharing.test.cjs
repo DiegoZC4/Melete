@@ -206,7 +206,8 @@ test('manual segment stop clips the immutable reference and shuts down tracing',
       pitchCaptureContext:{currentTime:3.2,sampleRate:100},
       takeCapture:{async stop(){}},takeJournal:{async flush(){},finish(frame,{segment}){
         metadata=segment({start:40,end:50,rate:1,label:'2-5',pitchReference:ref},frame/100);
-      }}, window:{clearTimeout(){},clearInterval(){},MeleteTakePitch:require('../template/take_pitch.js')},elements:{takeCountIn:{}},
+      }}, window:{clearTimeout(){},clearInterval(){},MeleteTakePitch:require('../template/take_pitch.js'),
+        MeleteRecording:require('../template/loop_recorder.js')},elements:{takeCountIn:{}},
       engine:{secondsAtTick:t=>t,tickAtSeconds:s=>s,pauseTransport(){},setOverdubTarget(){}},
       scoreLocationAtTick:String,renderTakePanel(){},scoreNextTake(){},stopPitchSampling(){},updatePitchCaptureAppearance(){},resetPitchTraceGrid(){},refreshTakePitchTrace(){},renderPitchTrace(){},
       disablePitchCapture(announce, options) { stopped = options.preservePreference; },

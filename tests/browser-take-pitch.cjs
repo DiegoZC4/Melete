@@ -106,6 +106,7 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
   if (await frame.locator('#partChooser').isVisible()) await frame.locator('#partChooserDismiss').click();
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await frame.locator('#settingsToggle').click();
 
+  await require('./browser-show-columns.cjs').showAllColumns(frame);
   const metronome = await checkMetronome(frame);
   const layout = await frame.evaluate(() => {
     const box = id => document.getElementById(id).getBoundingClientRect().toJSON();

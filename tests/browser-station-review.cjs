@@ -59,11 +59,12 @@ async function checkStationReview(page, frame, {output, label}) {
   const otherChannel=review.settings.audible.findIndex(Boolean);
   // Change the real controls, then switch recordings and return to this review mix.
   await frame.locator(`[data-volume-index="${otherChannel}"]`).press('ArrowUp');
+  await frame.evaluate(()=>{const q=__qa.pitchbar,s=q.captureSettingsState();s.audible.fill(false);q.applySettingsState(s);});
   const custom=await frame.evaluate(()=>__qa.pitchbar.captureSettingsState());
   const other=frame.locator('#compRows .comp-row').filter({has:frame.locator('.take-singer',{hasText:'Review Other'})}).filter({has:frame.locator('.comp-review:not(:disabled)')}).first();
   await other.locator('.take-number').click();
   await frame.waitForFunction(part=>__qa.takeReview?.track!==part,sourcePart);
-  assert.ok(await frame.evaluate(()=>__qa.pitchbar.captureSettingsState().volumes.every(v=>v===35)),'another part has an independent review profile');
+  assert.ok(await frame.evaluate(()=>__qa.pitchbar.captureSettingsState().audible.every(on=>!on)),'muting the MIDI backing follows review across parts');
   await source.locator('.take-number').click();
   await frame.waitForFunction(part=>__qa.takeReview?.track===part,sourcePart);
   assert.deepEqual(await frame.evaluate(()=>__qa.pitchbar.captureSettingsState().volumes),custom.volumes,'review changes survive switching takes');

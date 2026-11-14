@@ -157,6 +157,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><path d="M12 19v3"></path></svg>
               <span>Sing</span>
             </button>
+            <button class="icon-button" id="noteStepToggle" type="button" aria-label="Note step" aria-pressed="false" aria-controls="noteStepBar" title="Practise one note at a time" disabled>Step</button>
             <div class="station-picker" id="stationPicker" hidden>
               <label for="stationSinger">Singer</label>
               <input id="stationSinger" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="stationSingerList" autocomplete="off" spellcheck="false" placeholder="Name, @handle or part">
@@ -244,7 +245,6 @@
                   <button class="icon-button" type="button" id="undoComp" aria-label="Undo track change" aria-keyshortcuts="Meta+Z Control+Z" data-help="Undo track edits (Cmd/Ctrl+Z). Size-limited history persists."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7v6h6M3 13l4-4a7 7 0 1 1 0 10"></path></svg></button>
                   <button class="icon-button" type="button" id="redoComp" aria-label="Redo track change" aria-keyshortcuts="Meta+Shift+Z Control+Shift+Z" data-help="Redo a track edit. Cmd/Ctrl+Shift+Z."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 7v6h-6M21 13l-4-4a7 7 0 1 0 0 10"></path></svg></button>
                   <button class="icon-button comp-add" id="addTrack" type="button" aria-label="Add a track" title="Add a track"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
-                  <button class="icon-button" type="button" id="downloadMix" aria-label="Download audible recording mix" title="Download the mix of recordings with Hear on" data-help="Download recordings with Hear on, including octave and reverb."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4V5ZM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"></path></svg></button>
                   <button class="icon-button" id="stationExport" type="button" aria-label="Export take statistics as CSV" title="Export all track statistics, including hidden columns" hidden>CSV</button>
                 </div>
                 <label class="number-control take-volume"><span>Vol</span><button class="drag-number" id="takeVolume" type="button" data-value="100" aria-label="Recording mix volume" data-help="Recording mix volume. Automatic loudness balance; originals unchanged.">100%</button></label>
@@ -287,6 +287,7 @@
                       <span title="Percentage of tracked singing within 50 cents"><button type="button" data-take-sort="within">&le;50&cent; (%)</button></span>
                       <span><button type="button" data-take-sort="created">Created</button></span><span><button type="button" data-take-sort="modified">Modified</button></span>
                       <span class="take-octave-heading" title="Playback octave">Oct</span><span class="take-hear-heading">Hear</span>
+                      <span class="take-download-heading"><button class="icon-button" type="button" id="downloadMix" aria-label="Download audible recording mix" title="Download audible mix" data-help="Download audible recordings as one mastered mix." disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg></button></span>
                     </div>
                     <div id="compRows"></div>
                     <div id="practiceTraceRows"></div>
@@ -346,6 +347,11 @@
             </div>
           </section>
         </div>
+      </div>
+      <div id="noteStepBar" role="group" aria-label="Note step" hidden>
+        <button class="icon-button" type="button" data-note-step="-1" aria-label="Previous note" title="Previous note; hold to hear the current note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 18-6-6 6-6"/></svg></button>
+        <div class="parked-note"><strong id="parkedNote"></strong><output id="parkedCents" aria-label="Pitch error in cents" aria-live="off"></output></div>
+        <button class="icon-button" type="button" data-note-step="1" aria-label="Next note" title="Next note; hold to hear the current note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 18 6-6-6-6"/></svg></button>
       </div>
     </header>
 

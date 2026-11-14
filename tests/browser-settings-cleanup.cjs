@@ -91,7 +91,7 @@ async function main(){
         await page.keyboard.press('Escape');assert.doesNotMatch(await row.locator('.take-delete').getAttribute('class'),/is-delete-armed/);
         await row.locator('.take-delete').click();await row.locator('.take-delete').click();
         await page.waitForFunction(()=>!__qa.compState.segments.length);
-        await page.locator('#undoComp').click();await page.waitForFunction(()=>__qa.compState.segments.length);
+        await require('./browser-history-control.cjs').historyControl(page,'undo');await page.waitForFunction(()=>__qa.compState.segments.length);
         report.push({song,mobile,channels:channels.map(p=>p.short),staves:await page.evaluate(()=>__qa.staves),independentMix:true,persisted:true,twoClickDeleteAndUndo:true,dates:true});
       }finally{await context.close();}
     }

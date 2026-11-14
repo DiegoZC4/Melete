@@ -113,6 +113,14 @@ async function main() {
     if (!focused || process.env.QA_REFERENCE_ONLY) results.push({referenceMix:await checkReferenceMix(browser,temporary,output)});
     if (!focused || process.env.QA_ROUTES_ONLY) results.push({practiceRoutes:await checkPracticeRoutes(browser,temporary,output)});
     for (const mobile of [false, true]) {
+      if(!focused || process.env.QA_NOTE_STEP_ONLY){
+        const ctx=await newContext(mobile);
+        try{const tab=await ctx.newPage();tab.on('pageerror',e=>errors.push(e.message));
+          await tab.goto(origin);await tab.waitForFunction(()=>window.__qa && !__qa.busy && document.querySelector('#playPause:not(:disabled)'));
+          results.push({noteStep:await require('./browser-note-step.cjs').run(tab,mobile,output)});
+        }finally{await ctx.close();}
+        if(process.env.QA_NOTE_STEP_ONLY)continue;
+      }
       if(process.env.QA_ACOUSTIC_ONLY||process.env.QA_ICONS_ONLY||process.env.QA_LIBRARY_ONLY||process.env.QA_SINGER_REVIEW_ONLY)continue;
       if ((!focused || process.env.QA_CLOUD_TABLE_ONLY) && fsSync.existsSync(path.join(__dirname,'browser-cloud-table.cjs'))) {
         const context=await newContext(mobile);
