@@ -46,6 +46,22 @@
       return [take.id, take.frames, take.updatedAt, contourVersions.get(contour), take.pitchScore?.scoringVersion,take.performer?.id,take.playbackAdvance];
     }
     const slotKey = `melete:track-slots:${adapter.song()}`;
+    const sourceControl = byId("takeSourceControl"), sourceFilter = byId("takeSourceFilter");
+    const reviewTable = byId("takeReviewTable");
+    const sourceKey = "melete:take-source:v1";
+    sourceControl.hidden = !adapter.cloudConfig?.api || !/^https?:$/.test(new URL(document.baseURI).protocol);
+    if (!sourceControl.hidden) {
+      try {
+        const savedSource = localStorage.getItem(sourceKey);
+        if (["local", "cloud"].includes(savedSource)) sourceFilter.value = savedSource;
+      } catch {}
+      reviewTable.dataset.source = sourceFilter.value;
+      sourceFilter.addEventListener("change", () => {
+        reviewTable.dataset.source = sourceFilter.value;
+        reviewTable.scrollTop = 0;
+        try { localStorage.setItem(sourceKey, sourceFilter.value); } catch {}
+      });
+    }
     let slots = {};
     try { slots = JSON.parse(localStorage.getItem(slotKey) || "{}"); } catch {}
     if (!slots || typeof slots !== "object" || Array.isArray(slots)) slots = {};
@@ -365,14 +381,14 @@
       scroll.scrollTop = top; scroll.scrollLeft = left;
       if (revealReviewId) {
         const row=cloudRows.get(revealReviewId) || [...rows.values()].find(row=>`comp:${row.dataset.compKey}`===revealReviewId);
-        if (row) {
+        if (row?.getClientRects().length) {
           const box=row.getBoundingClientRect(),pane=scroll.getBoundingClientRect();
           scroll.scrollTop=Math.max(0,top+box.top-pane.top-byId("compView").querySelector(".comp-columns").offsetHeight);
           scroll.scrollLeft=0;
         }
         revealReviewId=null;
       }
-      if (revealSinger && rows.has(armed) && tracks.get(armed).state.descriptor.station?.id === station.current()?.id && station.current()) {
+      if (revealSinger && rows.get(armed)?.getClientRects().length && tracks.get(armed).state.descriptor.station?.id === station.current()?.id && station.current()) {
         const box=rows.get(armed).getBoundingClientRect(), pane=scroll.getBoundingClientRect();
         scroll.scrollTop=fresh(armed) ? 0 : Math.max(0,top+box.top-pane.top-byId("compView").querySelector(".comp-columns").offsetHeight);
         scroll.scrollLeft=0; revealSinger=false;

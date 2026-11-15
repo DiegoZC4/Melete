@@ -85,6 +85,10 @@ def finite(value, low, high):
     return value
 
 
+class RouteLookupError(RuntimeError):
+    """The current PortAudio device snapshot cannot identify the saved route."""
+
+
 class Timeline:
     """Pure frame accounting, also tested without Windows or an audio device."""
     def __init__(self):
@@ -141,19 +145,24 @@ class NativeAudio:
         self.output_peak = 0
         self.limited_frames = 0
         self.previews = {}
+        self.preview_waves = {}
         self.input_enhancements_verified = None
 
     def devices(self):
         apis = self.sd.query_hostapis()
-        api = next(i for i, a in enumerate(apis) if a['name'] == 'Windows WASAPI')
+        api = next((i for i, a in enumerate(apis) if a['name'] == 'Windows WASAPI'), None)
+        if api is None:
+            raise RouteLookupError('Windows WASAPI is unavailable. Check the audio device and try Sing again.')
         devices = list(self.sd.query_devices())
         result = []
         for direction in ['input', 'output']:
             name = self.config[direction]
             matches = [(i, d) for i, d in enumerate(devices) if d['hostapi'] == api
                        and d['name'] == name and d['max_'+direction+'_channels'] >= 2]
-            if len(matches) != 1:
-                raise RuntimeError('The calibrated '+direction+' is unavailable. No substitute device was selected.')
+            if not matches:
+                raise RouteLookupError(f'Cannot find the calibrated {direction}: {name}. Check its connection, then try Sing again.')
+            if len(matches) > 1:
+                raise RouteLookupError(f'More than one {direction} is named {name}. No substitute device was selected.')
             result.append(matches[0])
         return result
 
@@ -164,35 +173,52 @@ class NativeAudio:
                     raise RuntimeError('Another Melete song/tab owns native audio. Stop it first.')
                 self.last_seen = time.monotonic()
                 return self.status()
-            self.devices_info = self.devices()
-            self.input_enhancements_verified = require_unprocessed_input(self.config)
             self.timeline = Timeline()
             self.events, self.sequence, self.fault = [], 0, None
             self.assets, self.pending, self.active_assets = {}, {}, {}
             self.previews = {}
             self.limited_frames = 0
             self.ring.fill(0)
+            for attempt in range(2):
+                try:
+                    self.start_calibrated_stream()
+                    break
+                except (RouteLookupError, self.sd.PortAudioError) as error:
+                    if attempt:
+                        if isinstance(error, RouteLookupError):
+                            raise
+                        raise RuntimeError(f'Cannot open the calibrated audio device. Close other apps using it, then try Sing again. ({error})') from error
+                    # PortAudio 19 enumerates devices at initialization, not query_devices().
+                    # The station is its sole owner; only rescan here, without an open stream.
+                    if self.stream is not None or self.sd._initialized not in (0, 1):
+                        raise
+                    if self.sd._initialized:
+                        self.sd._terminate()
+                    self.sd._initialize()
             self.session, self.client = secrets.token_hex(24), str(client)
             self.last_seen = time.monotonic()
-            extra = self.sd.WasapiSettings(exclusive=True, auto_convert=False)
-            try:
-                self.stream = self.sd.Stream(samplerate=RATE, channels=(2, 2), dtype='float32',
-                    device=tuple(row[0] for row in self.devices_info), blocksize=0, latency='low',
-                    extra_settings=(extra, extra), callback=self.callback)
-                latency = list(self.stream.latency)
-                expected = self.config['reportedLatencySeconds']
-                if any(abs(a-b) > .00001 for a, b in zip(latency, expected)):
-                    raise RuntimeError('Native buffer settings changed. Measure this route before recording.')
-                self.output_latency = latency[1]
-                self.stream.start()
-            except Exception:
-                if self.stream:
-                    self.stream.close()
-                self.stream = self.session = None
-                raise
             if self.use_watchdog:
                 threading.Thread(target=self.watchdog, args=(self.session,), daemon=True).start()
             return self.status()
+
+    def start_calibrated_stream(self):
+        self.devices_info = self.devices()
+        self.input_enhancements_verified = require_unprocessed_input(self.config)
+        extra = self.sd.WasapiSettings(exclusive=True, auto_convert=False)
+        self.stream = self.sd.Stream(samplerate=RATE, channels=(2, 2), dtype='float32',
+            device=tuple(row[0] for row in self.devices_info), blocksize=0, latency='low',
+            extra_settings=(extra, extra), callback=self.callback)
+        try:
+            latency = list(self.stream.latency)
+            expected = self.config['reportedLatencySeconds']
+            if any(abs(a-b) > .00001 for a, b in zip(latency, expected)):
+                raise RuntimeError('Native buffer settings changed. Measure this route before recording.')
+            self.output_latency = latency[1]
+            self.stream.start()
+        except Exception:
+            self.stream.close()
+            self.stream = None
+            raise
 
     def require(self, session):
         if not self.session or session != self.session:
@@ -217,7 +243,7 @@ class NativeAudio:
                     base=t.position, rate=t.rate, playing=t.playing, sampleRate=RATE,
                     latency=self.config['seconds'], outputLatency=self.output_latency,
                     callbackAge=max(0, time.monotonic()-self.last_callback), fault=self.fault,
-                    peak=self.last_peak, events=list(self.events), stopFrame=self.stop_at,
+                    peak=self.last_peak, events=list(self.events), stopFrame=self.stop_at, notePreviewVersion=1,
                     input=self.config['input'], output=self.config['output'],
                     calibration=self.config.get('measuredAt'), spreadMs=self.config.get('spreadMs'),
                     windowsInputEnhancementsVerifiedOff=self.input_enhancements_verified,
@@ -312,11 +338,17 @@ class NativeAudio:
                 self.loop = finite(command['loopStart'], -120, self.boundary) if command.get('loopStart') is not None else None
                 if self.loop is not None and self.loop >= self.boundary:
                     raise ValueError('Invalid native loop')
+                position = finite(command['position'], -120, 1200)
                 if command.get('record'):
-                    self.begin_backup(command.get('label', {}))
-                frame = self.timeline.play(command['position'], rate)
+                    self.begin_backup(command.get('label', {}), position, rate)
+                frame = self.timeline.play(position, rate)
                 self.stop_at = None
                 self.event('play', frame, position=self.timeline.position)
+            elif kind == 'punchIn':
+                if not self.timeline.playing or self.fault:
+                    raise RuntimeError('Playback is no longer running; no recording started.')
+                # Status below returns this same frame and position under the callback lock.
+                self.begin_backup(command.get('label', {}), self.timeline.at(), self.timeline.rate)
             elif kind == 'pause':
                 self.timeline.pause()
                 self.stop_at = self.timeline.frame + math.ceil((self.config['seconds']+.025)*RATE)
@@ -326,6 +358,22 @@ class NativeAudio:
                 self.loop = finite(command['loopStart'], -120, self.boundary) if command.get('loopStart') is not None else None
                 if self.loop is not None and self.loop >= self.boundary:
                     raise ValueError('Invalid native loop')
+            elif kind == 'noteOn':
+                key, midi = command['key'], command['midi']
+                if (not isinstance(key, str) or not re.fullmatch(r'preview-[0-9]{1,16}', key)
+                        or type(midi) is not int or not 0 <= midi <= 127 or key in self.previews
+                        or len(self.previews) >= 16):
+                    raise ValueError('Invalid preview note')
+                hz = 440 * 2**((midi-69)/12)
+                harmonics = min(5, int((RATE/2-1)//hz))
+                if harmonics not in self.preview_waves:
+                    phases = self.np.linspace(0, 2*math.pi, 2049)
+                    wave = sum(weight*self.np.sin(i*phases) for i, weight in
+                               enumerate((1, .44, .2, .10, .04)[:harmonics], 1))
+                    self.preview_waves[harmonics] = wave/abs(wave).max()
+                self.previews[key] = dict(anchor=self.timeline.frame, release=None, hz=hz,
+                    wave=self.preview_waves[harmonics], gain=finite(command['gain'], 0, 2)
+                    * .112 * 10**(min(9, max(0, (55-midi)*.72))/20), pan=finite(command['pan'], -1, 1))
             elif kind == 'preview':
                 key = command['key']
                 if key not in self.assets or len(self.previews) >= 16:
@@ -333,8 +381,12 @@ class NativeAudio:
                 self.previews[key] = dict(anchor=self.timeline.frame, release=None,
                     gain=finite(command.get('gain', 1), 0, 2), pan=finite(command.get('pan', 0), -1, 1))
             elif kind == 'release':
-                if command['key'] in self.previews:
-                    self.previews[command['key']]['release'] = self.timeline.frame
+                voice = self.previews.get(command['key'])
+                if voice is not None and voice['release'] is None:
+                    # A fast mouse tap can deliver both commands before the next
+                    # device callback. Give pitched previews an audible attack.
+                    minimum = round(.045 * RATE) if 'hz' in voice else 0
+                    voice['release'] = max(self.timeline.frame, voice['anchor'] + minimum)
             elif kind == 'close':
                 pass
             elif kind == 'calibration':
@@ -437,6 +489,23 @@ class NativeAudio:
                     break
             t.frame += frames
             for key, voice in list(self.previews.items()):
+                if 'hz' in voice:
+                    # Start on this block and keep phase across blocks. No render/upload on key-down.
+                    age = np.arange(frames)+t.frame-frames-voice['anchor']
+                    phase = age*(voice['hz']/RATE) % 1 * 2048
+                    j = phase.astype('int32')
+                    wave = voice['wave']
+                    sound = wave[j] + (wave[j+1]-wave[j])*(phase-j)
+                    release = min(voice['release']-voice['anchor'] if voice['release'] is not None else RATE*30, RATE*30)
+                    attack = np.minimum(age/(RATE*.012), 1)
+                    tail = np.clip((age-release)/(RATE*.024), 0, 1)
+                    sound *= (1-np.cos(math.pi*attack))*(1+np.cos(math.pi*tail))*.25*voice['gain']*.92
+                    angle = (voice['pan']+1)*math.pi/4
+                    outdata[:, 0] += sound*math.cos(angle)
+                    outdata[:, 1] += sound*math.sin(angle)
+                    if age[-1] >= release+RATE*.024:
+                        del self.previews[key]
+                    continue
                 asset = self.assets[key]
                 elapsed = (self.np.arange(frames)+t.frame-frames-voice['anchor'])/RATE
                 index = self.np.clip((elapsed*asset['sampleRate']).astype('int64'), 0, len(asset['pcm'])-1)
@@ -464,7 +533,7 @@ class NativeAudio:
             if self.stop_at is not None and t.frame >= self.stop_at and self.recording is not None:
                 self.finish_backup()
 
-    def begin_backup(self, label):
+    def begin_backup(self, label, position, rate):
         if self.recording is not None:
             raise RuntimeError('A native recording is already active')
         folder = self.state/'native-recordings'
@@ -473,7 +542,7 @@ class NativeAudio:
             raise RuntimeError('Not enough disk space for a native recording. Existing recordings are retained.')
         name = time.strftime('%Y%m%d-%H%M%S')+'-'+secrets.token_hex(4)
         path = folder/(name+'.wav')
-        record = dict(file=path.name, frame=self.timeline.frame, sampleRate=RATE,
+        record = dict(file=path.name, frame=self.timeline.frame, scorePosition=position, rate=rate, sampleRate=RATE,
                       latency=self.config['seconds'], label=label, client=self.client, backend='WASAPI exclusive',
                       input=self.config['input'], output=self.config['output'],
                       callbackFrames=self.config['callbackFrames'], calibration=self.config.get('measuredAt'),

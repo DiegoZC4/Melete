@@ -171,11 +171,12 @@ class NativeAudioTests(unittest.TestCase):
         self.np = np
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        with patch.dict(sys.modules, {'sounddevice': types.SimpleNamespace()}):
+        with patch.dict(sys.modules, {'sounddevice': types.SimpleNamespace(PortAudioError=OSError)}):
             self.host = native.NativeAudio(Path(self.temp.name), {'seconds': .036, 'callbackFrames': 480,
                 'inputChannel': 0, 'input': 'Test input', 'output': 'Test output'})
         self.host.session = 'test-session'
         self.host.client = 'test-client'
+        self.addCleanup(lambda: self.host.close(self.host.session) if self.host.session else None)
 
     def asset(self, key='g', channels=2):
         data = self.np.zeros((48000, channels), dtype='<f4')
@@ -208,6 +209,14 @@ class NativeAudioTests(unittest.TestCase):
         self.assertIs(self.host.status()['windowsInputEnhancementsVerifiedOff'], True)
         self.host.input_enhancements_verified = None
         self.assertIsNone(self.host.status()['windowsInputEnhancementsVerifiedOff'])
+
+    def test_tapped_note_renders_even_when_released_before_the_first_callback(self):
+        self.command('noteOn', key='preview-1', midi=60, pan=0, gain=1)
+        self.command('release', key='preview-1')
+        blocks = [self.callback() for _ in range(9)]
+        self.assertGreater(float(abs(blocks[3]).max()), .02)
+        self.assertEqual(float(abs(blocks[-1]).max()), 0)
+        self.assertFalse(self.host.previews)
 
     def play(self, **kwargs):
         self.asset()

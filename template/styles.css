@@ -768,6 +768,13 @@ button { color: inherit; }
   min-width: 0; min-height: 0; gap: var(--toolbar-row-gap);
 }
 .take-table-workspace { display: flex; flex: 1; min-width: 0; min-height: 0; gap: var(--toolbar-row-gap); }
+.take-source-filter { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10px; }
+.take-source-filter select { max-width: 100%; font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 4px; }
+.take-source-filter[hidden], .take-source-empty,
+#takeReviewTable[data-source="local"] [data-cloud-id],
+#takeReviewTable[data-source="cloud"] :is([data-comp-key], #takeLoose, #practiceTraceRows) { display: none; }
+#takeReviewTable[data-source="cloud"]:not(:has([data-cloud-id])) .take-source-empty[data-source="cloud"],
+#takeReviewTable[data-source="local"]:not(:has([data-comp-key], #practiceTraceRows > *, #takeLoose:not([hidden]))) .take-source-empty[data-source="local"] { display: block; margin: 4px; color: var(--muted); }
 .take-table-tools { display: flex; flex-direction: column; gap: var(--toolbar-row-gap); }
 .take-table-tools > .icon-button { width: var(--toolbar-row-height); height: var(--toolbar-row-height); padding: 3px; min-height: 0; }
 #expandTakes[aria-expanded="true"] svg { transform: rotate(180deg); }

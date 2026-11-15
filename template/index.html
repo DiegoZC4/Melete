@@ -274,6 +274,11 @@
                 <span id="takeStatus" role="status" aria-live="polite">Set a loop to record</span>
               </div>
               <div class="take-review-pane">
+                <label class="take-source-filter" id="takeSourceControl" hidden>Show
+                  <select id="takeSourceFilter" aria-label="Recording source" aria-controls="takeReviewTable">
+                    <option value="all">All recordings</option><option value="local">Local recordings</option><option value="cloud">Cloud recordings</option>
+                  </select>
+                </label>
                 <div class="take-table-workspace">
                 <div class="take-review" id="takeReviewTable" tabindex="0" role="region" aria-label="Saved takes"><div class="take-review-content">
                   <button class="take-command" id="retryTakeSave" type="button" hidden>Retry save</button>
@@ -291,6 +296,8 @@
                     </div>
                     <div id="compRows"></div>
                     <div id="practiceTraceRows"></div>
+                    <p class="take-source-empty" data-source="local">No local recordings are listed for this song.</p>
+                    <p class="take-source-empty" data-source="cloud">No cloud recordings are listed for this song.</p>
                     <template id="compRowTemplate">
                     <div class="take-row comp-row">
                       <div class="take-summary">

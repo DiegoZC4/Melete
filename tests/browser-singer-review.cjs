@@ -79,6 +79,13 @@ async function checkSingerReview(context,url,{output,label='desktop',inspect=nul
     await a.locator('.station-option').filter({hasText:'Kathleen Fixture'}).click();
     await selected(a,'Kathleen Fixture');
     assert.equal(await a.evaluate(()=>reviewQAData.ref.part),0);
+    const sourceFilter=a.getByRole('combobox',{name:'Recording source'});
+    await sourceFilter.selectOption('local');
+    assert.equal(await row(a,'Kathleen Fixture').isVisible(),false);
+    assert.equal(await a.evaluate(()=>reviewQA.selected()===reviewQAData.id && reviewQA.audible(reviewQAData.id)),true);
+    await sourceFilter.selectOption('cloud');
+    assert.equal(await row(a,'Kathleen Fixture').isVisible(),true);
+    await sourceFilter.selectOption('all');
     if(inspect)return await inspect({page,frame:a,row,selected,
       delayNext:song=>{delaySong=song;delayed=false;},isDelayed:()=>delayed,
       release:()=>{release?.();release=null;}});

@@ -37,10 +37,14 @@
       const response = await fetch(this.config.origin + "/native/" + path, {
         ...(body == null ? {} : {method: "POST", body: binary ? body : JSON.stringify(body)}),
         headers: {"X-Melete-Native": this.config.token, ...(binary ? {} : {"Content-Type": "application/json"}), ...headers},
-        signal: AbortSignal.timeout(10000), cache: "no-store"});
+        // Windows can take fifteen seconds to reject a stale endpoint, then the
+        // host enumerates the devices once more. Let its actual error reach the UI.
+        signal: AbortSignal.timeout(path === "open" ? 45000 : 10000), cache: "no-store"});
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        throw new Error(error.error || "The native station could not respond");
+        const message = response.status === 403 ? "The local station restarted. Refresh Melete, then try Sing again."
+          : error.error || "The local audio station could not respond. Reopen Start Melete Rehearsal.";
+        throw Object.assign(new Error(message), {name: "NativeStationError"});
       }
       return path.startsWith("poll?") ? response.arrayBuffer() : response.json();
     }
@@ -157,6 +161,13 @@
         } finally { this.listeners.delete(listener); }
       }};
     }
+    async punchIn() {
+      const state = await this.control("punchIn", {label:this.recordingLabel()});
+      if (!state?.playing || !state.recording || !Number.isSafeInteger(state.frame) || !Number.isFinite(state.position))
+        throw new Error("The native recording position could not be verified.");
+      return {frame:state.frame, position:state.position};
+    }
+    recordingLabel() { return {song:root.document.title, target:this.engine.overdubLayerId}; }
     position(audible = false) {
       const state = this.state;
       if (!state?.playing) return state?.position ?? this.engine.basePosition;
@@ -306,15 +317,30 @@
       const end = engine.playbackEndSeconds(position);
       const state = await this.control("play", {position, rate: engine.rate, end: engine.playbackEndSeconds(position),
         loopStart: engine.hasLoop() && end === engine.loopEndSeconds ? engine.loopStartSeconds : null, record: this.listeners.size > 0,
-        label: {song: root.document.title, target: engine.overdubLayerId}});
+        label: this.recordingLabel()});
       this.startFrame = state.anchor;
       this.sequence = state.events.at(-1)?.sequence || this.sequence;
     }
     preview(note, channel, fullChord = false) {
       const key = "preview-"+(++this.counter);
-      let released = false;
+      const now = performance.now();
+      // The voices of one preview chord arrive together. Don't replay a queue
+      // of obsolete taps when the first press has to open the WASAPI device.
+      if (!this.previewGesture || now-this.previewGesture.at > 12) this.previewGesture = {at:now};
+      const gesture = this.previewGesture;
+      let released = null, session = null;
       const pending = (async () => {
         await this.open();
+        const pan = this.mixSettings?.pans[channel] || 0;
+        const level = fullChord ? 1/Math.sqrt(Math.max(1,this.engine.trackStrips.length)) : this.mixSettings?.gains[channel] || 1;
+        if (this.state?.notePreviewVersion >= 1) {
+          const tappedWhileOpening = released !== null;
+          if (tappedWhileOpening && (gesture !== this.previewGesture || root.document?.hidden || performance.now()-released > 750)) return;
+          session = this.state.session;
+          await this.control("noteOn",{key,midi:note.key,pan,gain:level});
+          if (tappedWhileOpening) await sleep(45);
+          return;
+        }
         const engine = this.engine, context = new OfflineAudioContext(1, RENDER_RATE*6, RENDER_RATE);
         const renderer = Object.create(Object.getPrototypeOf(engine));
         const gain = context.createGain(); gain.connect(context.destination);
@@ -322,14 +348,18 @@
           master: gain, trackStrips: []});
         renderer.scheduleNote({...note, start: 0, end: 6}, 0, 0, 6);
         const buffer = await context.startRendering();
-        if (released) return;
+        if (released !== null) return;
         await this.upload(key, buffer, {origin: 0});
-        if (released) return;
-        const pan = this.mixSettings?.pans[channel] || 0;
-        const level = fullChord ? 1/Math.sqrt(engine.trackStrips.length) : this.mixSettings?.gains[channel] || 1;
+        if (released !== null) return;
+        session = this.state.session;
         await this.control("preview", {key, pan, gain: level});
       })().catch(error => this.engine.nativeFailed?.(error));
-      return {release: () => { released = true; void pending.then(() => this.control("release", {key})); }};
+      return {release: () => {
+        if (released !== null) return;
+        released = performance.now();
+        void pending.then(() => session && this.state?.session === session && this.control("release", {key}))
+          .catch(error => this.engine.nativeFailed?.(error));
+      }};
     }
     async diagnostic(buffer, pan = -1) {
       await this.open();

@@ -52,7 +52,12 @@ class AudioOwner:
         def invoke(*args):
             future = Future()
             self.jobs.put((name, args, future))
-            return future.result(timeout=15)
+            try:
+                return future.result(timeout=40 if name == 'open' else 15)
+            except TimeoutError as error:
+                if future.done():
+                    raise
+                raise RuntimeError('Windows audio did not respond. Reconnect the calibrated audio device and try again.') from error
         return invoke
 
 
