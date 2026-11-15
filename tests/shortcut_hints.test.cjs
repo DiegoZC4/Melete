@@ -265,7 +265,8 @@ const controlRuntime = (globals = {}) => vm.runInNewContext(`
   const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
   const nearestAllowed = (value, values) => values.reduce((a,b) => Math.abs(b-value)<Math.abs(a-value) ? b : a);
   ${app.slice(app.indexOf('  function createDragNumber('), app.indexOf('  class InfinitePager'))}
-  ({createDragNumber, createPanRing});
+  ${app.slice(app.indexOf('  function attachGroupDrag('), app.indexOf('  function buildMixer('))}
+  ({createDragNumber, createPanRing, attachGroupDrag});
 `, { Event, document:{createElement:()=>({})}, addDragAffordance(){}, ...globals });
 const controls = controlRuntime();
 
@@ -472,6 +473,27 @@ test('numeric wheel accumulates fine trackpad motion, clamps without debt and pr
   assert.equal(control.value(),195);
   wheel(-6);time+=300;wheel(-18);assert.equal(control.value(),195,'separate gestures do not inherit fractions');
   wheel(-6);assert.equal(control.value(),200);
+});
+
+test('physical up raises all part volumes or pans on a natural trackpad and notched wheel', () => {
+  const values = Array.from({length:41}, (_,i) => i*5-100);
+  for (const horizontal of [false,true]) {
+    const label = new Button(0), levels = [-50,20,100];
+    const parts = levels.map((_,i) => ({value:()=>levels[i],setValue:v=>{levels[i]=v;}}));
+    controls.attachGroupDrag(label,parts,values,4,{horizontal,clampIndividually:true});
+    const wheel = (deltaY,wheelDeltaY,timeStamp,extra={}) => label.emit('wheel',
+      {deltaY,wheelDeltaY,timeStamp,deltaX:0,deltaMode:0,stopPropagation(){},...extra});
+    wheel(24,-6,10);
+    assert.deepEqual(levels,[-45,25,100]);
+    wheel(-24,120,410);
+    assert.deepEqual(levels,[-40,30,100]);
+    wheel(24,-120,700,{ctrlKey:true});
+    assert.deepEqual(levels,[-40,30,100]);
+    wheel(24,-120,900);
+    assert.deepEqual(levels,[-45,25,95]);
+    wheel(0,0,1200,{deltaX:-24,wheelDeltaX:6});
+    assert.deepEqual(levels,horizontal ? [-40,30,100] : [-45,25,95]);
+  }
 });
 
 test('pan gestures track completion, ignore cancellations and preserve keyboard input', () => {

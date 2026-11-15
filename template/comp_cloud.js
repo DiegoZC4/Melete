@@ -408,7 +408,10 @@
         if(!ref || !root.MeleteTakePitch.samePassage(stored.ref,ref))throw Error('Different score edition.');
         const blob=await (await get('audio')).blob(), ctx=adapter.context(), buffer=await ctx.decodeAudioData(await blob.arrayBuffer());
         const rest=root.MeleteTakePitch.playbackRestReference(ref,item.origin,buffer.duration);
-        if(rest)for(let channel=0;channel<buffer.numberOfChannels;channel++)root.MeleteTakePitch.discardRestAudio(buffer.getChannelData(channel),buffer.sampleRate,rest);
+        const listeningRests = root.MeleteTakeCleanup.longRests(ref, -item.origin);
+        for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+          root.MeleteTakeCleanup.apply(buffer.getChannelData(channel), buffer.sampleRate, listeningRests);
+        }
         const ranges=item.segments.map(([a,b])=>[a*ref.rate,b*ref.rate]);
         const review={id,label:item.name+': '+item.label,ref,buffer,blob,origin:item.origin,latency:0,
           frames:root.MeleteVocalPitch.cleanPitchFrames(root.MeleteTakePitch.cleanRestFrames(
@@ -473,7 +476,8 @@
           takes.set(record.id,record); audio.set(record.id,blob);
         }
         model.validate(state,takes);
-        const rendered=await root.MeleteCompAudio.prepare(adapter.context(),state,takes,t=>audio.get(t.id),AbortSignal.timeout(60000));
+        const listeningWav = async take => (await root.MeleteTakeCleanup.prepare(audio.get(take.id), take)).blob;
+        const rendered=await root.MeleteCompAudio.prepare(adapter.context(),state,takes,listeningWav,AbortSignal.timeout(60000));
         check();
         if (downloadOnly) adapter.downloadBlob(rendered.blob,`${state.song}-${item.name}-track.wav`);
         else {

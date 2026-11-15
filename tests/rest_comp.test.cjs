@@ -10,13 +10,14 @@ const spans = [{start: 2, end: 3, pitches: [60]}, {start: 7, end: 8, pitches: [6
 const makeRef = (extra = {}) => P.reference({spans, division: 1, measures: [[0, 4, 4, 4], [4, 4, 4, 4], [8, 4, 4, 4]],
   secondsAtTick: t => t, start: 0, end: 10, rate: 1, fingerprint: 'rests', part: 0, line: null, ...extra});
 
-test('count-in talking is muted outside the one-second entrance margin', () => {
+test('count-in retains its captured audio and its entrance margin for pitch scoring', () => {
   const ref=makeRef({spans:[{start:0,end:2,pitches:[60]}],captureStart:-3,secondsAtTick:t=>t*1.25});
   assert.deepEqual(ref.restPolicy.keep,[[2.75,7.25]]);
   assert.deepEqual(ref.restPolicy.guards,[[2.75,3.75],[6.25,7.25]]);
   const pcm=new Int16Array(ref.seconds*8000).fill(1000);
-  P.discardRestAudio(pcm,8000,ref);
-  assert.equal(pcm[2*8000],0);
+  const cleanup=require("../template/take_cleanup.js");
+  cleanup.apply(pcm,8000,cleanup.longRests(ref));
+  assert.equal(pcm[2*8000],1000);
   assert.equal(pcm[3*8000],1000,'preserve early consonants');
 });
 
@@ -38,20 +39,14 @@ test('beat guards follow tempo and meter, not a fixed wall-clock second', () => 
   assert.deepEqual(ref.restPolicy.guards, [[1.5, 2], [3, 3.5]]);
 });
 
-test('deep-rest PCM is erased before storage; timing, latency, and kept samples survive', async () => {
+test('raw PCM survives every rest across the buffer and journal checkpoints', async () => {
   const ref = makeRef({latency: .1}), sr = 8000;
-  const pcm = new Int16Array(sr * 10).fill(1000);
-  P.discardRestAudio(pcm, sr, ref);
-  for (const t of [.5, 4.5, 5.5, 9.5]) assert.equal(pcm[Math.round((t + .1) * sr)], 0);
-  for (const t of [1.5, 2.5, 3.5, 6.5, 7.5, 8.5]) assert.equal(pcm[Math.round((t + .1) * sr)], 1000);
-  assert.equal(pcm[Math.round(1.1 * sr)], 0, 'fade begins inside retained margin');
-  assert.equal(pcm[Math.round(1.11 * sr)], 1000);
   const b = new TakeBuffer(sr, 10);
   b.append(0, new Float32Array(sr).fill(.25));
   const t = b.begin(0, ref);
   b.append(sr, new Float32Array(9 * sr).fill(.25)); b.finish(10 * sr, true);
   assert.equal(b.info(t).complete, true);
-  assert.equal(t.pcm[sr * 5], 0); assert.ok(t.pcm[sr * 2] > 0);
+  assert.ok(t.pcm.every(v => v === 8192));
   const writes = [], store = {async append(record, offset, samples, status) {
     writes.push({offset, samples: samples.slice()});
     return {...record, ...status, frames: offset + samples.length};
@@ -61,8 +56,7 @@ test('deep-rest PCM is erased before storage; timing, latency, and kept samples 
   journal.finish(sr * 10); await journal.flush();
   const stored = new Int16Array(sr * 10);
   for (const w of writes) stored.set(w.samples, w.offset);
-  assert.equal(stored[sr * 5], 0, 'no raw backup/checkpoint of the discarded audio');
-  assert.ok(stored[sr * 2] > 0);
+  assert.ok(stored.every(v => v === 16384), 'the entire saved take matches the microphone');
 });
 
 function take(id, from = 0, to = 10, {error = 20, noisy = true, missing = false} = {}) {
@@ -154,7 +148,7 @@ test('saved rest splices repair to the sung source, including Undo, without edit
   assert.equal(C.validate(fixed,takes),true);
 });
 
-test('different sung phrases retain their sources and guards; the seam falls in muted rest', () => {
+test('different sung phrases retain their sources and guards; the seam falls between phrases', () => {
   const a=take('1'),b=take('2'),silence=take('3',3,7,{noisy:false});
   const takes=new Map([a,b,silence].map(t=>[t.id,t]));
   const old=[{takeId:a.id,from:2,to:3},C.segment(silence),{takeId:b.id,from:7,to:8}];
@@ -166,12 +160,12 @@ test('different sung phrases retain their sources and guards; the seam falls in 
   const sr=1000,out=new Float32Array(sr*10);
   for(const [id,level] of [[a.id,.25],[b.id,.5]]) {
     const audio=new Float32Array(sr*10).fill(level);
-    P.discardRestAudio(audio,sr,descriptor.reference);
     A.splice(out,audio,fixed.filter(s=>s.takeId===id),0,0,sr);
   }
   for(const t of [1.5,2.5,3.5])assert.equal(out[t*sr],.25,'first phrase retains audible entrance and release');
   for(const t of [6.5,7.5,8.5])assert.equal(out[t*sr],.5,'second phrase retains its own margins');
-  for(const t of [.5,4.5,5,5.5,9.5])assert.equal(out[t*sr],0,'deep rests remain muted in the compiled audio');
+  for(const t of [.5,4.5])assert.equal(out[t*sr],.25);
+  for(const t of [5.5,9.5])assert.equal(out[t*sr],.5);
 });
 
 test('overlapping one-beat margins form one phrase; a recording stopped inside it keeps later singing', () => {

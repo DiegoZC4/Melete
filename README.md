@@ -438,6 +438,7 @@ optional and is not installed or needed on other machines.
   recording, or hold the only audible one to enable all recordings. Unselected,
   muted takes have no contour.
   There is no separate saved "last live contour" behind the take library.
+  Score and Pitchbar both show the live pitch contour during recording and the selected take during review.
   Pausing retains the selected row and contour. New captures save the live
   detector's timestamped estimates; a comp's visual replacement does not wait
   for audio decoding, assembly or loudness analysis. Missing legacy contours
@@ -447,19 +448,15 @@ optional and is not installed or needed on other machines.
   tracks; it is not live automatic gain control. **Vol**, **Reverb** and
   **Download mix** affect those recordings, including their octave choices,
   not the MIDI accompaniment. Stored source audio is not gain-normalized.
-- Listening and WAV exports mute likely breaths in new and
-  existing recordings, using unvoiced pitch observations, broadband energy and
-  distance from note boundaries. Ambiguous sounds are left alone. This cannot
-  perfectly distinguish a gasp from every consonant; stored originals and cloud
-  backups remain intact. A separate Stop cleanup fades an isolated terminal
-  click only after observed unvoiced silence, never by always removing a fixed
-  tail. Wrong but voiced notes and releases are protected; timing is unchanged.
-  The named tuning constants are in `template/take_cleanup.js` (`SETTINGS`).
-  Version 2 uses 40 ms voiced guards, 100/60 ms attack/release guards, a
-  60-1200 ms breath-duration range and an 8 ms fade. It accepts softer and more
-  colored inhalations, bridges 20 ms spectral gaps, and pads detected edges by
-  up to 30 ms without crossing protected singing. It remains a heuristic;
-  fricatives and untracked quiet vowels can still be ambiguous.
+- Microphone takes and individual WAV or ZIP downloads keep the captured breaths
+  and room sound. Listening and mix exports leave written rests of up to ten
+  seconds intact. In longer rests the first and last second stay at full level.
+  A half-second fade at either end lowers the middle by 18 dB. The count-in
+  is excluded. A detected terminal Stop click is faded on listening copies.
+- In **Parts**, scroll over a number to adjust it, or over the **Vol** or **Pan**
+  label to shift every voice part together. Each part keeps its relative setting
+  until it reaches its own limit. Scrolling up on a mouse wheel or sliding up on
+  a natural-scrolling trackpad increases the value. Higher pan values move right.
 - Record's **Undo/Redo** buttons and `Cmd+Z` / `Cmd+Shift+Z` (`Ctrl` on Windows)
   share a maximum 20-edit history across the song's tracks. Extra source audio
   held only for history is also capped at 128 MiB across all songs on this

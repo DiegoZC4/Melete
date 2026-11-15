@@ -17,7 +17,7 @@ for(let p=12;p+8<=wav.length;){
 if(format.type!==1||format.channels!==1||format.bits!==16)throw Error('Expected mono PCM16');
 const pcm=Int16Array.from({length:data.length/2},(_,i)=>wav.readInt16LE(data.offset+2*i));
 const frames=pitch.analyse(pcm,format.rate,take.pitchReference,PitchDetector,{includeFrames:true}).frames;
-const ranges=cleanup.breathRanges(pcm,format.rate,frames,take.pitchReference);
+const ranges=cleanup.longRests(take.pitchReference,take.pitchReference.latency || 0);
 const clean=cleanup.apply(pcm.slice(),format.rate,ranges);
 const energy=(signal,a,b)=>signal.subarray(Math.round(a*format.rate),Math.round(b*format.rate)).reduce((s,x)=>s+x*x,0);
 const report={source,version:cleanup.VERSION,settings:cleanup.SETTINGS,seconds:pcm.length/format.rate,

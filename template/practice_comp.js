@@ -11,8 +11,7 @@
     d.reference.line ?? null, d.reference.rate, d.reference.notes, d.reference.seconds, ...(d.slot ? [d.slot] : [])]);
   const OFFER_VERSION = 2;
   const TRACK_VERSION = 1;
-  // Breath cleanup weighs noise over runs of up to 1.2 s, so a shorter margin
-  // could change how the audio that stays is cleaned.
+  // Keep a little source audio on both sides of retained edits.
   const AUDIO_MARGIN_SECONDS = 1.3;
   const empty = descriptor => ({key: key(descriptor), song: descriptor.song, descriptor, offerVersion: OFFER_VERSION,
     trackVersion: TRACK_VERSION, revision: 0, segments: [], undo: null, processed: [], adopted: [], freshAt: 0});
@@ -197,8 +196,7 @@
       if (right.from - left.to <= EPS || clipNotes(ref.notes, [{from: left.to, to: right.from}]).length) continue;
       const release = ref.restPolicy.guards.find(([a]) => Math.abs(a - left.to) < EPS)?.[1] ?? left.to;
       const entrance = ref.restPolicy.guards.find(([, b]) => Math.abs(b - right.from) < EPS)?.[0] ?? right.from;
-      // Prefer a seam in already-muted audio. Existing partial phrase joins
-      // with overlapping guards retain their sung choices and meet mid-rest.
+      // Meet between the two phrase guards so each source keeps its entrance and release.
       const cut = release <= entrance ? (release + entrance) / 2 : (left.to + right.from) / 2;
       margins[i - 1].to = Math.min(margins[i - 1].to, cut);
       margins[i].from = Math.max(margins[i].from, cut);

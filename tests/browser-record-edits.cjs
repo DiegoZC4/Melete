@@ -159,13 +159,14 @@ async function checkRecordEdits(page,frame,{output,label}) {
     const click={id:crypto.randomUUID(),song:'disposable-cleanup',sampleRate:8000,createdAt:Date.now()};
     const first=await q.takeStore.append(click,0,new Int16Array(7200).fill(1000),{finalized:false});
     const last=await q.takeStore.append(first,7200,new Int16Array(800).fill(9000),{finalized:true,complete:true,stopNoiseFrom:.8});
-    const muted=new Int16Array(await (await q.takeStore.wav(last.id)).arrayBuffer(),44);
-    saved.checkpointTail=muted.subarray(6441).every(x=>x===0)&&muted.subarray(0,6400).every(x=>x===1000);
+    const rawTail=new Int16Array(await (await q.takeStore.wav(last.id)).arrayBuffer(),44);
+    const muted=new Int16Array(await (await q.cleanedTakeBlob(last)).arrayBuffer(),44);
+    saved.checkpointTail=rawTail.at(-1)===9000&&muted.subarray(6441).every(x=>x===0)&&muted.subarray(0,6400).every(x=>x===1000);
     await q.takeStore.deleteTakes('disposable-cleanup',[last.id]);
     return saved;
   });
-  assert.ok(cleanup.ratio<.04,JSON.stringify(cleanup));assert.ok(cleanup.originalKept&&cleanup.singingKept&&cleanup.sameLength&&cleanup.checkpointTail,JSON.stringify(cleanup));
-  assert.equal(cleanup.cleanupVersion,2);assert.ok(cleanup.quickRatio<.03,JSON.stringify(cleanup));
+  assert.equal(cleanup.ratio,1,JSON.stringify(cleanup));assert.ok(cleanup.originalKept&&cleanup.singingKept&&cleanup.sameLength&&cleanup.checkpointTail,JSON.stringify(cleanup));
+  assert.equal(cleanup.cleanupVersion,3);assert.equal(cleanup.quickRatio,1,JSON.stringify(cleanup));
   await choosePart(frame,1);await seed(5);
   await choosePart(frame,0);
   await frame.waitForFunction(()=>document.querySelectorAll('#compRows .comp-row').length===2);
@@ -194,7 +195,6 @@ async function checkRecordEdits(page,frame,{output,label}) {
     ref.notes.unshift([0,fragment,notes[index-1][2]]);
     const id=crypto.randomUUID(),sr=8000,n=Math.ceil(ref.seconds*sr);
     const pcm=Int16Array.from({length:n},(_,i)=>2000*Math.sin(2*Math.PI*220*i/sr));
-    MeleteTakePitch.discardRestAudio(pcm,sr,ref);
     const t=await q.takeStore.append({id,song:q.takeSong,sampleRate:sr,createdAt:Date.now(),start,end,
       trackSlot:d.slot,rate:ref.rate,replaces:true,pitchReference:ref,restAudioVersion:MeleteTakePitch.REST_POLICY_VERSION},
       0,pcm,{finalized:true,complete:true});

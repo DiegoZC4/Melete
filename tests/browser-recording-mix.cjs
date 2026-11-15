@@ -174,12 +174,13 @@ async function checkRecordingMix(page, frame, {output,label}) {
   if(await frame.locator('[data-view="standard"]').getAttribute('aria-selected')!=='true')await frame.locator('#scoreViewToggle').click();
   await frame.waitForFunction(()=>!(window.__qa||window.__probe).busy);
   const scoreGroups=frame.locator('#score .take-pitch-trace-group');
-  assert.equal(await scoreGroups.count(),0,'even an inspected saved take leaves notation clean');
+  await scoreGroups.first().waitFor({state:'attached'});
+  assert.equal(await frame.locator('#scoreContour').count(),0);
   await firstRow.locator('.comp-review').click();
   await frame.waitForFunction(()=>!document.querySelector('#score .take-pitch-trace-group'));
   assert.ok(await frame.evaluate(()=>(window.__qa||window.__probe).engine.takeLayers.size>=1),'deselection clears notation even with audible recordings');
   await firstRow.locator('.comp-review').click();
-  assert.equal(await scoreGroups.count(),0,'reselection does not restore notation contours');
+  await scoreGroups.first().waitFor({state:'attached'});
   await page.screenshot({path:require('node:path').join(output,`${label}-notation-contour.png`)});
   await frame.locator('#scoreViewToggle').click();
   await frame.waitForFunction(()=>!(window.__qa||window.__probe).busy);

@@ -13,8 +13,8 @@ function fixture() {
   const c = vm.createContext({scoreView:'bars', visibleChannels:new Set([0,1,2]),
     mixerParts:[{source:0,line:null},{source:1,line:0},{source:1,line:1},{source:2,line:null}],
     engine:{takeLayers:new Map([['s',review('s',0)],['a1',review('a1',1,0)],['a2',review('a2',1,1)],['b',review('b',2)]])},
-    takeVisualReviews:new Map(), takeReview:null, inspectedTakeId:null, takeState:'off', takeOctave:()=>1});
-  vm.runInContext(source('audibleTraceReviews'), c);
+    takeVisualReviews:new Map(), takeReview:null, inspectedTakeId:null, takeState:'off', pendingCaptureTrace:null, practicePartIndex:1, takeOctave:()=>1});
+  vm.runInContext(source('liveTraceVisible')+'\n'+source('audibleTraceReviews'), c);
   return c;
 }
 const ids = c => Array.from(c.audibleTraceReviews(), r => r.id);
@@ -28,18 +28,16 @@ test('ensemble contours match visible mixer divisions, not merely their shared s
   c.visibleChannels.clear();
   assert.deepEqual(ids(c), []);
 });
-test('notation never shows contours, including explicitly reviewed takes after stopping', () => {
+test('Score shows a matching saved contour by default and switches to the live singer during a pass', () => {
   const c=fixture(); c.scoreView='standard'; c.takeReview=review('a2',1,1);
-  assert.deepEqual(ids(c), [], 'an armed comp and Hear-enabled recordings are not visual selections');
-  c.inspectedTakeId='a2'; c.engine.takeLayers.delete('a2');
-  assert.deepEqual(ids(c), [], 'saved reviews stay clean in notation too');
-  for (const state of ['requesting','armed','counting','recording','stopping']) {
-    c.takeState=state; assert.deepEqual(ids(c), [], state);
+  assert.deepEqual(ids(c), ['a2']);
+  for (const state of ['counting','recording','stopping']) {
+    c.takeState=state; assert.equal(c.liveTraceVisible(),true); assert.deepEqual(ids(c), []);
   }
   c.takeState='off'; c.visibleChannels.delete(2);
-  assert.deepEqual(ids(c), [], 'another division of the right staff is not a match');
-  c.visibleChannels.add(2); c.inspectedTakeId=null;
-  assert.deepEqual(ids(c), [], 'deselecting restores clean notation');
+  assert.deepEqual(ids(c), [], 'only a visible division can draw on its staff');
+  c.visibleChannels.add(2); c.takeReview=null;
+  assert.deepEqual(ids(c), []);
 });
 test('muted and hidden takes cannot leak into ensemble review, including the selected take', () => {
   const c = fixture(); c.takeReview = review('a2',1,1);

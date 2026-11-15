@@ -1721,12 +1721,8 @@ svg.is-auditioning-score { cursor: grabbing; }
 .at-surface-svg [stroke="#000000" i] { stroke: var(--notation-ink); }
 .at-surface-svg > .score-pitch-trace { position: static; fill: none; }
 
-.score-pitch-trace {
-  position: absolute;
-  z-index: 4;
-  overflow: hidden;
-  pointer-events: none;
-}
+.score-pitch-trace { pointer-events: none; }
+.score-trace-atlas { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }
 
 .score-note-layer {
   position: absolute;

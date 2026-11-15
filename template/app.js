@@ -866,8 +866,6 @@
     let holdTimer = 0;
     let held = false;
     let suppressTouchContextUntil = 0;
-    let wheelRemainder = 0;
-    let lastWheelAt = -Infinity;
 
     const clearHold = () => {
       if (holdTimer) window.clearTimeout(holdTimer);
@@ -967,26 +965,13 @@
       advanceClick();
       if (before !== value) options.onManualChange?.(before, value, "keyboard");
     });
-    button.addEventListener("wheel", event => {
-      if (button.disabled || pointerId !== null || event.ctrlKey || event.metaKey
-        || !Number.isFinite(event.deltaY) || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const unit = options.wheelPixelsPerStep || 24;
-      const delta = -event.deltaY * (event.deltaMode === 1 ? unit : event.deltaMode === 2 ? unit * 10 : 1);
-      if (event.timeStamp - lastWheelAt > 200 || Math.sign(delta) !== Math.sign(wheelRemainder)) wheelRemainder = 0;
-      lastWheelAt = event.timeStamp;
-      wheelRemainder += delta;
-      const steps = Math.trunc(wheelRemainder / unit);
-      if (!steps) return;
-      wheelRemainder -= steps * unit;
+    attachValueWheel(button, steps => {
       const stops = interactionValues(), before = value;
       const index = clamp(stops.indexOf(value) + steps, 0, stops.length - 1);
       update(stops[index]);
-      // No accumulated scroll debt at a limit: reversing changes the value immediately.
-      if (index === 0 || index === stops.length - 1) wheelRemainder = 0;
       if (before !== value) options.onManualChange?.(before, value, "wheel");
-    }, {passive: false});
+      return index === 0 || index === stops.length - 1;
+    }, {busy: () => pointerId !== null, unit: options.wheelPixelsPerStep});
     button.addEventListener("keydown", (event) => {
       if (options.onHold && event.shiftKey && event.key === "Enter") {
         cancelPointer();
@@ -1057,7 +1042,7 @@
           : value === 0
             ? "Center"
             : `${Math.abs(value)} percent ${value < 0 ? "left" : "right"}`);
-      button.dataset.help = `${options.name} pan ${label}. Drag horizontally.`;
+      button.dataset.help = `${options.name} pan ${label}. Scroll or drag horizontally.`;
       if (changed && emit) button.dispatchEvent(new Event("input", { bubbles: true }));
     }
 
@@ -1116,6 +1101,12 @@
       cancelPointer();
     });
     button.addEventListener("dblclick", () => { if (!held) update(defaultValue()); });
+    attachValueWheel(button, steps => {
+      const before = value, index = clamp(PAN_VALUES.indexOf(value) + steps, 0, PAN_VALUES.length - 1);
+      update(PAN_VALUES[index]);
+      if (before !== value) options.onManualChange?.(before, value, "wheel");
+      return index === 0 || index === PAN_VALUES.length - 1;
+    }, {busy: () => pointerId !== null, horizontal: true});
     button.addEventListener("keydown", (event) => {
       if (options.onHold && event.shiftKey && event.key === "Enter") {
         cancelPointer();
@@ -1144,6 +1135,42 @@
     }
     update(value, false);
     return { value: () => value, setValue: update };
+  }
+
+  // WebKit exposes the scrolling preference. Chromium reports legacy wheel
+  // ticks for a notched mouse, but sends fine pixel movement for a trackpad.
+  function attachValueWheel(element, change, {busy = () => false, horizontal = false, unit = 24} = {}) {
+    let remainder = 0, lastTime = -Infinity, lastAxis = "", natural = false;
+    element.addEventListener("wheel", event => {
+      if (element.disabled || busy() || event.ctrlKey || event.metaKey) return;
+      const mode = event.deltaMode, x = event.deltaX || 0, y = event.deltaY || 0;
+      const sideways = Math.abs(x) > Math.abs(y);
+      if (sideways && !horizontal) return;
+      const movement = sideways ? x : y;
+      if (!Number.isFinite(movement) || !movement) return;
+      const axis = sideways ? "x" : "y";
+      if (event.timeStamp - lastTime > 200 || axis !== lastAxis) {
+        remainder = 0;
+        const ticks = Math.abs(sideways ? event.wheelDeltaX : event.wheelDeltaY);
+        const scaled = ticks * (globalThis.devicePixelRatio || 1);
+        const detent = n => n >= 119 && Math.abs(n - Math.round(n / 120) * 120) < 2;
+        natural = typeof event.webkitDirectionInvertedFromDevice === "boolean"
+          ? event.webkitDirectionInvertedFromDevice
+          : mode === 0 && Number.isFinite(ticks) && !detent(ticks) && !detent(scaled);
+      }
+      lastTime = event.timeStamp;
+      lastAxis = axis;
+      event.preventDefault();
+      event.stopPropagation();
+      const size = mode === 1 ? unit : mode === 2 ? unit * 10 : 1;
+      const delta = movement * size * (sideways ? 1 : -1) * (natural ? -1 : 1);
+      if (Math.sign(delta) !== Math.sign(remainder)) remainder = 0;
+      remainder += delta;
+      const steps = Math.trunc(remainder / unit);
+      if (!steps) return;
+      remainder -= steps * unit;
+      if (change(steps)) remainder = 0;
+    }, {passive: false});
   }
 
   class InfinitePager {
@@ -3891,6 +3918,9 @@
     label.addEventListener("pointerup", release);
     label.addEventListener("pointercancel", release);
     label.addEventListener("lostpointercapture", () => { pointerId = null; });
+    attachValueWheel(label, steps => {
+      shift(indicesNow(), steps);
+    }, {busy: () => pointerId !== null || !controls.length, horizontal});
     label.addEventListener("keydown", (event) => {
       const steps = ["ArrowUp", "ArrowRight"].includes(event.key) ? 1
         : ["ArrowDown", "ArrowLeft"].includes(event.key) ? -1 : 0;
@@ -3956,7 +3986,7 @@
       state.practiceMixUndo = null;
     });
     volumeLabel.classList.add("is-group-drag");
-    volumeLabel.dataset.help = "Drag vertically to change every part.";
+    volumeLabel.dataset.help = "Scroll or drag vertically to change every part.";
     volumeLabel.setAttribute("aria-label", "All part volumes");
     ordered.forEach(({part, index}) => {
       const button = document.createElement("button");
@@ -3966,7 +3996,7 @@
       button.dataset.volumeIndex = String(index);
       button.style.setProperty("--part-color", part.color);
       button.setAttribute("aria-keyshortcuts", "Shift+Enter");
-      button.dataset.help = `${part.name} volume: drag vertically.`;
+      button.dataset.help = `${part.name} volume: scroll or drag vertically.`;
       button.setAttribute("aria-label", `${part.name} volume`);
       elements.mixer.append(button);
       const control = createDragNumber(button, {
@@ -4003,7 +4033,7 @@
 
     const panLabel = appendMixerLabel("Pan", (state, defaults) => { state.pans = [...defaults.pans]; });
     panLabel.classList.add("is-group-drag", "is-horizontal");
-    panLabel.dataset.help = "Drag horizontally to pan every part.";
+    panLabel.dataset.help = "Scroll or drag horizontally to pan every part.";
     panLabel.setAttribute("aria-label", "All part pans");
     ordered.forEach(({part, index}) => {
       const button = document.createElement("button");
@@ -7526,48 +7556,42 @@
 
   function renderStaffPitchTrace() {
     if (scoreView !== "standard" || notationRenderInFlight) return;
-    const lookup = api?.boundsLookup || api?.renderer?.boundsLookup;
-    staffTraceSystems = buildStaffTraceSystems(lookup);
-    elements.score.querySelectorAll(".score-pitch-trace").forEach((layer) => layer.remove());
-    staffTraceSystems.forEach((system) => {
-      const { x, y, w, h } = system.box;
-      const svg = createSvgElement("svg", {
-        class: "score-pitch-trace", viewBox: `${x} ${y} ${w} ${h}`,
-        width: w, height: h, "aria-hidden": "true",
-      });
-      svg.style.left = `${x}px`;
-      svg.style.top = `${y}px`;
-      system.traceLayer = createSvgElement("g", { class: "bar-pitch-trace-layer" });
+    elements.score.querySelectorAll(".score-pitch-trace, .score-trace-atlas").forEach(node => node.remove());
+    staffTraceSystems = buildStaffTraceSystems(api?.boundsLookup || api?.renderer?.boundsLookup);
+    if (!staffTraceSystems.length) return;
+    // Keep one copy of the geometry outside the renderer's recyclable tiles.
+    const atlas = createSvgElement("svg", {class:"score-trace-atlas", width:0, height:0, "aria-hidden":"true"});
+    const defs = createSvgElement("defs");
+    atlas.append(defs);
+    elements.score.append(atlas);
+    staffTraceSystems.forEach((system, index) => {
+      system.traceLayer = createSvgElement("g", {class:"bar-pitch-trace-layer", id:`score-trace-${index}`});
+      defs.append(system.traceLayer);
       system.traceEdges = new Map();
       system.traceEdgesByBin = new Map();
       system.pointAtPitch = (tick, cents, line, part) => staffTracePoint(system, tick, cents, line, part);
-      svg.append(system.traceLayer);
-      system.traceSvg = svg;
     });
     mountStaffPitchTraces();
     renderPitchTrace(staffTraceSystems);
   }
 
   function mountStaffPitchTraces() {
-    // AlphaTab attaches/recycles SVG tiles after renderFinished. Reattach the
-    // existing contour when a tile arrives; no new paths or pitch analysis.
-    if (scoreView !== "standard") return;
-    const surfaces = [...elements.score.querySelectorAll(".at-surface-svg")].map(svg => ({svg,
-      left:parseFloat(svg.parentElement.style.left) || 0, top:parseFloat(svg.parentElement.style.top) || 0,
-      height:parseFloat(svg.getAttribute("height")) || 0}));
-    for (const system of staffTraceSystems) {
-      const {x,y,w,h} = system.box, trace = system.traceSvg;
-      const surface = surfaces.find(s => y + h / 2 >= s.top - 1 && y + h / 2 <= s.top + s.height + 1);
-      if (!surface || !trace || trace.parentElement === surface.svg) continue;
-      let staff = surface.svg.querySelector(":scope > .melete-staff-lines");
-      if (!staff) {
-        staff = createSvgElement("g", {class:"melete-staff-lines"});
-        for (const line of surface.svg.querySelectorAll(':scope > rect[fill="#A5A5A5"]')) staff.append(line);
-        surface.svg.prepend(staff);
+    if (scoreView !== "standard" || !staffTraceSystems.length) return;
+    for (const tile of elements.score.querySelectorAll(".at-surface-svg")) {
+      const left = parseFloat(tile.parentElement.style.left) || 0, top = parseFloat(tile.parentElement.style.top) || 0;
+      const right = left + parseFloat(tile.getAttribute("width")), bottom = top + parseFloat(tile.getAttribute("height"));
+      const mounted = new Set([...tile.querySelectorAll(":scope > .score-pitch-trace")].map(use => use.getAttribute("href")));
+      for (const {box:{x,y,w,h}, traceLayer} of staffTraceSystems) {
+        const href = "#" + traceLayer.id;
+        if (x >= right || x+w <= left || y >= bottom || y+h <= top || mounted.has(href)) continue;
+        let staff = tile.querySelector(":scope > .melete-staff-lines");
+        if (!staff) {
+          staff = createSvgElement("g", {class:"melete-staff-lines"});
+          for (const line of tile.querySelectorAll(':scope > rect[fill="#a5a5a5" i]')) staff.append(line);
+          tile.prepend(staff);
+        }
+        staff.after(createSvgElement("use", {class:"score-pitch-trace", href, x:-left, y:-top, "aria-hidden":"true"}));
       }
-      trace.setAttribute("x", x - surface.left); trace.setAttribute("y", y - surface.top);
-      trace.style.removeProperty("left"); trace.style.removeProperty("top");
-      staff.after(trace);
     }
   }
 
@@ -7619,11 +7643,19 @@
     const toSeconds = engine.secondsAtTick(toTick);
     const gap = Math.abs(toSeconds - fromSeconds);
     if (gap > PITCH_TRACE_MAX_DRAW_GAP_SECONDS || Math.abs(toCents - fromCents) > PITCH_TRACE_RENDER_JUMP_CENTS) return;
-    const startPitch = fromCents / 100, endPitch = toCents / 100;
-    if (Math.min(startPitch, endPitch) < system.minPitch || Math.max(startPitch, endPitch) > system.maxPitch) return;
-    const x1 = system.xAtTick(fromTick), y1 = system.yAtPitch(startPitch);
-    const x2 = system.xAtTick(toTick), y2 = system.yAtPitch(endPitch);
-    const traceColor = toTick < 0 ? "var(--muted)" : pitchTraceColor(expectedPitchErrorCents(toTick, toCents, line));
+    let x1, y1, x2, y2, error;
+    if (system.pointAtPitch) {
+      const a = system.pointAtPitch(fromTick, fromCents, line), b = system.pointAtPitch(toTick, toCents, line);
+      if (!a || !b || a.track !== b.track) return;
+      ({x:x1, y:y1} = a); ({x:x2, y:y2, error} = b);
+    } else {
+      const startPitch = fromCents / 100, endPitch = toCents / 100;
+      if (Math.min(startPitch, endPitch) < system.minPitch || Math.max(startPitch, endPitch) > system.maxPitch) return;
+      x1 = system.xAtTick(fromTick); y1 = system.yAtPitch(startPitch);
+      x2 = system.xAtTick(toTick); y2 = system.yAtPitch(endPitch);
+      error = expectedPitchErrorCents(toTick, toCents, line);
+    }
+    const traceColor = toTick < 0 ? "var(--muted)" : pitchTraceColor(error);
     const edge = createSvgElement("g", {
       class: "bar-pitch-trace-edge",
       "data-line": line,
@@ -7692,16 +7724,17 @@
   // `changed` maps a line to the bins that moved in it, so a take of one line
   // never redraws — or erases — another line's contour.
   function updatePitchTraceIncrementally(changed) {
-    if (scoreView !== "bars" || barTraceResumeTimer) {
+    const bars = scoreView === "bars";
+    if (bars && barTraceResumeTimer) {
       updatePitchCaptureAppearance();
       return;
     }
-    const systems = barSystems;
+    const systems = bars ? barSystems : staffTraceSystems;
     if (!changed?.size || !systems.length) {
       updatePitchCaptureAppearance();
       return;
     }
-    if (!recordingBarRanges && [...changed].some(([line, bins]) => [...bins].some(bin => {
+    if (bars && !recordingBarRanges && [...changed].some(([line, bins]) => [...bins].some(bin => {
       const pitch = pitchTraceLane(line)?.pitches[bin] / 100;
       return pitch > 0 && systems.some(system => pitchTraceBinIsInSystem(system, bin)
         && (pitch < system.minPitch || pitch > system.maxPitch));
@@ -8494,7 +8527,6 @@
   }
 
   function queuePitchTracePaint(changed) {
-    if (scoreView !== "bars") return; // Captured bins are still available on switching back to Pitchbar.
     for (const [line, bins] of changed) {
       if (!pitchTraceDirty.has(line)) pitchTraceDirty.set(line, new Set());
       for (const bin of bins) pitchTraceDirty.get(line).add(bin);
@@ -9303,7 +9335,7 @@
       sort: () => takeSort,
       takes: () => allTakes().map(timedTake), timed: timedTake, libraryReady: () => takeLibraryReady,
       context: () => { engine.ensureAudio(); return engine.context; }, wav: takeBlob,
-      rawWav: take => takeJournal?.wav(take.id) || takeStore.wav(take.id),
+      rawWav: rawTakeBlob,
       playSubmission: async review=>{
         if(singEnabled || takeState!=="off")throw Error("Turn Sing off before playing a submitted comp.");
         await engine.prepareAudio();
@@ -9558,11 +9590,13 @@
       for (let i = 0; i < records.length; i++) {
         const record = records[i], ref = record.pitchReference, pitch = window.MeleteTakePitch;
         if (!record.finalized || record.deleteAfter || !pitch.validReference(ref)
-          || record.restAudioVersion === pitch.REST_POLICY_VERSION || ref.fingerprint !== pitchTraceFingerprint(ref.part)) continue;
+          || pitch.restPolicyValid(ref) || ref.fingerprint !== pitchTraceFingerprint(ref.part)) continue;
         const current = takePitchReference({...ref, start: ref.captureStart ?? ref.start, entry: ref.start}, ref.part, ref.line);
         if (!pitch.samePassage(ref, current)) continue;
         const updated = pitch.trimReference({...ref, restPolicy: current.restPolicy}, ref.end, ref.seconds);
-        records[i] = await takeStore.discardLongRests(record, updated);
+        const refreshed = await takeStore.updateRestReference(record, updated);
+        if (!refreshed) continue;
+        records[i] = refreshed;
         if (takePreviewId) stopTakePreview();
         compPanel?.invalidate();
       }
@@ -9651,16 +9685,19 @@
     void scoreNextTake();
   }
 
+  function rawTakeBlob(take) {
+    return takeJournal?.wav(take.id) || takeStore.wav(take.id);
+  }
+
   const takeCleanAudio = new Map();
   async function takeBlob(take) {
     const key = JSON.stringify([take.id,take.frames,take.updatedAt,take.pitchContour?.analysisVersion,window.MeleteTakeCleanup.VERSION]);
     if (takeCleanAudio.has(key)) return takeCleanAudio.get(key).promise;
     const entry = {bytes: Math.max(0,take.frames||0)*2, promise:null};
     entry.promise = (async()=>{
-      const blob = await (takeJournal?.wav(take.id) || takeStore.wav(take.id));
+      const blob = await rawTakeBlob(take);
       if (!take.finalized) return blob;
-      const frames = window.MeleteTakePitch.readContour(take);
-      const result = await window.MeleteTakeCleanup.prepare(blob,take,frames,embeddedText("pitchy-runtime"));
+      const result = await window.MeleteTakeCleanup.prepare(blob, take);
       return result.blob;
     })().catch(error=>{takeCleanAudio.delete(key);throw error;});
     takeCleanAudio.set(key,entry);
@@ -9922,10 +9959,14 @@
   }
 
   function audibleTraceReviews() {
-    if (scoreView === "standard") return [];
     const channels = [...visibleChannels].map(index => mixerParts[index]);
     const matches = review => review?.frames?.length && channels.some(channel =>
       channel.source === review.track && channel.line === (review.ref?.line ?? null));
+    if (scoreView === "standard") {
+      // During an overdub the singer should see their own voice, not a previous pass.
+      return !liveTraceVisible() && matches(takeReview)
+        ? [{...takeReview, octave:takeOctave(takeReview.id)}] : [];
+    }
     if (!channels.length) return [];
     const candidates = new Map([...(engine?.takeLayers || [])]);
     for (const [id, review] of takeVisualReviews) if (candidates.has(id)) candidates.set(id, {...review, octave:engine.takeLayers.get(id).octave});
@@ -9938,7 +9979,7 @@
   }
 
   function liveTraceVisible() {
-    return scoreView === "bars" && Number.isInteger(practicePartIndex)
+    return Number.isInteger(practicePartIndex)
       && (Boolean(pendingCaptureTrace) || ["counting", "recording", "stopping"].includes(takeState));
   }
 
@@ -9949,7 +9990,7 @@
       (engine.secondsAtTick(system.endTick) - review.start) / review.rate);
     const paths = window.MeleteTakeRender.tracePaths(review.frames, from, to, frame => {
       const seconds = review.start + (frame.start + frame.end) / 2 * review.rate;
-      if (!system.pointAtPitch && pendingCaptureTrace && review.id === `comp:${pendingCaptureTrace.key}`
+      if (pendingCaptureTrace && review.id === `comp:${pendingCaptureTrace.key}`
         && seconds >= pendingCaptureTrace.from && seconds <= (pendingCaptureTrace.to ?? engine.currentSeconds())) return null;
       const tick = engine.tickAtSeconds(seconds);
       const line = review.ref.line ?? null;
@@ -10058,7 +10099,7 @@
     const take = allTakes().find(item => item.id === id);
     if (!take?.length) return;
     try {
-      downloadTakeBlob(await takeBlob(take), window.MeleteRecording.takeFilename(config.slug || config.title, take));
+      downloadTakeBlob(await rawTakeBlob(take), window.MeleteRecording.takeFilename(config.slug || config.title, take));
     } catch { showToast("Could not read the stored take", "error"); }
   }
 
@@ -10083,7 +10124,7 @@
     renderTakePanel();
     try {
       const blob = await window.MeleteRecording.takeArchive(takes, config.slug || config.title,
-        take => takeBlob(take), window.fflate, (done, total) => {
+        rawTakeBlob, window.fflate, (done, total) => {
           takeNotice = `Preparing ZIP: ${done}/${total}`;
           renderTakePanel();
         });

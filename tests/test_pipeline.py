@@ -409,8 +409,8 @@ console.log(JSON.stringify([
         self.assertNotIn("pitchTraceSegment", app)
 
         incremental = app.split("function updatePitchTraceIncrementally(changed)", 1)[1].split("function pitchBarRepeatSign", 1)[0]
-        self.assertIn('if (scoreView !== "bars" || barTraceResumeTimer)', incremental)
-        self.assertNotIn("staffTraceSystems", incremental)
+        self.assertIn('if (bars && barTraceResumeTimer)', incremental)
+        self.assertIn("const systems = bars ? barSystems : staffTraceSystems", incremental)
         # Every step is scoped to the line that changed, so a take of one line
         # cannot redraw or erase another line's contour.
         self.assertIn("removePitchTraceEdgesAtBin(system, line, bin)", incremental)
@@ -860,9 +860,12 @@ console.log(JSON.stringify({
         end = app.index("\n  }", start) + len("\n  }")
         helper = app.index("  function nearestAllowed")
         helper_end = app.index("\n  }", helper) + len("\n  }")
+        wheel = app.index("  function attachValueWheel")
+        wheel_end = app.index("\n  }", wheel) + len("\n  }")
         script = f"""
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 {app[helper:helper_end]}
+{app[wheel:wheel_end]}
 {app[start:end]}
 {next(line for line in app.splitlines() if 'const VOLUME_VALUES =' in line)}
 const VALUES = VOLUME_VALUES;
@@ -1525,9 +1528,12 @@ console.log(JSON.stringify({{
         end = app.index("\n  }", start) + len("\n  }")
         helper = app.index("  function nearestAllowed")
         helper_end = app.index("\n  }", helper) + len("\n  }")
+        wheel = app.index("  function attachValueWheel")
+        wheel_end = app.index("\n  }", wheel) + len("\n  }")
         script = f"""
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 {app[helper:helper_end]}
+{app[wheel:wheel_end]}
 {app[start:end]}
 const VALUES = Array.from({{ length: 41 }}, (_, i) => i * 5 - 100);   // -100..100 by 5
 const handlers = {{}};
@@ -2452,7 +2458,7 @@ console.log(JSON.stringify({{
         self.assertIn('elements.settingsPanel.addEventListener("pointerdown", inspectSetting, true)', app)
         self.assertIn("event.stopImmediatePropagation()", app)
         self.assertIn('Hold to ${next}. Shift+Enter does the same.', app)
-        self.assertIn('button.dataset.help = `${part.name} volume: drag vertically.`', app)
+        self.assertIn('button.dataset.help = `${part.name} volume: scroll or drag vertically.`', app)
         self.assertIn("setupSettingsHelp();", app)
         self.assertIn(".settings-panel.is-help-mode [data-help] { cursor: help; }", styles)
         self.assertIn(".settings-tooltip.is-visible", styles)

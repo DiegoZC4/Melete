@@ -26,6 +26,7 @@
       this.bufferIds = new WeakMap();
       this.counter = 0;
       this.inputEnabled = false;
+      this.heldPreviews = 0;
       this.clock = {sampleRate: RATE, get currentTime() { return self.frame / RATE; },
         get state() { return self.state?.session ? "running" : "closed"; },
         resume: async () => { await self.open(); }, suspend: async () => {},
@@ -66,9 +67,11 @@
       this.received = performance.now();
     }
     async open() {
+      clearTimeout(this.idleTimer);
       if (this.state?.session) return;
       if (this.opening) return this.opening;
       this.opening = (async () => {
+        await this.closing;
         await root.top.MeleteNativeStationClosing;
         const state = await this.request("open", {client: this.client});
         this.frame = 0;
@@ -117,6 +120,7 @@
             if (event.kind === "end" && this.engine.playing) {
               this.endFrame = state.stopFrame;
               this.engine.nativeEnded?.(event.position);
+              this.releaseWhenIdle();
             }
           }
           await sleep(12);
@@ -138,13 +142,18 @@
       await this.open();
       this.inputEnabled = true;
       const bridge = this, track = new EventTarget();
-      Object.defineProperty(track, "enabled", {get: () => this.inputEnabled, set: value => { this.inputEnabled = Boolean(value); }});
+      Object.defineProperty(track, "enabled", {get: () => this.inputEnabled, set: value => {
+        const enabled = Boolean(value);
+        if (this.inputEnabled === enabled) return;
+        this.inputEnabled = enabled;
+        if (!enabled) this.releaseWhenIdle();
+      }});
       track.muted = false;
       track.label = this.state.input + " (WASAPI)";
       Object.defineProperty(track, "readyState", {get: () => this.state?.session ? "live" : "ended"});
       track.getSettings = () => ({deviceId: "native-wasapi", sampleRate: RATE, channelCount: 1,
         echoCancellation: false, noiseSuppression: false, autoGainControl: false, latency: 0});
-      track.stop = () => { this.inputEnabled = false; if (!this.engine.playing && !this.listeners.size) void this.close(); };
+      track.stop = () => { this.inputEnabled = false; this.releaseWhenIdle(); };
       return {stream: {getAudioTracks: () => [track]}, context: this.clock, analyser: this.analyser(),
         source: {connect() {}, disconnect() {}, nativeCapture: (samples, error) => bridge.capture(samples, error)}};
     }
@@ -158,7 +167,7 @@
           const deadline = performance.now()+1500;
           while (this.state?.session && this.frame < stop.stopFrame && performance.now() < deadline) await sleep(5);
           if (this.frame < stop.stopFrame && !this.failure) throw new Error("Native capture tail did not arrive; backup retained");
-        } finally { this.listeners.delete(listener); }
+        } finally { this.listeners.delete(listener); this.releaseWhenIdle(); }
       }};
     }
     async punchIn() {
@@ -272,7 +281,7 @@
         const state = await this.control("assets", {assets: this.assets});
         this.pruneLayerCache(state);
         await this.mix();
-      })().finally(() => { this.preparing = null; });
+      })().finally(() => { this.preparing = null; this.releaseWhenIdle(); });
       return this.preparing;
     }
     pruneLayerCache(state) {
@@ -322,6 +331,7 @@
       this.sequence = state.events.at(-1)?.sequence || this.sequence;
     }
     preview(note, channel, fullChord = false) {
+      this.heldPreviews++;
       const key = "preview-"+(++this.counter);
       const now = performance.now();
       // The voices of one preview chord arrive together. Don't replay a queue
@@ -358,7 +368,8 @@
         if (released !== null) return;
         released = performance.now();
         void pending.then(() => session && this.state?.session === session && this.control("release", {key}))
-          .catch(error => this.engine.nativeFailed?.(error));
+          .catch(error => this.engine.nativeFailed?.(error))
+          .finally(() => { this.heldPreviews--; this.releaseWhenIdle(); });
       }};
     }
     async diagnostic(buffer, pan = -1) {
@@ -367,7 +378,8 @@
       const key = "diagnostic-"+(++this.counter);
       await this.upload(key, buffer, {origin:0});
       const state = await this.control("preview", {key, pan, gain:1});
-      return {frame:state.frame, stop:() => this.control("release", {key})};
+      this.releaseWhenIdle(Math.max(1500, buffer.duration * 1000 + 250));
+      return {frame:state.frame, stop:() => this.control("release", {key}).finally(() => this.releaseWhenIdle())};
     }
     async calibrate() {
       await this.open();
@@ -394,7 +406,7 @@
         if(!result) throw new Error("Could not verify four consistent chirps. Existing calibration is unchanged.");
         await this.control("calibration",{result});
         return result;
-      } finally { this.listeners.delete(listener); }
+      } finally { this.listeners.delete(listener); this.releaseWhenIdle(); }
     }
     async stereoTest() {
       const buffer=this.engine.context.createBuffer(2,Math.round(RATE*1.05),RATE);
@@ -409,9 +421,20 @@
     }
     pause() {
       if (!this.state?.session) return Promise.resolve({stopFrame: this.frame});
-      return this.pausePromise ||= this.control("pause");
+      return this.pausePromise ||= this.control("pause").finally(() => this.releaseWhenIdle());
+    }
+    releaseWhenIdle(delay = 1500) {
+      clearTimeout(this.idleTimer);
+      const session = this.state?.session;
+      if (!session) return;
+      this.idleTimer = setTimeout(() => {
+        if (this.state?.session !== session || this.engine.playing || this.state.playing ||
+          this.inputEnabled || this.listeners.size || this.heldPreviews || this.preparing) return;
+        void this.close();
+      }, delay);
     }
     async close() {
+      clearTimeout(this.idleTimer);
       if (this.closing) return this.closing;
       if (!this.state?.session) return;
       const session = this.state.session;

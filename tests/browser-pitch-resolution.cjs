@@ -280,7 +280,7 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     await frame.waitForFunction(name => window[name].recording.takes.some(t=>t.active), probe);
     const activeTake = await frame.evaluate(name => window[name].recording.takes.find(t=>t.active)?.id, probe);
     assert.ok(activeTake, 'Score view starts a real microphone recording');
-    assert.equal(await frame.locator('#score .bar-pitch-trace-edge').count(), 0, 'no live or reference traces on notation');
+    await frame.locator('#score [data-from-bin]').first().waitFor({state:'attached'});
     await frame.locator('#scoreViewToggle').click();
     await frame.locator('#barScore [data-from-bin]').first().waitFor({state:'attached'});
     await frame.locator('#scoreViewToggle').click();
@@ -299,7 +299,7 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     assert.ok(captured.observations.some(frame=>frame.stride<=2),'256th or 128th works at ordinary tempo');
     const recordedId=await frame.evaluate(name=>window[name].recording.takes.find(t=>t.active)?.id,probe);
     assert.equal(recordedId,activeTake,'switching Score/Pitchbar twice preserves the uninterrupted take');
-    assert.equal(await frame.locator('#score .bar-pitch-trace-edge').count(),0,'notation is still clean after live samples and layout');
+    await frame.locator('#score [data-from-bin]').first().waitFor({state:'attached'});
     await frame.evaluate(name => window[name].pitchResolution.stop(), probe);
     // Earlier fixtures can already have contours. Wait for this capture's
     // analysis and comp adoption; replaced source takes may then be collected.
@@ -316,16 +316,13 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     }, {name:probe,id:recordedId});
     assert.ok(comp.includesTake && comp.tracked > 0,'Score recording was saved, scored and incorporated');
     const row=frame.locator(`#compRows [data-comp-key=${JSON.stringify(comp.key)}] .comp-review`);
-    assert.equal(await row.getAttribute('aria-pressed'),'false','automatic comp arming is not an explicit request to draw on the staff');
-    assert.equal(await frame.locator('#score .bar-pitch-trace-edge').count(),0,'finishing the first take does not expose its trace');
-    await row.click();
+    if(await row.getAttribute('aria-pressed')!=='true')await row.click();
     assert.equal(await frame.evaluate(name=>window[name].engine.playing,probe),false,'inspecting the saved contour does not start playback');
     for(const view of ['standard','bars']) {
       await frame.evaluate(({name,view})=>window[name].pitchResolution.setScoreView(view),{name:probe,view});
       const surface=view==='bars'?'#barScore':'#score';
       await frame.waitForFunction(name=>!window[name].busy,probe);
-      if(view==='bars')await frame.locator(`${surface} .take-pitch-trace-group[data-selected="true"] .take-pitch-trace-edge`).first().waitFor({state:'attached'});
-      else assert.equal(await frame.locator(`${surface} .bar-pitch-trace-edge`).count(),0,'explicit saved-take review also leaves notation clean');
+      await frame.locator(`${surface} .take-pitch-trace-group[data-selected="true"] .take-pitch-trace-edge`).first().waitFor({state:'attached'});
       if(output) await page.screenshot({path:path.join(output,`pitch-resolution-${label}-${view}.png`)});
     }
     frame = await reload();
@@ -363,7 +360,7 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     return {count:captured.count, detectorReadings:captured.observations.length,
       binTicks:captured.binTicks, cadenceMs:captured.cadence, processingIntervalMs:captured.interval,
       subdivisions:[...new Set(captured.observations.map(f=>256/f.stride))].sort((a,b)=>b-a),
-      reload:true, views:['standard','bars'], cleanStaffDuringRecording:true, cleanStaffDuringReview:true, sameTakeAcrossViewSwitches:true, scoredInStaffView:true, octaves,
+      reload:true, views:['standard','bars'], staffContourDuringRecording:true, staffContourDuringReview:true, sameTakeAcrossViewSwitches:true, scoredInStaffView:true, octaves,
       savedTakes: saved.length, legacyCacheIgnored:true, finalPhrase,
       input:'synthetic oscillator/silence through actual analyser/Pitchy'};
   } finally {

@@ -104,26 +104,6 @@
       ...(restPolicyValid(ref) ? {restPolicy: {...ref.restPolicy, keep: clip(ref.restPolicy.keep), guards: clip(ref.restPolicy.guards)}} : {})};
   }
 
-  // Destructive by design: ignored rest audio is never retained in a hidden raw
-  // recording. A 5 ms fade inside the kept margin prevents a hard gate click.
-  function discardRestAudio(samples, sampleRate, ref, offset = 0) {
-    if (!restPolicyValid(ref)) return samples;
-    const ranges = ref.restPolicy.keep;
-    let index = 0;
-    for (let i = 0; i < samples.length; i++) {
-      const t = (offset + i) / sampleRate - ref.latency;
-      while (index < ranges.length && ranges[index][1] <= t) index++;
-      const r = ranges[index];
-      if (!r || t < r[0]) samples[i] = 0;
-      else {
-        const gain = Math.min(1, r[0] > 0 ? (t - r[0]) / .005 : 1,
-          r[1] < ref.seconds ? (r[1] - t) / .005 : 1);
-        samples[i] *= Math.max(0, gain);
-      }
-    }
-    return samples;
-  }
-
   function cleanRestFrames(frames, ref) {
     return restPolicyValid(ref) ? frames.map(f => containsTime(ref.restPolicy.keep, (f.start + f.end) / 2)
       ? f : {...f, cents: null}) : frames;
@@ -670,7 +650,7 @@
   }
 
   return {VERSION, ANALYSIS_VERSION, SCORING_VERSION, REST_POLICY_VERSION, TIME_EPSILON, nonzeroNotes, mergeRanges, subtractRanges, containsTime,
-    restPolicyValid, trimReference, discardRestAudio, cleanRestFrames, playbackRestReference, restStats, restLabel,
+    restPolicyValid, trimReference, cleanRestFrames, playbackRestReference, restStats, restLabel,
     octaveError, currentScore, BEST_COVERAGE_WINDOW, DOMINANCE_CENTS_MARGIN, DOMINANCE_COVERAGE_MARGIN,
     reference, validReference, validScore, hasMedian, hasPitchBand, scoreFrames, reviewTimeline, analyse, packContour, packLiveContour, readContour,
     stopNoiseCut, muteStopTail,

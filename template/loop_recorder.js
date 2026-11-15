@@ -339,7 +339,6 @@
         take.pcm[cursor - take.start] = Math.round(value * (value < 0 ? 32768 : 32767));
       }
       const written = take.pcm.subarray(from - take.start, to - take.start);
-      getPitch()?.discardRestAudio(written, this.sampleRate, take.reference, from - take.start);
       for (const value of written) take.peak = Math.max(take.peak, Math.abs(value) / 32768);
       take.written = to - take.start;
     }
@@ -706,18 +705,6 @@
             addRecordingDays(tx, recordingDays(next));
             next.practiceTimeFrames = next.frames;
             if (pcm.length) tx.objectStore("chunks").add({takeId: record.id, offset, pcm});
-            if (Number.isFinite(status.stopNoiseFrom)) {
-              tx.objectStore("chunks").index("takeId").openCursor(record.id).onsuccess = event => {
-                const cursor = event.target.result;
-                if (!cursor) return;
-                const chunk = cursor.value;
-                if (chunk.offset + chunk.pcm.length > status.stopNoiseFrom * next.sampleRate) {
-                  getPitch().muteStopTail(chunk.pcm, next.sampleRate, status.stopNoiseFrom, chunk.offset);
-                  cursor.update(chunk);
-                }
-                cursor.continue();
-              };
-            }
             takes.put(next);
             done(next);
           };
@@ -734,35 +721,27 @@
       });
     }
 
-    discardLongRests(take, reference) {
+    updateRestReference(take, reference) {
       const pitch = getPitch();
       if (!pitch.restPolicyValid(reference)) throw new Error("Missing rest timing");
-      return this.transaction(["takes", "chunks"], "readwrite", (tx, done, fail) => {
+      return this.transaction(["takes"], "readwrite", (tx, done) => {
         const takes = tx.objectStore("takes");
         takes.get(take.id).onsuccess = event => {
           const record = event.target.result;
-          if (!record || !record.finalized || record.deleteAfter || record.frames !== take.frames
+          if (!record || !record.finalized || record.deleteAfter || record.updatedAt !== take.updatedAt || record.frames !== take.frames
             || JSON.stringify(record.pitchReference) !== JSON.stringify(take.pitchReference)) {
-            fail(new Error("Recording changed during rest cleanup")); return;
+            done(null); return;
           }
           const frames = pitch.readContour(record);
           record.pitchReference = reference;
-          record.restAudioVersion = pitch.REST_POLICY_VERSION;
           record.updatedAt = Date.now();
           if (frames) {
             const clean = pitch.cleanRestFrames(frames, reference);
             record.pitchContour = pitch.packContour(clean, record);
             record.pitchScore = pitch.scoreFrames(clean, reference, record.frames / record.sampleRate);
           } else { delete record.pitchContour; delete record.pitchScore; }
-          const cursor = tx.objectStore("chunks").index("takeId").openCursor(take.id);
-          cursor.onsuccess = e => {
-            const item = e.target.result;
-            if (!item) { takes.put(record); done(record); return; }
-            const chunk = item.value;
-            pitch.discardRestAudio(chunk.pcm, record.sampleRate, reference, chunk.offset);
-            item.update(chunk);
-            item.continue();
-          };
+          takes.put(record);
+          done(record);
         };
       });
     }
@@ -1004,8 +983,7 @@
         const take = this.buffer.begin(frame, spec.pitchReference);
         const record = {id: globalThis.crypto.randomUUID(), song: this.song, createdAt: Date.now(),
           sampleRate: this.buffer.sampleRate, frames: 0, favorite: false, finalized: false,
-          complete: false, ...spec,
-          ...(getPitch()?.restPolicyValid(spec.pitchReference) ? {restAudioVersion: getPitch().REST_POLICY_VERSION} : {})};
+          complete: false, ...spec};
         this.entries.set(take, {take, record, savedFrames: 0, saving: null, pitchObservations: new Map()});
         this.pump();
       } catch (error) { this.fail(error); }

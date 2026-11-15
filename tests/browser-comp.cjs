@@ -49,21 +49,21 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
     const cleaned = q.recording.takes.find(t=>t.id===full);
     const audio = new Int16Array(await (await q.takeStore.wav(full)).arrayBuffer(),44);
     const keep = cleaned.pitchReference.restPolicy.keep;
-    let ignored = 0, changedKept = 0, nonzeroIgnored = 0;
+    let ignored = 0, changedKept = 0, changedIgnored = 0;
     for(let i=0;i<audio.length;i++) {
       const t=i/cleaned.sampleRate;
       const r=keep.find(([a,b])=>t>=a&&t<b);
-      if(!r) {ignored++;if(audio[i]!==0)nonzeroIgnored++;}
+      if(!r) {ignored++;if(audio[i]!==Math.round(2030*Math.sin(2*Math.PI*220*i/cleaned.sampleRate)))changedIgnored++;}
       else if(t-r[0]>.01&&r[1]-t>.01&&audio[i]!==Math.round(2030*Math.sin(2*Math.PI*220*i/cleaned.sampleRate))) changedKept++;
     }
     return {ids:ids.slice(1),state:q.compState,preferences:q.savedPractice,
       history:await q.takeStore.compHistory(q.takeSong),
       replaced:{listed:q.recording.takes.some(t=>t.id===replaced),stored:await q.takeStore.wav(replaced).then(()=>true,()=>false)},
-      restCleanup:{ignored,nonzeroIgnored,changedKept,version:cleaned.restAudioVersion},
+      restCleanup:{ignored,changedIgnored,changedKept,valid:MeleteTakePitch.restPolicyValid(cleaned.pitchReference)},
       pcm:Array.from(new Uint8Array(await (await q.takeStore.wav(full)).arrayBuffer())).slice(0,80)};
   });
-  assert.equal(created.restCleanup.version,require('../template/take_pitch.js').REST_POLICY_VERSION,'existing source takes gain score-aware rest handling');
-  assert.equal(created.restCleanup.nonzeroIgnored,0,'discarded rest audio is absent from stored WAV, not just muted');
+  assert.equal(created.restCleanup.valid,true,'existing source takes retain score-aware assessment');
+  assert.equal(created.restCleanup.changedIgnored,0,'rest audio survives a library reload sample for sample');
   assert.equal(created.restCleanup.changedKept,0,'singing and the one-beat guards preserve original samples');
   assert.deepEqual(created.replaced,{listed:true,stored:true},'recent replaced audio is protected by multilevel Undo');
   assert.ok(created.state.segments.some(s=>s.takeId===created.ids[1]),'the newest recording punches in the passage it sang');
@@ -335,7 +335,6 @@ async function checkPhraseMargins(frame,page,{output,label,reload}) {
     const ids=[],sr=8000;
     const insert=async(r,noise)=>{
       const id=crypto.randomUUID(),n=Math.ceil(r.seconds*sr),pcm=new Int16Array(n).fill(noise?1000:0);
-      P.discardRestAudio(pcm,sr,r);
       const t=await q.takeStore.append({id,song:q.takeSong,createdAt:Date.now(),sampleRate:sr,
         part:d.label,label:'phrase-margins',favorite:!noise,rate:r.rate,start:r.start,end:r.end,pitchReference:r,restAudioVersion:P.REST_POLICY_VERSION},
         0,pcm,{finalized:true,complete:true});
@@ -397,7 +396,7 @@ async function checkPhraseMargins(frame,page,{output,label,reload}) {
     if (await frame.locator('[data-view="standard"]').getAttribute('aria-selected')==='true') {
       assert.equal(await review.getAttribute('aria-pressed'),'false');
       await review.click();
-      assert.equal(await frame.locator('#score .take-pitch-trace-group').count(),0,'saved review never draws over notation');
+      await frame.locator('#score .take-pitch-trace-group').first().waitFor({state:'attached'});
       assert.equal(await review.getAttribute('aria-pressed'),'true');
     }
     await review.click();
@@ -501,13 +500,13 @@ async function checkAutoTrim(frame) {
     const cut = Math.ceil(last / sr) * sr;
     return {id, key: q.compState.key, frames: take.frames, storedFrames: take.storedFrames, cut, segments: segments.length,
       listed: q.recording.takes.find(t => t.id === id)?.storedFrames, length: wav.length,
-      restCleaned: take.restAudioVersion === P.REST_POLICY_VERSION,
+      restReference: P.restPolicyValid(take.pitchReference),
       intact: played.every(([a, b]) => wav.slice(a, b).every((v, i) => v === pcm[a + i])),
       silentTail: cut < n && wav.slice(cut).every(v => v === 0)};
   });
   const detail = JSON.stringify(result);
   assert.ok(result.segments > 0, `the take must reach the track: ${detail}`);
-  assert.equal(result.restCleaned, true, detail);
+  assert.equal(result.restReference, true, detail);
   assert.ok(result.storedFrames < result.frames && result.storedFrames <= result.cut, `the unplayed tail is deleted without a manual step: ${detail}`);
   assert.equal(result.listed, result.storedFrames, 'the open take list learns the smaller size without a reload');
   assert.equal(result.length, result.frames, 'a trimmed recording keeps its length');

@@ -24,12 +24,13 @@ async function checkNumericWheel(surface,page,probe='__qa') {
       results.push({selector,before,after});
     }
     const volume=surface.locator('[data-volume-index="0"]');await volume.press('Home');
-    await volume.evaluate(button=>{for(let i=0;i<4;i++)button.dispatchEvent(new WheelEvent('wheel',{deltaY:-6,bubbles:true,cancelable:true}));});
+    await page.waitForTimeout(220); // End the preceding mouse-wheel gesture.
+    await volume.evaluate(button=>{for(let i=0;i<4;i++)button.dispatchEvent(new WheelEvent('wheel',{deltaY:6,bubbles:true,cancelable:true}));});
     assert.equal(await volume.getAttribute('data-value'),'5','small trackpad deltas accumulate');
     await volume.press('End');
     await volume.evaluate(button=>{
-      button.dispatchEvent(new WheelEvent('wheel',{deltaY:-1000,bubbles:true,cancelable:true}));
-      button.dispatchEvent(new WheelEvent('wheel',{deltaY:24,bubbles:true,cancelable:true}));
+      button.dispatchEvent(new WheelEvent('wheel',{deltaY:1000,bubbles:true,cancelable:true}));
+      button.dispatchEvent(new WheelEvent('wheel',{deltaY:-24,bubbles:true,cancelable:true}));
     });
     assert.equal(await volume.getAttribute('data-value'),'195','no scroll debt at the ceiling');
     const ignored=await volume.evaluate(button=>[

@@ -35,6 +35,30 @@ test('native microphone reports raw PCM and never calls getUserMedia',async()=>{
   assert.equal(settings.sampleRate,48000);
   for(const k of ['echoCancellation','noiseSuppression','autoGainControl'])assert.equal(settings[k],false);
   assert.equal(typeof mic.source.nativeCapture,'function');
+  let releases=0;
+  b.releaseWhenIdle=()=>{releases++;};
+  mic.stream.getAudioTracks()[0].enabled=false;
+  mic.stream.getAudioTracks()[0].enabled=false;
+  assert.equal(releases,1,'parking the authorized mic gives the system output back');
+});
+test('idle release protects armed capture, playback, held notes and a reopened session',async()=>{
+  const {bridge,engine,context}=fixture();
+  let scheduled,closed=0;
+  context.setTimeout=fn=>{scheduled=fn;return 1;};
+  bridge.close=async()=>{closed++;};
+  bridge.state={session:'first',playing:false};
+  const tick=()=>{bridge.releaseWhenIdle();scheduled();};
+  engine.playing=true;tick();engine.playing=false;
+  bridge.inputEnabled=true;tick();bridge.inputEnabled=false;
+  bridge.state.playing=true;tick();bridge.state.playing=false;
+  bridge.heldPreviews=1;tick();bridge.heldPreviews=0;
+  bridge.listeners.add('capture');tick();bridge.listeners.clear();
+  bridge.preparing=Promise.resolve();tick();bridge.preparing=null;
+  bridge.releaseWhenIdle();bridge.state={session:'next',playing:false};scheduled();
+  assert.equal(closed,0);
+  bridge.control=async kind=>{assert.equal(kind,'pause');return {stopFrame:480};};
+  assert.equal((await bridge.pause()).stopFrame,480);
+  scheduled();assert.equal(closed,1);
 });
 test('asset upload preserves channel order and frame-domain origin',async()=>{
   const {bridge:b}=fixture();b.state={session:'s'};const requests=[];
