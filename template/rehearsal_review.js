@@ -35,8 +35,11 @@
     const metrics = element("output"), status = element("span"); status.setAttribute("role","status");
     bar.append(timing, metrics, status); document.querySelector(".transport-primary").after(bar);
     const fmt = n => Number.isFinite(n) ? n.toFixed(1) : "\u2013";
-    let rows = [], current, controller, selection=null, preferAligned=location.searchParams.get("timing")!=="recorded", initialTime=null;
-    const cached=new Map();
+    let rows = [], current, controller, preferAligned=location.searchParams.get("timing")!=="recorded", initialTime=null;
+    const scope = JSON.stringify(["rehearsal",url("catalog").href,adapter.song]);
+    const disk = window.MeleteReviewCache.open(scope), decoded = new Map();
+    const mediaId = (row,aligned) => JSON.stringify([row.id,aligned]);
+    let offlineVariants = null, catalogTime;
     async function render(seek) {
       if (!current) return;
       const {row} = current, fitted = toggle.checked, m = fitted ? row.fitted : row.raw;
@@ -59,24 +62,35 @@
     async function choose(seek=true) {
       controller?.abort(); const c = controller = new AbortController(); current = null;
       const row = rows.find(r => r.id === versions.value);
-      if(selection!==row?.id){cached.clear();selection=row?.id;}
       adapter.clear();metrics.textContent="";status.title="";
       const available=Boolean(row?.alignment ? row.alignment.changed : row?.fit?.advanceMs);
       toggle.disabled=!available;toggle.checked=available && preferAligned;
       if (!row) { status.textContent = ""; return; }
+      if (offlineVariants && row.alignment && available) {
+        const recorded = offlineVariants.has(mediaId(row,false)), aligned = offlineVariants.has(mediaId(row,true));
+        if (!(recorded && aligned)) { toggle.checked = aligned; toggle.disabled = true; }
+      }
       status.textContent = "Loading recording\u2026";
       try {
         const variant=Boolean(row.alignment && toggle.checked);
-        if(!cached.has(variant)){
-          const ctx = adapter.context();
-          const [pitch, blob] = await Promise.all([request("pitch",row.id,c.signal,variant).then(r=>r.json()),request("audio",row.id,c.signal,variant).then(r=>r.blob())]);
-          if (!adapter.matches(pitch.ref)) throw Error("The saved score and this part do not match.");
-          const buffer = await ctx.decodeAudioData(await blob.arrayBuffer());
-          const loudness = await window.MeleteTakeLoudness.track(buffer);
+        const id = mediaId(row,variant), version = JSON.stringify(row);
+        if(!decoded.has(id)){
+          const saved = await disk.get(id,version);
           c.signal.throwIfAborted();
-          cached.set(variant,{row,ref:pitch.ref,frames:pitch.frames.map(([start,end,cents])=>({start,end,cents})),buffer,blob,loudness});
+          if (!saved && offlineVariants) throw Error("Open this timing version once while signed in.");
+          const [pitch, blob] = saved ? [saved.pitch,saved.audio] :
+            await Promise.all([request("pitch",row.id,c.signal,variant).then(r=>r.json()),request("audio",row.id,c.signal,variant).then(r=>r.blob())]);
+          if (!adapter.matches(pitch.ref)) throw Error("The saved score and this part do not match.");
+          const buffer = await adapter.context().decodeAudioData(await blob.arrayBuffer());
+          c.signal.throwIfAborted();
+          const loudness = await window.MeleteTakeLoudness.track(buffer,JSON.stringify([scope,id,version]));
+          c.signal.throwIfAborted();
+          const frames=pitch.frames.map(([start,end,cents])=>({start,end,cents}));
+          decoded.set(id,{row,ref:pitch.ref,frames,buffer,blob,loudness});
+          if (decoded.size > 2) decoded.delete(decoded.keys().next().value);
+          if (!saved) void disk.put(id,version,row,{pitch,audio:blob},catalogTime);
         }
-        current=cached.get(variant);await render(seek);
+        current=decoded.get(id);await render(seek);
       } catch(e) { if (controller===c) failure(e); }
     }
     async function singerChanged(preselect=null) {
@@ -91,7 +105,20 @@
     singers.onchange = singerChanged; versions.onchange = ()=>choose(); toggle.onchange = () => {preferAligned=toggle.checked;void choose(false);};
     singers.add(new Option("Choose singer", "")); versions.disabled = true;
     try {
-      rows = (await (await request("catalog")).json()).items.filter(r => r.song === adapter.song);
+      catalogTime = Date.now();
+      try {
+        rows = (await (await request("catalog")).json()).items.filter(r => r.song === adapter.song);
+      } catch (error) {
+        const saved = await disk.list();
+        if (!saved.length) throw error;
+        const latest = new Map();
+        for (const entry of saved) {
+          if (!latest.has(entry.item.id) || latest.get(entry.item.id).observed < entry.observed)
+            latest.set(entry.item.id,entry);
+        }
+        rows = Array.from(latest.values(), entry=>entry.item);
+        offlineVariants = new Set(saved.filter(entry=>entry.version === latest.get(entry.item.id).version).map(entry=>entry.id));
+      }
       for (const name of [...new Set(rows.map(r=>r.singer))].sort((a,b)=>a.localeCompare(b))) singers.add(new Option(name, name));
       if (!rows.length) status.textContent = "No recordings for this score.";
       const linked=rows.find(r=>r.id===location.searchParams.get("recording"));

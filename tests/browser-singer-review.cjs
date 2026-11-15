@@ -79,13 +79,17 @@ async function checkSingerReview(context,url,{output,label='desktop',inspect=nul
     await a.locator('.station-option').filter({hasText:'Kathleen Fixture'}).click();
     await selected(a,'Kathleen Fixture');
     assert.equal(await a.evaluate(()=>reviewQAData.ref.part),0);
-    const sourceFilter=a.getByRole('combobox',{name:'Recording source'});
+    const sourceFilter=a.locator('#takeFieldMenu').getByRole('combobox',{name:'Recording source'});
+    assert.equal(await sourceFilter.isVisible(),false);
+    await a.locator('#takeFields').click();
     await sourceFilter.selectOption('local');
     assert.equal(await row(a,'Kathleen Fixture').isVisible(),false);
     assert.equal(await a.evaluate(()=>reviewQA.selected()===reviewQAData.id && reviewQA.audible(reviewQAData.id)),true);
     await sourceFilter.selectOption('cloud');
     assert.equal(await row(a,'Kathleen Fixture').isVisible(),true);
     await sourceFilter.selectOption('all');
+    await a.locator('#takeFields').click();
+    assert.equal(await sourceFilter.isVisible(),false);
     if(inspect)return await inspect({page,frame:a,row,selected,
       delayNext:song=>{delaySong=song;delayed=false;},isDelayed:()=>delayed,
       release:()=>{release?.();release=null;}});
@@ -129,8 +133,11 @@ async function checkSingerReview(context,url,{output,label='desktop',inspect=nul
       await b.locator('#takePanel').screenshot({path:path.join(output,`singer-review-${label}.png`)});
     }
     await b.locator('#openCloudLibrary').click();await b.locator('#compCloudLogout').click();
-    await b.waitForFunction(()=>!document.querySelector('[data-cloud-id]')&&document.getElementById('stationPicker').hidden);
-    await a.waitForFunction(()=>!document.querySelector('[data-cloud-id]')&&document.getElementById('stationPicker').hidden);
+    for (const frame of [a,b]) await frame.waitForFunction(()=>{
+      const rows = [...document.querySelectorAll('[data-cloud-id] .comp-review')];
+      return document.getElementById('stationPicker').hidden && document.getElementById('compCloudLogout').hidden &&
+        rows.length && rows.every(row=>row.title.includes('Saved on this device'));
+    });
     assert.equal(await b.locator('.station-option').count(),0,'private directory removed on logout');
     assert.deepEqual(requests.filter(r=>r.action==='directory'&&!r.signed),[]);
     assert.deepEqual(requests.filter(r=>r.method==='POST').map(r=>r.action),['logout']);

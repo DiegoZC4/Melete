@@ -50,11 +50,22 @@
     const itemId = item => item.rehearsalDate ? `rehearsal:${item.rehearsalDate}:${item.id}`
       : item.id ? `submitted:${item.owner}:${item.id}` : `cloud:${item.owner}:${item.key}:${item.revision}`;
     const itemVersion = item => JSON.stringify(item);
+    const cache = root.MeleteReviewCache.open(JSON.stringify(["library", new URL(adapter.cloudConfig.api,document.baseURI).href, adapter.song()]));
+    const savedItems = new Map();
+    let liveListing = false, identityEpoch = 0, catalogTime = 0;
+    const entries = () => liveListing ? listing : Array.from(savedItems.values());
+    const matches = (items,id,version) => items.some(i => itemId(i) === id && itemVersion(i) === version);
+    function removeCopy(item) {
+      const id = itemId(item), version = itemVersion(item);
+      if (itemVersion(savedItems.get(id)) === version) savedItems.delete(id);
+      return cache.remove(id,version);
+    }
     let endpoint;
     function clearReviewedAudio(){
       if(/^(submitted|cloud|rehearsal):/.test(adapter.selected?.() || ""))adapter.clear();
-      for (const item of listing) adapter.mute?.(itemId(item));
+      for (const item of entries()) adapter.mute?.(itemId(item));
       prepared.clear(); preparing.clear();
+      identityEpoch++; liveListing = false;
     }
     function forgetSession() {
       if(session?.user)adapter.identityChanged?.();
@@ -66,15 +77,17 @@
     if (identities) identities.onmessage = event => {
       if (event.data !== "changed") return;
       forgetSession();
-      // A notification invalidates caches, never grants access; the server
-      // verifies the cookie again for every already-loaded song/tab.
+      // Recheck the account before exposing the live library or starting another download.
       void connect({interactive:false}).catch(() => {});
     };
     root.addEventListener("pagehide",event=>{if (!event.persisted) identities?.close();});
     function account() {
       const login=el('openCloudLibrary');
-      if(login){login.setAttribute('aria-label',session?.user ? 'Google account and recording backups' : 'Sign in with Google to review recordings');
-        login.title=session?.user ? `${session.user.name}: Google account and recording backups` : 'Sign in with Google to review recordings';}
+      if(login){
+        const signedOutLabel=savedItems.size ? 'Sign in with Google for more recordings' : 'Sign in with Google to review recordings';
+        login.setAttribute('aria-label',session?.user ? 'Google account and recording backups' : signedOutLabel);
+        login.title=session?.user ? `${session.user.name}: Google account and recording backups` : signedOutLabel;
+      }
       el("cloudIdentity").textContent=session?.user?.name || "";
       el("cloudPrivateControls").hidden=!session?.user || !adapter.state();
       el("compCloudLogout").hidden=!session?.user;
@@ -205,15 +218,36 @@
       }
       return {chunks, bytes: blob.size};
     }
-    async function download(info, query = {}) {
-      if (!info || !Array.isArray(info.chunks) || info.chunks.length > 512 || !Number.isInteger(info.bytes)
-        || info.bytes < 0 || info.bytes > 128 * 1024 * 1024) throw new Error("Invalid backup audio");
-      const chunks = [];
-      for (const hash of info.chunks) {
-        const blob = await request("blob", {query: {...query, hash}});
+    let activeReads = 0;
+    const waitingReads = [];
+    async function readChunk(hash,query,check) {
+      if (activeReads >= 4) await new Promise(resolve => waitingReads.push(resolve));
+      else activeReads++;
+      try {
+        check?.();
+        const blob = await request("blob", {query:{...query,hash}});
         if (await digest(await blob.arrayBuffer()) !== hash) throw new Error("Cloud recording checksum mismatch");
-        chunks.push(blob);
+        return blob;
+      } finally {
+        const next = waitingReads.shift();
+        if (next) next();
+        else activeReads--;
       }
+    }
+    async function download(info, query = {}, check) {
+      if (!info || !Array.isArray(info.chunks) || info.chunks.length > 512 || !Number.isInteger(info.bytes)
+        || info.bytes < 0 || info.bytes > 128 * 1024 * 1024
+        || info.chunks.some(hash => typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash))) throw new Error("Invalid backup audio");
+      const chunks = new Array(info.chunks.length);
+      let index = 0;
+      async function read() {
+        while (index < chunks.length) {
+          const i = index++;
+          try { chunks[i] = await readChunk(info.chunks[i],query,check); }
+          catch (e) { index = chunks.length; throw e; }
+        }
+      }
+      await Promise.all(Array.from({length:Math.min(4,chunks.length)}, read));
       const blob = new Blob(chunks);
       if (blob.size !== info.bytes) throw new Error("Cloud recording is incomplete");
       return blob;
@@ -326,7 +360,7 @@
     }
     async function loadListing() {
       if (!session?.user) return;
-      const owner=session.user.id, song=adapter.song(), items=[], epoch=++listEpoch;
+      const owner=session.user.id, song=adapter.song(), items=[], epoch=++listEpoch, observed=Date.now();
       const active=()=>epoch===listEpoch && session?.user?.id===owner && adapter.song()===song;
       for(const action of ["submissions","list"]){
         const scope = (action === "submissions" ? session.submissionReviewer : session.reviewer) ? "review" : "mine";
@@ -343,32 +377,37 @@
         if(!active())return;
         items.push(...result.items);
       }
+      await savedReady;
+      if (!active()) return;
       const versions = new Map(items.map(item => [itemId(item), itemVersion(item)]));
-      for (const item of listing) if (versions.get(itemId(item)) !== itemVersion(item)) {
+      for (const item of entries()) if (versions.get(itemId(item)) !== itemVersion(item)) {
         const id = itemId(item);
         if (adapter.selected?.() === id) adapter.clear();
         adapter.mute?.(id); prepared.delete(id); preparing.delete(id);
+        if (liveListing || versions.has(id)) void removeCopy(item);
       }
-      listing = items; renderListing();
+      catalogTime = observed; listing = items; liveListing = true; renderListing();
     }
     function renderListing() {
       account();
       adapter.libraryChanged?.();
     }
-    const canWithdraw = item => Boolean(item.id && !item.rehearsalDate && item.owner === session?.user?.id);
+    const canWithdraw = item => Boolean(session?.user && liveListing && item.id && !item.rehearsalDate && item.owner === session.user.id);
     async function withdraw(item) {
       if (!canWithdraw(item)) return;
       await request("withdraw", {method:"POST", body:{id:item.id}});
+      listing = listing.filter(i => itemId(i) !== itemId(item));
+      if (adapter.selected?.() === itemId(item)) adapter.clear();
+      adapter.mute?.(itemId(item)); prepared.delete(itemId(item)); preparing.delete(itemId(item));
+      await removeCopy(item);
       uploaded.clear(); forgetReceipt(item.id,item.owner); adapter.submitted?.(); await loadListing();
     }
     function prepare(item, downloadOnly = false) {
-      const id = itemId(item), version = itemVersion(item), owner = session?.user?.id, epoch = connection;
-      // Sign-out, account changes and a withdrawn/replaced item invalidate both
-      // in-flight downloads and decoded audio, without touching local takes.
+      const id = itemId(item), version = itemVersion(item), epoch = identityEpoch, observed = catalogTime;
+      const current = () => epoch === identityEpoch && matches(entries(),id,version);
+      const canFetch = () => current() && session?.user && liveListing && matches(listing,id,version);
       const check = () => {
-        if (!owner || owner !== session?.user?.id || epoch !== connection
-          || !listing.some(i => itemId(i) === id && itemVersion(i) === version))
-          throw new DOMException("Recording access changed", "AbortError");
+        if (!current()) throw new DOMException("Recording access changed", "AbortError");
       };
       check();
       if (!downloadOnly && prepared.has(id)) return Promise.resolve({...prepared.get(id)});
@@ -376,13 +415,21 @@
       const job = (async () => {
         try {
           const load = item.rehearsalDate ? reviewRehearsal : item.id ? reviewSubmission : reviewCloud;
-          const review = await load(item, downloadOnly, check);
+          const media = await cache.get(id,version);
+          check();
+          if (!media && !canFetch()) throw Error("Sign in and open this recording once to save it on this device.");
+          const source = {media};
+          const review = await load(item, downloadOnly, check, source);
           check();
           if (review) {
             const frames = review.frames.map(frame => ({...frame,
               start:frame.start + review.origin, end:frame.end + review.origin}));
             review.pitchScore = root.MeleteTakePitch.scoreFrames(frames, review.ref, review.ref.seconds);
             prepared.set(id, review);
+            // Disk writes are optional and do not delay the first playback.
+            if (!media) void cache.put(id,version,item,source.media,observed,canFetch).then(saved => {
+              if (saved && (!liveListing || matches(listing,id,version))) { savedItems.set(id,item); renderListing(); }
+            });
           }
           return review && {...review};
         } finally {
@@ -394,7 +441,7 @@
       renderListing();
       return job;
     }
-    async function reviewRehearsal(item,downloadOnly,check) {
+    async function reviewRehearsal(item,downloadOnly,check,source) {
         const id=itemId(item);
         const get=async action=>{
           const url=new URL('rehearsal.php',endpoint);
@@ -403,10 +450,12 @@
           if(!response.ok)throw Error('Rehearsal unavailable for this Google account.');
           return response;
         };
-        const stored=await (await get('pitch')).json(), ref=adapter.descriptor(stored.ref.part,stored.ref.line,stored.ref.rate)?.reference;
+        const [stored,blob] = source.media ? [source.media.pitch,source.media.audio] :
+          await Promise.all([get('pitch').then(r=>r.json()),get('audio').then(r=>r.blob())]);
         check();
+        const ref=adapter.descriptor(stored.ref.part,stored.ref.line,stored.ref.rate)?.reference;
         if(!ref || !root.MeleteTakePitch.samePassage(stored.ref,ref))throw Error('Different score edition.');
-        const blob=await (await get('audio')).blob(), ctx=adapter.context(), buffer=await ctx.decodeAudioData(await blob.arrayBuffer());
+        const buffer=await adapter.context().decodeAudioData(await blob.arrayBuffer());
         const rest=root.MeleteTakePitch.playbackRestReference(ref,item.origin,buffer.duration);
         const listeningRests = root.MeleteTakeCleanup.longRests(ref, -item.origin);
         for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
@@ -424,23 +473,29 @@
           adapter.downloadBlob(new Blob([root.MeleteRecording.wavBytes(pcm,buffer.sampleRate)],{type:'audio/wav'}),`${adapter.song()}-${item.name}-${item.rehearsalDate}.wav`);
         }
         else{
+          source.media ??= {pitch:stored,audio:blob};
           review.loudnessKey=JSON.stringify(["rehearsal",id,item,root.MeleteTakeCleanup?.VERSION]);
           if(root.MeleteTakeLoudness)review.loudness=await root.MeleteTakeLoudness.track(buffer,review.loudnessKey);
           return review;
         }
     }
-    async function reviewSubmission(item,downloadOnly,check) {
-        const query={owner:item.owner,id:item.id}, {manifest:m}=await request("submission",{query});
+    async function reviewSubmission(item,downloadOnly,check,source) {
+        const query={owner:item.owner,id:item.id}, m=source.media?.manifest || (await request("submission",{query})).manifest;
         check();
         const q={owner:item.owner,submission:item.id}, id=itemId(item);
         const ref=adapter.descriptor(m.part,m.line,m.rate)?.reference;
         if(!downloadOnly && (m.song!==adapter.song() || ref?.fingerprint!==m.fingerprint || ref.rate!==m.rate || Math.abs(ref.seconds-m.seconds)>.01))
           throw Error("Different score edition. Download the comp to listen separately.");
-        const blob=await download(m.audio,q);
-        check();
-        if(downloadOnly){adapter.downloadBlob(blob,`${m.song}-${item.name}-${new Date(item.uploaded).toISOString().slice(0,10)}-comp.wav`);}
+        if(downloadOnly){
+          const blob=source.media?.audio || await download(m.audio,q,check);
+          check();
+          adapter.downloadBlob(blob,`${m.song}-${item.name}-${new Date(item.uploaded).toISOString().slice(0,10)}-comp.wav`);
+        }
         else{
-          const samples=new Float32Array(await (await download(m.pitches,q)).arrayBuffer()),frames=[];
+          const [pitches,blob]=source.media ? [source.media.pitches,source.media.audio] :
+            await Promise.all([download(m.pitches,q,check), download(m.audio,q,check)]);
+          check();
+          const samples=new Float32Array(await pitches.arrayBuffer()),frames=[];
           if(samples.length%3)throw Error("Invalid pitch contour");
           for(let i=0;i<samples.length;i+=3){
             const [a,b,c]=samples.subarray(i,i+3);
@@ -454,26 +509,31 @@
             timelineSegments:ranges.map(([from,to],i)=>({from,to,takeId:String(m.seams[i][2]),label:"Take "+m.seams[i][2]}))};
           review.loudnessKey=JSON.stringify(["submission",id,m.audio]);
           if(root.MeleteTakeLoudness)review.loudness=await root.MeleteTakeLoudness.track(buffer,review.loudnessKey);
+          source.media ??= {manifest:m,audio:blob,pitches};
           return review;
         }
     }
-    async function reviewCloud(item, downloadOnly, check) {
+    async function reviewCloud(item, downloadOnly, check, source) {
         const query={owner:item.owner,key:item.key};
-        const {profile}=await request("load",{query});
+        const payload=source.media?.payload || (await request("load",{query})).profile?.payload;
         check();
-        const payload=profile?.payload, state=payload?.state, ref=state?.descriptor?.reference;
+        const state=payload?.state, ref=state?.descriptor?.reference;
         if (!state || !ref || !Array.isArray(payload.records)) throw new Error("Invalid cloud recording");
         const current=adapter.descriptor(ref.part,ref.line ?? null);
         if (!downloadOnly && (!current || model.key(current) !== state.key)) throw new Error("Different score or speed. Download this recording to review it separately.");
-        const takes=new Map(), audio=new Map();
-        for (const entry of payload.records) {
-          const blob=await download(entry.audio,query), pitches=await (await download(entry.pitches,query)).arrayBuffer();
+        const takes=new Map(), audio=new Map(), sources=[];
+        for (const [index,entry] of payload.records.entries()) {
+          check();
+          const [blob,pitchBlob]=source.media ? source.media.sources[index] :
+            await Promise.all([download(entry.audio,query,check),download(entry.pitches,query,check)]);
+          const pitches=await pitchBlob.arrayBuffer();
           const wav=new DataView(await blob.arrayBuffer()), old=entry.record;
           if (pitches.byteLength % 8 || wav.byteLength !== 44+old.frames*2 || wav.getUint16(22,true)!==1
             || wav.getUint16(34,true)!==16 || wav.getUint32(24,true)!==old.sampleRate) throw new Error("Invalid cloud recording data");
           const record={...old,pitchContour:{...old.pitchContour,pitches:new Float64Array(pitches)}};
           if (!root.MeleteTakePitch.readContour(record)) throw new Error("Cloud contour is incompatible");
           takes.set(record.id,record); audio.set(record.id,blob);
+          sources.push([blob,pitchBlob]);
         }
         model.validate(state,takes);
         const listeningWav = async take => (await root.MeleteTakeCleanup.prepare(audio.get(take.id), take)).blob;
@@ -481,6 +541,7 @@
         check();
         if (downloadOnly) adapter.downloadBlob(rendered.blob,`${state.song}-${item.name}-track.wav`);
         else {
+          source.media ??= {payload,sources};
           return {id:itemId(item),label:`${item.name}: ${item.label}`,ref,
             frames:model.framesFor(state.segments,takes).map(f=>({...f,start:f.start-rendered.origin,end:f.end-rendered.origin})),...rendered,
             track:ref.part,rate:ref.rate,start:rendered.origin*ref.rate,end:ref.seconds*ref.rate,latency:0,
@@ -522,12 +583,23 @@
     try{const page=new URL(root.parent.location.href), requested=page.searchParams.get("song");
       preferReview=page.searchParams.get("review")==="1" && (!requested || adapter.song()===requested || adapter.song().endsWith("-"+requested));
     }catch{}
-    void connect({interactive:false}).then(() => {
+    const savedReady = cache.list().then(rows => {
+      for (const row of rows) savedItems.set(row.id,row.item);
+      renderListing();
+    });
+    void connect({interactive:false}).then(async () => {
       if (!preferReview) return;
-      if (session?.user) {preferReview=false;adapter.openLibrary?.();}
+      await savedReady;
+      if (session?.user || savedItems.size) {preferReview=false;adapter.openLibrary?.();}
       else return open();
-    }).catch(e => {if (preferReview) adapter.toast(e.message,"error");});
-    return {open, uploadTrack, entries: () => listing, itemId, prepare, canWithdraw, withdraw,
+    }).catch(async e => {
+      if (!preferReview) return;
+      await savedReady;
+      if (savedItems.size) { preferReview=false; adapter.openLibrary?.(); }
+      else adapter.toast(e.message,"error");
+    });
+    return {open, uploadTrack, entries, itemId, prepare, canWithdraw, withdraw,
+      cached: item => itemVersion(savedItems.get(itemId(item))) === itemVersion(item),
       loading: id => preparing.has(id), loaded: id => prepared.get(id),
       enter: () => {pendingUpload=null;
       if(session?.user)return open();pendingLibrary=true;signIn();}, changed,

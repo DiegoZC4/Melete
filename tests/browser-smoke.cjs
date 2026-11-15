@@ -92,6 +92,8 @@ async function main() {
       return context;
     };
     const focused = Object.keys(process.env).some(key => /^QA_.*_ONLY$/.test(key) && process.env[key]);
+    if (!focused || process.env.QA_REVIEW_CACHE_ONLY)
+      results.push({reviewCache:await require('./browser-review-cache.cjs').checkReviewCache(browser,html)});
     if(!focused || process.env.QA_LIBRARY_ONLY) results.push({libraryMerge:await require('./browser-library-merge.cjs').checkLibraryMerge(browser)});
     if(!focused || process.env.QA_ICONS_ONLY){
       const context=await newContext(false);
@@ -121,7 +123,7 @@ async function main() {
         }finally{await ctx.close();}
         if(process.env.QA_NOTE_STEP_ONLY)continue;
       }
-      if(process.env.QA_ACOUSTIC_ONLY||process.env.QA_ICONS_ONLY||process.env.QA_LIBRARY_ONLY||process.env.QA_SINGER_REVIEW_ONLY)continue;
+      if(process.env.QA_ACOUSTIC_ONLY||process.env.QA_ICONS_ONLY||process.env.QA_LIBRARY_ONLY||process.env.QA_SINGER_REVIEW_ONLY||process.env.QA_REVIEW_CACHE_ONLY)continue;
       if ((!focused || process.env.QA_CLOUD_TABLE_ONLY) && fsSync.existsSync(path.join(__dirname,'browser-cloud-table.cjs'))) {
         const context=await newContext(mobile);
         try {results.push({cloudTable:await require('./browser-cloud-table.cjs').checkCloudTable(context,origin,{output,label:mobile?'mobile':'desktop'})});}

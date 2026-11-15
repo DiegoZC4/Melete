@@ -362,10 +362,13 @@ optional and is not installed or needed on other machines.
   their own part, e.g. `?song=the-seed&layout=choir&width=70&myVol=150&otherVol=35`.
   An optional `choirShareUrl` in the song config points a local station's links
   at its published player; without it the hosted station shares its own address.
-- Beside the takes table, use the chevrons to expand it down in place or choose which columns
-  to show. Station fits columns to the available width by default. Manual
-  choices persist across reloads. **CSV** exports every statistic, regardless
-  of visible columns; the adjacent download/speaker icon exports audible takes.
+- Beside the takes table, use the chevrons to expand it. In **Columns**, choose
+  the visible fields and use **Source** to show all, local, or cloud recordings.
+  The browser remembers these choices. In the table header, **CSV** beside
+  Download Mix exports every statistic, including hidden columns.
+  Opening a cloud take saves its audio and pitch contour in this browser.
+  You can replay it from the station after signing out or going offline.
+  A changed version downloads the next time you open it from the live library.
   In station mode the empty **New** row comes first; completed tracks retain
   their column sort. Double-click the singer's name (double-tap on touch, Enter
   from the focused name button) to correct the credit. That cannot change the

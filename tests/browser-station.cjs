@@ -100,7 +100,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     assert.equal(await page.locator('#stationStage, #stationBar, #stationNewSinger').count(), 0);
     assert.equal(await panelHeight(), ordinaryHeight, 'station does not add a row to Record');
     assert.equal(await page.locator('label[for="stationSinger"]').innerText(), 'Singer');
-    assert.ok(await page.locator('#takeActions #stationExport').isVisible());
+    assert.ok(await page.locator('.take-download-heading #stationExport').isVisible());
     assert.ok(await page.locator('.comp-columns #downloadMix').isVisible());
 
     const input = page.locator('#stationSinger');

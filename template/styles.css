@@ -686,7 +686,6 @@ button { color: inherit; }
 @media (hover:hover) and (pointer:fine) {
   #undoComp,#redoComp { display:none; }
 }
-#stationExport { grid-column: 3; grid-row: 4; }
 #stationExport[hidden] { display: none; }
 .take-actions summary { list-style: none; cursor: pointer; }
 .take-actions summary::-webkit-details-marker { display: none; }
@@ -768,8 +767,8 @@ button { color: inherit; }
   min-width: 0; min-height: 0; gap: var(--toolbar-row-gap);
 }
 .take-table-workspace { display: flex; flex: 1; min-width: 0; min-height: 0; gap: var(--toolbar-row-gap); }
-.take-source-filter { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10px; }
-.take-source-filter select { max-width: 100%; font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 4px; }
+.take-source-filter { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.take-source-filter select { flex: 1; min-width: 0; font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 4px; }
 .take-source-filter[hidden], .take-source-empty,
 #takeReviewTable[data-source="local"] [data-cloud-id],
 #takeReviewTable[data-source="cloud"] :is([data-comp-key], #takeLoose, #practiceTraceRows) { display: none; }
@@ -829,8 +828,8 @@ button { color: inherit; }
 .take-columns button[data-sorted] { text-decoration: underline; text-underline-offset: 2px; }
 .take-columns button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .comp-columns > span { display: grid; place-items: center; }
-.comp-columns .take-download-heading { justify-items:start; padding-left:6px; box-shadow:none; }
-.take-download-heading #downloadMix { width:22px; min-height:0; height:100%; display:grid; place-items:center; }
+.comp-columns .take-download-heading { display:flex; align-items:center; gap:2px; padding-left:6px; box-shadow:none; }
+.take-download-heading button { width:22px; min-width:0; min-height:0; height:100%; display:grid; place-items:center; }
 #downloadMix svg { width:14px; height:14px; }
 #downloadMix:disabled { opacity:.4; cursor:default; }
 .comp-row { width: var(--take-table-width); }
@@ -960,14 +959,13 @@ button { color: inherit; }
   #addTrack { grid-column: 5; grid-row: 1; }
   #undoComp { grid-column: 6; grid-row: 1; }
   #redoComp { grid-column: 7; grid-row: 1; }
-  #stationExport { grid-column: 7; grid-row: 2; }
   .take-actions-menu { left: auto; right: 0; }
   .take-review-pane { grid-column: 1; grid-row: 3 / 5; }
   .take-table-tools { display:grid; grid-auto-flow:column; grid-template-rows:repeat(2,var(--toolbar-row-height)); align-content:start; }
   @media (hover:hover) and (pointer:fine) {
     .take-controls { grid-template-columns:minmax(72px,1fr) minmax(35px,.45fr) minmax(76px,1fr) 44px; }
     .take-volume,.take-reverb { grid-column:3; }
-    #addTrack,#stationExport { grid-column:4; }
+    #addTrack { grid-column:4; }
   }
 }
 @container (max-width: 360px) {

@@ -1936,6 +1936,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         app = read_required(TEMPLATE_DIR / "practice_trace.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "rehearsal_review.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "comp_cloud.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "review_cache.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "practice_comp.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "comp_audio.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "take_mix.js") + "\n" + app

@@ -215,7 +215,8 @@
       review.setAttribute("aria-label",`${selected ? "Deselect" : "Review"} ${name}`);
       review.setAttribute("aria-busy",String(loading));
       review.disabled = recording && !selected;
-      review.title = `${item.rehearsalDate ? "Rehearsal " + item.rehearsalDate : "Submitted comp"}. Read-only. Click to toggle playback and contour.`;
+      const copy = cloud.cached(item) ? "Saved on this device. " : "";
+      review.title = `${item.rehearsalDate ? "Rehearsal " + item.rehearsalDate : "Submitted comp"}. ${copy}Click to toggle playback and contour.`;
       for (const field of ["number","singer","part"]) row.querySelector(`.take-${field}`).textContent = record[field] ?? "\u2014";
       row.querySelector(".take-segments").textContent = record.segmentCount ?? "\u2014";
       row.style.setProperty("--take-part-color", (loaded
