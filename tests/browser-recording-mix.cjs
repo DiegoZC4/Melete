@@ -387,10 +387,8 @@ async function checkRecordingMix(page, frame, {output,label}) {
     localStorage.setItem('melete:cloud:local-only:v1',JSON.stringify([JSON.stringify([d.song,r.part,r.line??null,d.slot||null])]));
     await q.refreshComp();
   });
-  const privateButton=frame.locator('#compRows .take-upload.is-local-only');
-  await privateButton.waitFor({state:'visible'});
-  assert.equal(await privateButton.isEnabled(),false);
-  assert.match(await privateButton.getAttribute('title'),/Kept on this device/);
+  const privateButton=frame.locator('#compRows .is-armed .take-upload');
+  assert.equal(await privateButton.isVisible(),false,'a private track has no Upload action');
   await page.screenshot({path:require('node:path').join(output,`${label}-recording-mix.png`)});
   return {partOrder:labels,countInBeats:beats,countInRecorded:true,noLegacyContour:true,hearIsolationCycle:true,centeredOctaveCycle:true,
     batchMix,headerExport:{enabled:1,muted:available-1,onlyHeardExported:true},

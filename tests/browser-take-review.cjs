@@ -49,9 +49,10 @@ async function checkCachedTakeReview(frame, id) {
       'an inactive raw observation must never expand the saved contour range');
     await row.click();
     assert.equal(await frame.evaluate(() => (window.__qa || window.__probe).takeReview), null);
-    assert.deepEqual(await frame.evaluate(tick =>
-      (window.__qa || window.__probe).pitchResolution.reviewRange(tick), rangeFixture.tick), rangeFixture.range,
-      'deselection does not restore a legacy live contour');
+    const deselected=await frame.evaluate(tick =>
+      (window.__qa || window.__probe).pitchResolution.reviewRange(tick),rangeFixture.tick);
+    assert.ok(deselected.min>=rangeFixture.range.min && deselected.max<=rangeFixture.range.max && deselected.max<108,
+      'deselection can remove a reviewed singer from the range without restoring an inactive outlier');
     return proof;
   } finally {
     await frame.evaluate(point => {
@@ -213,7 +214,7 @@ async function checkTakeReview(frame, page, {output, label}) {
   assert.equal(await frame.locator(`[data-visible-index="${cell}"]`).getAttribute('aria-pressed'), 'true',
     `${label}: explicitly show reviewed staff before notation`);
   await frame.locator('#scoreViewToggle').click();
-  try { await frame.waitForFunction(() => !(window.__qa||window.__probe).busy && !document.querySelector('#score .take-pitch-trace-edge')); }
+  try { await frame.waitForFunction(id => !(window.__qa||window.__probe).busy && document.querySelector(`#score .take-pitch-trace-edge[data-take-id="${id}"]`),fixture.id); }
   catch(error) {
     await page.screenshot({path:path.join(output,`take-review-standard-failure-${label}.png`)});
     const state=await frame.evaluate(()=>(window.__qa||window.__probe).pitchResolution.traceState());
@@ -398,7 +399,8 @@ async function checkTakeReview(frame, page, {output, label}) {
     const q=window.__qa||window.__probe;
     return !q.busy && !document.querySelector('#score').hidden && q.recording.state==='recording' && q.takeReview?.id===id;
   },fixture.id);
-  assert.equal(await frame.locator('#score .bar-pitch-trace-edge').count(),0,'even a previously selected take stays off the staff during an overdub');
+  assert.equal(await frame.locator(`#score .take-pitch-trace-edge[data-take-id="${fixture.id}"]`).count(),0,
+    'a muted previous take stays off the staff during an overdub while live pitch is visible');
   await frame.locator('#playPause').click();
   if (!singWasOn) await frame.locator('#pitchCapture').click();
   await frame.locator('#scoreViewToggle').click();

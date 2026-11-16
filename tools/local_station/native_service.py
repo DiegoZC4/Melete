@@ -73,7 +73,7 @@ class NativeService:
         if sys.platform != 'win32' or not self.configuration.is_file():
             return ''
         saved = json.loads(self.configuration.read_text(encoding='utf-8'))
-        config = json.dumps({'token': self.token, 'origin': self.origin, 'calibration':
+        config = json.dumps({'token': self.token, 'origin': self.origin, 'assetStageVersion': 1, 'calibration':
             {key: saved.get(key) for key in ('seconds', 'spreadMs', 'residualMs', 'measuredAt')}})
         return '<script>window.MeleteNativeStationConfig='+config+';document.currentScript.remove();</script>'
 
@@ -122,10 +122,12 @@ class NativeService:
                 body = json.loads(raw)
                 if url.path == '/native/open':
                     result = api.open(body['client'])
+                elif url.path == '/native/stage':
+                    result = api.stage(body['client'], body.get('guide'))
                 elif url.path == '/native/control':
                     result = api.command(body['session'], body)
                     if body['kind'] == 'close':
-                        api.close(body['session'])
+                        api.close(body['session'], body.get('keepMedia') is True)
                 else:
                     handler.response(404)
                     return True

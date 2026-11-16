@@ -5,6 +5,7 @@ is not an audio timestamp. Microphone input is never routed to the output.
 """
 import json
 import math
+import os
 from pathlib import Path
 import queue
 import re
@@ -12,6 +13,7 @@ import secrets
 import shutil
 import struct
 import sys
+import tempfile
 import threading
 import time
 import wave
@@ -123,6 +125,7 @@ class NativeAudio:
         self.use_watchdog = watchdog
         self.lock = threading.RLock()
         self.session = None
+        self.media_client = self.media_token = None
         self.stream = None
         self.timeline = Timeline()
         self.assets, self.pending = {}, {}
@@ -166,16 +169,75 @@ class NativeAudio:
             result.append(matches[0])
         return result
 
+    def stage(self, client, guide=None):
+        """Prepare PCM without opening the microphone or claiming exclusive output."""
+        if not isinstance(client, str) or not 0 < len(client) <= 128:
+            raise ValueError('Invalid station client')
+        with self.lock:
+            if self.session and self.client != client:
+                raise RuntimeError('Another Melete song/tab owns native audio. Stop it first.')
+            if self.media_client != client:
+                self.assets, self.pending, self.active_assets = {}, {}, {}
+                self.media_client, self.media_token = client, secrets.token_hex(24)
+            if guide:
+                # Each mix needs one guide. Retain the playing guide until the next binding.
+                for key in tuple(self.assets):
+                    if key.startswith('guide-') and key != guide['key'] and key not in self.active_assets.values():
+                        del self.assets[key]
+            if guide and guide['key'] not in self.assets:
+                self.load_guide(guide['key'], guide['descriptor'])
+            return {'mediaToken': self.media_token, 'cachedAssets': list(self.assets)}
+
+    def load_guide(self, key, descriptor):
+        if not isinstance(key, str) or not re.fullmatch(r'guide-[0-9a-f]{64}', key):
+            raise ValueError('Invalid guide identity')
+        path = self.state/'guide-cache-v1'/(key+'.npy')
+        try:
+            pcm = self.np.load(path, mmap_mode='r', allow_pickle=False)
+            if (pcm.dtype != '<f4' or pcm.shape != (descriptor['frames'], descriptor['channels'])
+                    or pcm.ndim != 2 or pcm.nbytes > MAX_ASSET_BYTES):
+                return
+            self.assets[key] = dict(pcm=pcm, origin=finite(descriptor['origin'], -120, 1200),
+                rate=finite(descriptor['rate'], .25, 1.5), sampleRate=finite(descriptor['sampleRate'],8000,RATE))
+            os.utime(path, None)
+        except (OSError, ValueError, EOFError):
+            pass  # Incomplete or unavailable disk cache: render through the original path.
+
+    def save_guide(self, key, pcm):
+        folder = self.state/'guide-cache-v1'
+        temporary = None
+        try:
+            folder.mkdir(exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=folder, prefix='.guide-', delete=False) as output:
+                temporary = Path(output.name)
+                self.np.save(output, pcm, allow_pickle=False)
+            temporary.replace(folder/(key+'.npy'))
+            files = sorted(folder.glob('guide-*.npy'), key=lambda p:p.stat().st_mtime, reverse=True)
+            size = 0
+            for path in files:
+                size += path.stat().st_size
+                if size > 1024**3 and re.fullmatch(r'guide-[0-9a-f]{64}\.npy',path.name):
+                    path.unlink(missing_ok=True)
+        except OSError:
+            pass  # The prepared in-memory asset is sufficient for playback.
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
     def open(self, client):
         with self.lock:
+            media = self.stage(client)
             if self.session:
                 if self.client != client:
                     raise RuntimeError('Another Melete song/tab owns native audio. Stop it first.')
                 self.last_seen = time.monotonic()
-                return self.status()
+                return {**self.status(), **media}
             self.timeline = Timeline()
             self.events, self.sequence, self.fault = [], 0, None
-            self.assets, self.pending, self.active_assets = {}, {}, {}
+            self.active_assets = {}
             self.previews = {}
             self.limited_frames = 0
             self.ring.fill(0)
@@ -199,7 +261,7 @@ class NativeAudio:
             self.last_seen = time.monotonic()
             if self.use_watchdog:
                 threading.Thread(target=self.watchdog, args=(self.session,), daemon=True).start()
-            return self.status()
+            return {**self.status(), **media}
 
     def start_calibrated_stream(self):
         self.devices_info = self.devices()
@@ -268,9 +330,13 @@ class NativeAudio:
             header += b' '*padding
             return struct.pack('<I', len(header))+header+data.astype('<f4', copy=False).tobytes()
 
+    def require_media(self, token):
+        if not token or token != self.media_token:
+            self.require(token)
+
     def asset(self, session, key, offset, data, descriptor=None):
         with self.lock:
-            self.require(session)
+            self.require_media(session)
         if not key or len(key) > 80 or not all(c.isalnum() or c in '-_' for c in key):
             raise ValueError('Invalid asset identity')
         if descriptor is not None:
@@ -299,9 +365,11 @@ class NativeAudio:
             del self.pending[key]
             raise ValueError('Invalid audio samples')
         with self.lock:
-            self.require(session)
+            self.require_media(session)
             del self.pending[key]
             self.assets[key] = target
+        if re.fullmatch(r'guide-[0-9a-f]{64}', key):
+            threading.Thread(target=self.save_guide, args=(key,pcm), daemon=True).start()
 
     def command(self, session, command):
         with self.lock:
@@ -579,7 +647,7 @@ class NativeAudio:
         if record:
             record['done'].set()
 
-    def close(self, session):
+    def close(self, session, keep_media=False):
         with self.lock:
             if self.session != session:
                 return
@@ -592,5 +660,8 @@ class NativeAudio:
             stream.close()
         if self.writer:
             self.writer.join(timeout=5)
-        self.assets, self.pending, self.active_assets = {}, {}, {}
+        self.active_assets = {}
+        if not keep_media:
+            self.assets, self.pending = {}, {}
+            self.media_client = self.media_token = None
         self.ring.fill(0)

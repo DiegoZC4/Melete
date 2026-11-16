@@ -1,4 +1,4 @@
-const {toggleRecording, startRecording, stopRecording, deleteUnused} = require('./browser-sing.cjs');
+const {toggleRecording, startRecording, stopRecording} = require('./browser-sing.cjs');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 

@@ -138,9 +138,9 @@ test('a clock warning persists through recording checkpoints on the affected pas
   assert.equal(pitchReference.timing.clockDivergenceMs,undefined);
 });
 
-test('stopping a free segment retains its actual range despite pending checkpoints', async () => {
+for (const mode of ['segment','loop']) test(`punching out of a ${mode} retains the recorded measures and samples`, async () => {
   const store = memoryStore(), journal = new TakeJournal(store, 'song',
-    {mode:'segment',seconds:10,leadInSeconds:2,start:40,end:50}, 100);
+    {mode,seconds:10,leadInSeconds:2,start:40,end:50}, 100);
   journal.begin(100);
   journal.append(100, new Float32Array(320).fill(.2));
   journal.finish(420, {discardShortTail:true, segment:(record,seconds)=>({end:record.start+seconds,label:'segment',pitchReference:{seconds}})});

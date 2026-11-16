@@ -1,4 +1,4 @@
-const {toggleRecording, startRecording, stopRecording, deleteUnused} = require('./browser-sing.cjs');
+const {toggleRecording, startRecording, stopRecording} = require('./browser-sing.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -179,10 +179,10 @@ async function checkLocalTakeFailures(page, origin, settled, {mobile, temporary,
   assert.ok(partial.length > partial.savedFrames, 'failed tail stays in working memory');
   assert.ok(failed.bytes <= failed.capacity * 3 * 2, 'failure cannot grow an unbounded memory queue');
   assert.equal(await page.locator('#retryTakeSave').isVisible(), true);
-  const prefix = await page.evaluate(async () => {
-    const [record] = (await __qa.takeStore.list(__qa.recording.takes.at(-1).song)).filter(item => !item.favorite);
+  const prefix = await page.evaluate(async id => {
+    const record = (await __qa.takeStore.list(__qa.takeSong)).find(item=>item.id===id);
     return {record, bytes: (await __qa.takeStore.wav(record.id)).size};
-  });
+  },partial.id);
   assert.equal(prefix.record.frames, partial.savedFrames);
   assert.equal(prefix.record.finalized, false);
   assert.equal(prefix.bytes, 44 + partial.savedFrames * 2);
@@ -216,8 +216,8 @@ async function checkLocalTakeFailures(page, origin, settled, {mobile, temporary,
   assert.equal(recovered.bytes, 0);
   assert.equal(recovered.takes.find(item => item.id === initial[0].id).favorite, true);
   await openTakes(page);
-  const checkpointRow = page.locator(`[data-take-id="${interrupted.id}"]`);
-  assert.match(await checkpointRow.locator('.take-warning').getAttribute('title'), /incomplete/);
+  const checkpointRow = page.locator(`#compRows > [data-take-id="${interrupted.id}"]`);
+  assert.equal(await checkpointRow.locator('.take-warning').isVisible(),false,'a saved checkpoint appears as an ordinary take');
   assert.equal(await checkpointRow.locator('.take-download').isDisabled(), false);
 
   // Preflight catches a known full quota before ever asking for a microphone.
@@ -263,10 +263,10 @@ async function checkLocalTakeFailures(page, origin, settled, {mobile, temporary,
   await page.waitForFunction(() => __qa.recording.ready);
   await page.evaluate(async()=>{__qa.enableAudition();await __qa.reloadTakes();});
   await openTakes(page);
-  await page.locator('#takeList .take-row').nth(24).waitFor({state: 'attached'});
-  assert.equal(await page.locator('#takeList .take-row').count(), 25);
+  await page.locator('#compRows > .take-row[data-take-id]').nth(24).waitFor({state: 'attached'});
+  assert.equal(await page.locator('#compRows > .take-row[data-take-id]').count(), 25);
   await page.locator('#takeMore').click();
-  assert.equal(await page.locator('#takeList .take-row').count(), recovered.takes.length + 26);
+  assert.equal(await page.locator('#compRows > .take-row[data-take-id]').count(), recovered.takes.length + 26);
   assert.equal(await page.locator('#takeMore').isVisible(), false);
   assert.equal((await page.evaluate(() => __qa.recording)).bytes, 0);
   assert.equal(await page.locator('#takeFavorites').count(), 0);

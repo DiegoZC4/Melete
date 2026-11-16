@@ -7,7 +7,7 @@
   const PEOPLE_KEY = "melete:station:people:v1";
   const COLUMNS = ["singer", "voice_part", "stage", "song", "part", "layer", "speed_percent", "bars", "recordings",
     "segments", "filled_percent", "sung_seconds", "tracked_seconds", "tracked_percent", "tracked_of_passage_percent",
-    "mean_cents", "median_cents", "within_50_cents_percent", "created", "modified"];
+    "mean_cents", "median_cents", "within_50_cents_percent", "created", "modified", "source_take_times"];
   const stageLabel = id => STAGES.find(([stage]) => stage === id)?.[1] || "";
   const stageRank = id => STAGES.findIndex(([stage]) => stage === id);
   const read = key => { try { return localStorage.getItem(key); } catch { return null; } };
@@ -57,11 +57,14 @@
     const value=take?.playbackAdvanceMs ?? root.MeleteLocalStationRoster?.playbackAdvanceMs?.[take?.id] ?? 0;
     return Number.isFinite(value) ? Math.max(-500,Math.min(500,value)) : 0;
   }
-  function archived(take) {
+  function archiveReceipt(take) {
+    if (take?.publication) return take.publication;
     const receipt = root.MeleteLocalStationRoster?.archivedSources?.[take?.id];
-    return Boolean(take && receipt?.archive && ['song','frames','sampleRate','createdAt']
-      .every(key => receipt[key] !== undefined && receipt[key] === take[key]));
+    if (!take || !receipt?.archive || !['song','frames','sampleRate','createdAt']
+      .every(key => receipt[key] !== undefined && receipt[key] === take[key])) return null;
+    return {kind:"archive",archive:receipt.archive,sourceId:take.id,...(receipt.wavSha256 ? {wavSha256:receipt.wavSha256} : {})};
   }
+  const archived = take => Boolean(archiveReceipt(take));
   const families = {S:"Soprano", A:"Alto", T:"Tenor", B:"Bass"};
   function partCode(voice) {
     const match = /^(s(?:oprano)?|a(?:lto)?|t(?:enor)?|b(?:ass)?)\s*([12]?)$/i.exec(String(voice || "").trim());
@@ -169,7 +172,7 @@
 
   const number = (value, digits = 3) => Number.isFinite(value) ? value.toFixed(digits) : "";
   const stamp = value => Number.isFinite(value) ? new Date(value).toISOString() : "";
-  function summary({song, state, part, bars, score, dates, singer=state.descriptor.station}) {
+  function summary({song, state, part, bars, score, dates, sources, singer=state.descriptor.station}) {
     const {station, reference, layerNumber} = state.descriptor;
     const metrics = (root.MeleteTakeControls || require("./take_controls.js")).metricValues(score);
     const sung = score ? score.completion * score.totalExpectedSeconds : null;
@@ -181,7 +184,9 @@
       // Tracked (%) is of the whole part, so a short passage always reads low.
       tracked_of_passage_percent: number(sung > 0 ? Math.min(100, score.trackedSeconds / sung * 100) : null),
       mean_cents: number(metrics.mean), median_cents: number(metrics.median),
-      within_50_cents_percent: number(metrics.within), created: stamp(dates.createdAt), modified: stamp(dates.updatedAt)};
+      within_50_cents_percent: number(metrics.within), created: stamp(dates.createdAt), modified: stamp(dates.updatedAt),
+      source_take_times:[...new Set(state.segments?.map(s=>s.takeId))].map(id=>sources?.get(id))
+        .filter(t=>Number.isFinite(t?.createdAt)).map(t=>"Take "+t.number+" "+new Date(t.createdAt).toISOString()).join(" | ")};
   }
   function csvCell(value) {
     let text = String(value);
@@ -436,7 +441,7 @@
       current: () => enabled && singer ? {...singer, stage} : null,
       descriptor: base => enabled && singer ? descriptor(base, singer, stage) : null};
   }
-  const api = {STAGES, COLUMNS, stageLabel, requested, singerId, clean, merge, partCode, songRoster, guideChannel, guideMix, untouchedFirstPreset, followsOldDefault, search, directorySinger, descriptor, recordingPlan, sortName, trackSinger, playbackSingerId, sourceSinger, advanceMs, archived, takeLogCsv, summary, csv, create};
+  const api = {STAGES, COLUMNS, stageLabel, requested, singerId, clean, merge, partCode, songRoster, guideChannel, guideMix, untouchedFirstPreset, followsOldDefault, search, directorySinger, descriptor, recordingPlan, sortName, trackSinger, playbackSingerId, sourceSinger, advanceMs, archived, archiveReceipt, takeLogCsv, summary, csv, create};
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.MeleteStation = api;
 })(globalThis);

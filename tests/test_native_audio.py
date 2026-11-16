@@ -301,6 +301,30 @@ class NativeAudioTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'speed'):
             self.command('play', position=0, rate=.5, end=.5)
 
+    def test_parked_device_reuses_guide_and_reopen_loads_it_without_microphone(self):
+        host = self.host
+        key = 'guide-'+'a'*64
+        descriptor = dict(channels=2, frames=32, sampleRate=24000, origin=-1., rate=1.)
+        pcm = self.np.full((32, 2), .25, dtype='<f4')
+        host.save_guide(key, pcm)
+        host.close(host.session)
+        plan = dict(key=key, descriptor=descriptor)
+        staged = host.stage('tab-a', plan)
+        self.assertIn(key, staged['cachedAssets'])
+        self.assertIsNone(host.session)
+        with patch.object(host, 'start_calibrated_stream'):
+            session = host.open('tab-a')['session']
+            self.assertEqual(host.media_token, staged['mediaToken'])
+            with self.assertRaisesRegex(RuntimeError, 'owns native audio'):
+                host.stage('tab-b', plan)
+            host.close(session, keep_media=True)
+            self.assertIn(key, host.assets)
+            reopened = host.stage('tab-b', plan)
+            self.assertNotEqual(reopened['mediaToken'], staged['mediaToken'])
+            self.np.testing.assert_array_equal(host.assets[key]['pcm'], pcm)
+            self.assertIsNone(host.session)
+        host.close(None)
+
     def test_idle_audio_is_not_written_to_disk(self):
         self.callback()
         self.assertFalse(any(Path(self.temp.name).iterdir()))

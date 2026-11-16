@@ -1,4 +1,4 @@
-const {toggleRecording, startRecording, stopRecording, deleteUnused} = require('./browser-sing.cjs');
+const {toggleRecording, startRecording, stopRecording} = require('./browser-sing.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -22,7 +22,7 @@ const recordingProbe = `
     const comps = await takeStore.comps(takeSongKey()), takes = allTakes();
     const historyIds = MeleteRecording.historySources(await takeStore.compHistory(takeSongKey()));
     return (config.audition?.enabled || MeleteComp.discardable(comps, takes, historyIds).length === 0)
-      && takes.every(take => compPanel.loose(take) || historyIds.includes(take.id)
+      && takes.every(take => compPanel.standalone(take) || historyIds.includes(take.id)
         || comps.some(state => state.processed.includes(take.id) || MeleteComp.protectedIds(state).includes(take.id)));
   },
   get takeStore() { return takeStore; },
@@ -161,19 +161,16 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   await page.waitForFunction(() => __qa.recording.state === 'off');
   const result = await page.evaluate(() => __qa.recording);
   assert.ok(result.takes.every(take => take.complete), JSON.stringify(result));
-  assert.ok(!result.takes.some(take => take.id === tail.id), `Stop discards the short last pass: ${JSON.stringify({
-    tail: {id: tail.id, number: tail.number, seconds: tail.seconds, active: tail.active, complete: tail.complete},
-    takes: result.takes.map(({id, number, seconds, complete}) => ({id, number, seconds, complete}))})}`);
-  assert.equal(result.notice, '', 'unfinished loops are discarded without a status explanation');
-  assert.equal(await page.evaluate(id => __qa.takeStore.transaction(['chunks'], 'readonly', (tx, done) => {
-    tx.objectStore('chunks').index('takeId').count(id).onsuccess = event => done(event.target.result);
-  }), tail.id), 0, 'ignored checkpoints do not leave audio chunks behind');
+  const punch=result.takes.find(take=>take.id===tail.id);
+  assert.ok(punch && punch.complete && punch.finalized && !punch.unsaved && punch.frames>0,
+    'punching out during a loop retains the samples and final passage reference');
+  assert.equal(result.notice, '');
   assert.ok(result.takes.every(take => !take.unsaved));
   assert.ok(result.bytes <= result.capacity * 3 * 2);
   assert.equal(result.bytes, 0, 'saved takes do not retain PCM arrays in RAM');
   assert.equal(result.microphone, false, 'only recorder owned input, so Stop disables it');
   assert.equal(result.pitch, 'off', 'Sing-off stops pitch capture too');
-  assert.ok(result.takes.every(take => take.pitchReference?.fingerprint && take.pitchReference.notes.length),
+  assert.ok(result.takes.every(take => take.pitchReference?.fingerprint && (take.id===tail.id || take.pitchReference.notes.length)),
     'real microphone capture snapshots the selected part and performed timing');
   for (const take of result.takes) {
     assert.equal(take.captureProfile?.policy, 'unprocessed');
@@ -191,10 +188,10 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
     ...MeleteRecording.historySources(await __qa.takeStore.compHistory(__qa.takeSong))]);
   // Another pass can finish while its predecessor's WAV is being read above.
   assert.ok(kept.length && kept.length <= result.takes.length && kept.every(take =>
-    result.takes.some(completed=>completed.id===take.id) && protectedAfterStop.includes(take.id)),
+    result.takes.some(completed=>completed.id===take.id) && (protectedAfterStop.includes(take.id) || take.id===tail.id)),
     JSON.stringify({passes, kept: kept.map(({id, number}) => ({id, number})), protectedAfterStop}));
   assert.ok(kept.some(take => take.id === complete.id), 'recent replaced passes survive for multilevel Undo');
-  assert.equal(await page.locator('#takeLoose').isVisible(), false, 'no loose takes after a loop recording');
+  assert.equal(await page.locator('#takeReviewTable .take-columns').count(),1);
   assert.equal(await page.locator('#compRows > .comp-row.is-armed').count(), 1);
   assert.equal(await page.locator('#takeMicrophone').isEnabled(), true);
   assert.equal(await page.locator('#settingsToggle').evaluate(button => button.classList.contains('has-recording')), false);
@@ -266,7 +263,7 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   await page.waitForFunction(() => __qa.recording.ready);
   const restored = await page.evaluate(() => __qa.recording);
   assert.equal(restored.takes.length, kept.length);
-  assert.ok(!restored.takes.some(take => take.id === tail.id), 'ignored tail stays gone after reload');
+  assert.ok(restored.takes.some(take => take.id === tail.id && take.frames===punch.frames), 'the punched passage survives reload');
   assert.equal(restored.bytes, 0, 'restoring a library loads metadata, not every audio file');
   assert.equal(restored.state, 'off');
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
@@ -282,8 +279,7 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
     await __qa.reloadTakes();
     return __qa.recording.takes.find(take => take.id === id);
   });
-  await page.locator('#takeLoose').waitFor({state: 'visible'});
-  assert.match(await page.locator('#takeLooseMessage').innerText(), /^Audition takes/);
+  await page.locator('#compRows > [data-take-id="'+unwanted.id+'"]').waitFor({state:'visible'});
   assert.equal(await page.getByRole('button', {name: `Delete take ${unwanted.number}`, exact: true}).isEnabled(), true);
   // Individual downloads remain; the redundant archive button is removed.
   assert.equal(await page.locator('#downloadTakes').count(),0);
@@ -311,8 +307,9 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   await page.screenshot({path: path.join(output, `take-storage-large-${mobile ? 'mobile' : 'desktop'}.png`)});
   await page.evaluate(bytes => { __qa.otherSongBytes = bytes; }, otherSongBytes);
   assert.equal(await page.locator('#takeDeletePrompt').count(),0);
-  await page.locator('#deleteLooseTakes').click();
-  assert.match(await page.locator('#deleteLooseTakes').getAttribute('class'),/is-delete-armed/);
+  const trash=page.getByRole('button',{name:'Delete take '+unwanted.number,exact:true});
+  await trash.click();
+  assert.equal(await page.locator('#compRows .take-delete.is-delete-armed').count(),1);
   await page.keyboard.press('Escape');
   assert.equal((await page.evaluate(() => __qa.recording)).takes.length, kept.length + 1);
   const unwantedWav = await page.evaluate(async id => Array.from(new Uint8Array(await (await __qa.takeStore.wav(id)).arrayBuffer())), unwanted.id);
@@ -333,7 +330,7 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   await page.waitForFunction(id => !__qa.recording.takes.some(take => take.id === id), unwanted.id);
   await page.waitForFunction(async id => !(await __qa.takeStore.usage()).some(take => take.id === id), unwanted.id, {timeout: 15000});
   await page.locator('#takeUndo').waitFor({state: 'hidden'});
-  assert.equal(await page.locator('#takeLoose').isVisible(), false, 'track sources are never offered for deletion');
+  assert.equal(await page.locator('#compRows > [data-take-id="'+unwanted.id+'"]').count(),0);
 
   // Toggling Sing off leaves the transport running; turning it back on punches in.
   await page.locator('#settingsToggle').click();
@@ -358,7 +355,7 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   await page.waitForFunction(() => __qa.recording.state === 'off');
   assert.equal((await page.evaluate(() => __qa.recording)).microphone, false);
 
-  // Space also silently discards a nearly complete pass.
+  // Space punches out before the end of a loop and preserves the passage.
   await page.waitForFunction(() => __qa.tracksSettled(), null, {timeout: 30000, polling: 250});
   const beforeNearEnd = (await page.evaluate(() => __qa.recording)).takes.length;
   await toggleRecording(page);
@@ -375,14 +372,10 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   assert.ok(stoppedAt.seconds < stoppedAt.end, `test must stop before a full pass: ${JSON.stringify(stoppedAt)}`);
   await page.waitForFunction(() => __qa.recording.state === 'off');
   const nearEnd = (await page.evaluate(() => __qa.recording)).takes;
-  const recoveredGap = nearEnd.find(take=>take.id===stoppedAt.id);
-  assert.ok(!recoveredGap || (recoveredGap.gap && !recoveredGap.complete && !recoveredGap.unsaved),
-    'ordinary stubs are discarded; genuine missing audio remains recoverable');
-  assert.equal(nearEnd.length, beforeNearEnd + Number(Boolean(recoveredGap)), JSON.stringify({stoppedAt,
-    nearEnd:nearEnd.map(({id,seconds,gap,complete})=>({id,seconds,gap,complete})),
-    gaps:await page.evaluate(()=>__qa.recording.gaps)}));
-
-  // Transport edits discard ordinary interrupted takes rather than splicing.
+  const punched=nearEnd.find(take=>take.id===stoppedAt.id);
+  assert.ok(punched && punched.frames>0 && punched.finalized && !punched.unsaved);
+  assert.ok(punched.complete || punched.gap);
+  assert.ok(nearEnd.length>=beforeNearEnd);
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
   // Count-in stubs are discarded for every intentional transport change.
   for (const action of ['space', 'stop', 'rate']) {
@@ -436,23 +429,21 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
     await __qa.reloadTakes();
     return id;
   });
-  await deleteUnused(page);
+  await page.locator('#compRows > [data-take-id="'+unusedId+'"] .take-delete').click();
   await page.keyboard.press('Escape');
   assert.ok((await page.evaluate(() => __qa.recording)).takes.some(t=>t.id===unusedId),'cancel keeps the unused take');
-  const retained = await page.evaluate(async () => [
-    ...(await __qa.takeStore.comps(__qa.takeSong)).flatMap(MeleteComp.protectedIds),
-    ...MeleteRecording.historySources(await __qa.takeStore.compHistory(__qa.takeSong))]);
-  await deleteUnused(page);
-  await page.locator('#deleteLooseTakes.is-delete-armed').click();
-  await page.waitForFunction(ids => __qa.recording.takes.every(take => ids.includes(take.id)), retained);
+  const retained=await page.evaluate(id=>__qa.recording.takes.filter(t=>t.id!==id).map(t=>t.id),unusedId);
+  await page.locator('#compRows > [data-take-id="'+unusedId+'"] .take-delete').click();
+  await page.locator('#compRows .take-delete.is-delete-armed').click();
+  await page.waitForFunction(id=>!__qa.recording.takes.some(t=>t.id===id),unusedId);
   assert.ok(!(await page.evaluate(() => __qa.recording)).takes.some(t=>t.id===unusedId),'confirmation removes the unused take');
   await page.reload(); await settled();
   await page.waitForFunction(() => __qa.recording.ready);
   assert.equal((await page.evaluate(() => __qa.recording)).state, 'off');
-  assert.ok((await page.evaluate(() => __qa.recording)).takes.every(take => retained.includes(take.id)), 'cleanup keeps only protected sources');
+  assert.ok((await page.evaluate(() => __qa.recording)).takes.every(take => retained.includes(take.id)), 'deleting one row preserves the other recordings');
   // Remove this disposable fixture's comp before the independent failure tests.
   await page.evaluate(async () => {
-    const ids = __qa.recording.takes.map(take => take.id);
+    const ids = (await __qa.takeStore.list(__qa.takeSong)).map(take => take.id);
     await __qa.forgetCompFixtures((await __qa.takeStore.comps(__qa.takeSong)).map(s=>s.key));
     await __qa.takeStore.deleteTakes(__qa.takeSong, ids);
     await __qa.reloadTakes();

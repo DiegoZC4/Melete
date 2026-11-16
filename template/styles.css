@@ -657,7 +657,7 @@ button { color: inherit; }
 .comp-footer { display: flex; align-items: center; gap: var(--toolbar-row-gap); min-width: 0; }
 .reference-heading { font-size: 10px; font-weight: 700; display: grid; place-items: center; }
 .reference-heading, .reference-hear, .reference-volume, .reference-pan { --part-color: var(--accent); }
-.take-loose-section[hidden], .comp-row[hidden] { display: none; }
+.comp-row[hidden] { display: none; }
 .comp-cloud-dialog { width: 360px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 32px); overflow: auto; box-sizing: border-box; background: var(--panel-solid); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 16px; font-family: inherit; font-size: 13px; line-height: 1.45; }
 .comp-cloud-dialog::backdrop { background: #0007; }
 .comp-cloud-dialog { width: fit-content; min-width: min(325px,calc(100vw - 24px)); }
@@ -771,9 +771,9 @@ button { color: inherit; }
 .take-source-filter select { flex: 1; min-width: 0; font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 4px; }
 .take-source-filter[hidden], .take-source-empty,
 #takeReviewTable[data-source="local"] [data-cloud-id],
-#takeReviewTable[data-source="cloud"] :is([data-comp-key], #takeLoose, #practiceTraceRows) { display: none; }
+#takeReviewTable[data-source="cloud"] :is([data-comp-key], .take-row[data-take-id], #practiceTraceRows, #takeMore) { display: none; }
 #takeReviewTable[data-source="cloud"]:not(:has([data-cloud-id])) .take-source-empty[data-source="cloud"],
-#takeReviewTable[data-source="local"]:not(:has([data-comp-key], #practiceTraceRows > *, #takeLoose:not([hidden]))) .take-source-empty[data-source="local"] { display: block; margin: 4px; color: var(--muted); }
+#takeReviewTable[data-source="local"]:not(:has([data-comp-key], #practiceTraceRows > *, .take-row[data-take-id])) .take-source-empty[data-source="local"] { display: block; margin: 4px; color: var(--muted); }
 .take-table-tools { display: flex; flex-direction: column; gap: var(--toolbar-row-gap); }
 .take-table-tools > .icon-button { width: var(--toolbar-row-height); height: var(--toolbar-row-height); padding: 3px; min-height: 0; }
 #expandTakes[aria-expanded="true"] svg { transform: rotate(180deg); }
@@ -793,6 +793,8 @@ button { color: inherit; }
   color: var(--ink); font: 12px/1.4 var(--ui-font, sans-serif); box-shadow: 0 5px 18px #0004; overflow-y: auto;
 }
 #takeFieldMenu strong { display: block; padding: 2px 4px 4px; }
+#takeFieldMenu #stationTakeLog { margin-top:6px; width:100%; }
+#stationTakeLog[hidden] { display:none; }
 .take-field-options label { display: flex; align-items: center; gap: 7px; min-height: 23px; cursor: pointer; }
 .take-field-options label[hidden] { display: none; }
 .take-field-options input { accent-color: var(--accent); }
@@ -976,7 +978,6 @@ button { color: inherit; }
 .take-delete-prompt span { flex: 0 0 100%; }
 .take-undo { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-bottom: 5px; }
 /* Recordings outside every track: older takes and ones that could not be used. */
-.take-loose { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin: 8px 0 3px; color: var(--muted); }
 .take-undo[hidden], .take-delete-prompt[hidden],
 .take-command[hidden] { display: none; }
 #takeMore { margin-top: 3px; }

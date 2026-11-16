@@ -252,7 +252,7 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
   assert.equal(await frame.locator('.take-star, #takeFavorites, .take-state, .is-best-pitch').count(), 0);
   const ordering = await frame.evaluate(() => {
     const qa = window.__qa || window.__probe;
-    return [...document.querySelectorAll('#takeList .take-row')].map(row => qa.recording.takes.find(t => t.id === row.dataset.takeId));
+    return [...document.querySelectorAll('#compRows > .take-row[data-take-id]')].map(row => qa.recording.takes.find(t => t.id === row.dataset.takeId));
   });
   const errors = ordering.map(take => Number.isFinite(take.pitchScore?.meanAbsCents) ? take.pitchScore.meanAbsCents : Infinity);
   assert.deepEqual(errors, [...errors].sort((a, b) => a - b), 'all measured takes sort by actual cents, regardless of coverage');
@@ -282,10 +282,10 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
       assert.ok((await row.locator('.take-select').getAttribute('aria-description')).includes(text));
     } else assert.doesNotMatch(tooltip, /Within \u00b150 cents:/);
   }
-  assert.deepEqual(await frame.locator('#takeColumns > span').allTextContents(),
+  const valueHeaders='#takeColumns > span:not(.take-singer-heading):not(.take-download-heading)';
+  assert.deepEqual(await frame.locator(valueHeaders).allTextContents(),
     ['Take', 'Part', 'Segments', 'Tracked (%)', 'Mean (\u00a2)', 'Median (\u00a2)', '\u226450\u00a2 (%)', 'Created', 'Modified', 'Oct', 'Hear']);
-  assert.equal(await frame.locator('#takeColumns > span').nth(6).getAttribute('aria-label'),
-    'Within 50 cents, percent of tracked singing');
+  assert.match(await frame.locator(valueHeaders).nth(6).getAttribute('title'),/tracked singing within 50 cents/i);
   assert.match(await frame.locator(`.take-row[data-take-id="${ids.sharp}"] .take-detail`).getAttribute('title'), /% tracked; 30\.1 cents/);
   assert.match(await frame.locator(`.take-row[data-take-id="${ids['current-score']}"] .take-detail`).getAttribute('title'), /25\.235 cents/);
   assert.doesNotMatch(await frame.locator(`.take-row[data-take-id="${ids.accurate}"] .take-detail`).getAttribute('title'), /90%/);
@@ -316,7 +316,7 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
           review: box('.take-review'), overflow: document.documentElement.scrollWidth > innerWidth,
           overflowElements: [...document.querySelectorAll('body *')].filter(el => el.getBoundingClientRect().right > innerWidth + 1)
             .slice(0, 10).map(el => ({tag: el.tagName, class: el.className?.baseVal ?? el.className})),
-          headers: [...document.querySelectorAll('#takeColumns > span')].map(cell => cell.getBoundingClientRect().toJSON()),
+          headers: [...document.querySelectorAll('#takeColumns > span:not(.take-singer-heading):not(.take-download-heading)')].map(cell => cell.getBoundingClientRect().toJSON()),
           headersFit: [...document.querySelectorAll('#takeColumns > span')].every(cell => cell.scrollWidth <= cell.clientWidth),
           headerTop: box('#takeColumns').top,
           tableScroll: getComputedStyle(document.querySelector('.take-review')).overflowX,
@@ -324,11 +324,11 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
             const bounds = cell.getBoundingClientRect(), scroll = document.querySelector('.take-review').getBoundingClientRect();
             return bounds.left >= scroll.left - 1 && bounds.right <= scroll.right + 1;
           }),
-          metrics: [...document.querySelectorAll('#takeList .take-detail')].map(el => {
+          metrics: [...document.querySelectorAll('#compRows > [data-take-id] .take-detail')].map(el => {
             const cells = [...el.children].map(child => child.getBoundingClientRect().toJSON());
             return {cells, values: [...el.querySelectorAll('strong')].map(cell => cell.getBoundingClientRect().toJSON()),
               cellsFit: [...el.children].every(cell => cell.scrollWidth <= cell.clientWidth)};
-          }), rows: [...document.querySelectorAll('#takeList .take-row')].map(row => ({
+          }), rows: [...document.querySelectorAll('#compRows > .take-row[data-take-id]')].map(row => ({
             summary: row.querySelector('.take-summary').getBoundingClientRect().toJSON(),
             overflow: row.querySelector('.take-summary').scrollWidth > row.clientWidth,
             height: row.getBoundingClientRect().height, number: row.querySelector('.take-number').getBoundingClientRect().toJSON(),
@@ -362,8 +362,8 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
         el.scrollLeft = el.scrollWidth;
         const right = el.getBoundingClientRect().right;
         const reachable = [...el.querySelectorAll('.take-delete')].every(button => button.getBoundingClientRect().right <= right + 1);
-        const cells = [...el.querySelector('#takeList .take-detail').children];
-        const headings = [...el.querySelectorAll('#takeColumns > span')];
+        const cells = [...el.querySelector('#compRows > [data-take-id] .take-detail').children];
+        const headings = [...el.querySelectorAll('#takeColumns > span:not(.take-singer-heading):not(.take-download-heading)')];
         const aligned = cells.every((cell, i) => {
           const a = cell.getBoundingClientRect(), b = headings[i + 3].getBoundingClientRect();
           return Math.abs(a.x + a.width / 2 - b.x - b.width / 2) < .5;
@@ -439,7 +439,7 @@ async function checkTakeSorting(frame, reload) {
     assert.equal(await frame.locator('#takeColumns [data-sorted]').count(), 1);
     const rows = await frame.evaluate(column => {
       const q = window.__qa || window.__probe;
-      return [...document.querySelectorAll('#takeList .take-row')].map(el => {
+      return [...document.querySelectorAll('#compRows > .take-row[data-take-id]')].map(el => {
         const t = q.recording.takes.find(t => t.id === el.dataset.takeId), p = t.pitchScore;
         const ref=t.pitchReference&&q.pitchReference({start:0,end:q.scoreMeasures.at(-1)[0]+q.scoreMeasures.at(-1)[1],rate:t.rate},t.pitchReference.part,t.pitchReference.line);
         const total=ref?.notes.reduce((sum,n)=>sum+n[1]-n[0],0)||p?.expectedSeconds;

@@ -24,18 +24,36 @@
           t.pitchContour?.analysisVersion,t.pitchScore?.scoringVersion] : [id,null];
       })]);
   }
-  function hasReceipt(state, sources) {
-    const stamp = signature(state, sources);
-    return Boolean(stamp && receipts()[state.key]?.signature === stamp);
+  function publicationReceipts() {
+    const stored=receipts();
+    for (const [key,receipt] of Object.entries(stored)) {
+      if (!receipt?.id) {delete stored[key];continue;}
+      if (!receipt.segments && receipt.signature) {
+        try { receipt.segments=JSON.parse(receipt.signature)[3]; } catch {}
+      }
+      if (!Array.isArray(receipt.sourceIds)) receipt.sourceIds=Array.isArray(receipt.segments)
+        ? [...new Set(receipt.segments.map(s=>s.takeId))] : [];
+    }
+    return stored;
   }
-  function rememberReceipt(key, stamp, result, owner) {
+  function hasReceipt(state, sources) {
+    return Boolean(state && (state.publication || receipts()[state.key]?.id ||
+      state.segments?.some(s => {
+        const take=sources?.get(s.takeId);
+        return take?.publication || root.MeleteStation?.archived(take);
+      })));
+  }
+  function rememberReceipt(key, stamp, result, owner, manifestSha256) {
     if (!stamp || !result?.id || !owner) return;
-    try { localStorage.setItem(RECEIPTS, JSON.stringify({...receipts(), [key]:
-      {signature:stamp,id:result.id,owner,uploaded:result.uploaded}})); } catch {}
+    const segments=JSON.parse(stamp)[3];
+    const receipt={id:result.id,owner,uploaded:result.uploaded,manifestSha256,segments,
+      sourceIds:[...new Set(segments.map(s=>s.takeId))]};
+    try { localStorage.setItem(RECEIPTS, JSON.stringify({...receipts(),[key]:receipt})); } catch {}
+    return receipt;
   }
   function forgetReceipt(id, owner) {
     const saved = receipts();
-    for (const [key, receipt] of Object.entries(saved)) if (receipt.id === id && receipt.owner === owner) delete saved[key];
+    for (const receipt of Object.values(saved)) if (receipt.id === id && receipt.owner === owner) receipt.withdrawn=true;
     try { localStorage.setItem(RECEIPTS, JSON.stringify(saved)); } catch {}
   }
   function create(adapter) {
@@ -107,13 +125,15 @@
     function message(text) { el("compCloudStatus").textContent = text; }
     function autoKey() { return `melete:cloud:auto:${session?.user?.id || "signed-out"}`; }
     function enabled() { try { return session?.user && localStorage.getItem(autoKey()) === "true"; } catch { return false; } }
+    const readOnly = () => hasReceipt(adapter.state(), adapter.sources?.());
+    const cannotUpload = () => localOnly(adapter.state()) || readOnly();
     function controls() {
       for (const id of ["compCloudSave", "compCloudRestore", "compCloudDelete", "compCloudLogout", "compCloudAuto"]) el(id).disabled = working || !session?.user;
       el("compCloudRestore").disabled ||= !remote;
       el("compCloudDelete").disabled ||= !remote;
-      el("compCloudSave").disabled ||= !adapter.state() || localOnly(adapter.state());
-      el("compCloudAuto").disabled ||= localOnly(adapter.state());
-      el("compCloudRestore").disabled ||= !adapter.state();
+      el("compCloudSave").disabled ||= !adapter.state() || cannotUpload();
+      el("compCloudAuto").disabled ||= cannotUpload();
+      el("compCloudRestore").disabled ||= !adapter.state() || readOnly();
       el("compCloudAuto").checked = Boolean(enabled());
       el("compCloudDelete").dataset.deleteToken = `${remoteKey}:${remote?.revision}`;
       account();
@@ -204,7 +224,7 @@
       } catch (e) { message(e.message); }
     }
     function uploadTrack() {
-      if (working || !adapter.state()?.segments.length || localOnly(adapter.state())) return;
+      if (working || !adapter.state()?.segments.length || cannotUpload()) return;
       if (session?.user) { void submit(); return; }
       pendingUpload = {key:adapter.state().key, revision:adapter.state().revision,until:Date.now()+5*60000};
       signIn();
@@ -254,7 +274,15 @@
     }
     async function submit() {
       const state=adapter.state(), owner=session?.user?.id;
-      if(!owner || !state?.segments.length || working || localOnly(state))return;
+      if(!owner || !state?.segments.length || working || cannotUpload())return;
+      const publish=()=>publishSnapshot(state,owner);
+      if (root.navigator?.locks) return root.navigator.locks.request("melete-submit:"+state.key,publish);
+      return publish();
+    }
+    async function publishSnapshot(state,owner) {
+      if(working || adapter.state()?.key!==state.key || session?.user?.id!==owner || cannotUpload()) return;
+      const saved=await adapter.store.comps(adapter.song());
+      if (saved.some(s=>s.key===state.key && s.publication) || cannotUpload()) return;
       if(consentOwner!==owner){
         if(!confirm("Submit this comp as "+session.user.name+"? The choir reviewers can hear the finished audio and see its pitch contour and scores. Your other recordings stay private."))return;
         consentOwner=owner;
@@ -263,7 +291,7 @@
       try{
         const ref=state.descriptor.reference, stats=adapter.metadata().pitchScore;
         const stamp=signature(state,adapter.sources());
-        const check=()=>{if(session?.user?.id!==owner || adapter.state()?.key!==state.key || adapter.state()?.revision!==state.revision)
+        const check=()=>{if(cannotUpload() || session?.user?.id!==owner || adapter.state()?.key!==state.key || adapter.state()?.revision!==state.revision)
           throw Error("The track or account changed. Select the comp and submit again.");};
         const render=await adapter.renderSubmission();check();
         const pitch=new Float32Array(render.frames.length*3);
@@ -274,10 +302,16 @@
         });
         const track=await digest(new TextEncoder().encode(state.key)), audio=await upload(render.blob),
           pitches=await upload(new Blob([pitch]));check();
-        const result=await request("submit",{method:"POST",body:{version:1,song:state.song,track,label:state.descriptor.label,
+        const manifest={version:1,song:state.song,track,label:state.descriptor.label,
           part:ref.part,line:ref.line??null,fingerprint:ref.fingerprint,rate:ref.rate,origin:render.origin,seconds:ref.seconds,seams,
-          stats:root.MeleteTakeControls.metricValues(stats),audio,pitches}});
-        rememberReceipt(state.key,stamp,result,owner);adapter.submitted?.();
+          stats:root.MeleteTakeControls.metricValues(stats),audio,pitches};
+        const hash=await digest(new TextEncoder().encode(JSON.stringify(manifest)));
+        check();
+        const result=await request("submit",{method:"POST",body:manifest});
+        const receipt=rememberReceipt(state.key,stamp,result,owner,hash);
+        if (!receipt) throw Error("The server did not return a submission receipt.");
+        await adapter.store.sealPublications(adapter.song(),root.MeleteStation.archiveReceipt,{[state.key]:receipt});
+        await adapter.submitted?.();
         const notice=result.unchanged?"This version was already submitted":"Comp submitted for review";
         message(notice);adapter.toast(notice);
         await loadListing();
@@ -285,7 +319,7 @@
       finally{working=false;controls();}
     }
     async function save({automatic = false} = {}) {
-      if (working || !session?.user || !adapter.state() || localOnly(adapter.state())) return;
+      if (working || !session?.user || !adapter.state() || cannotUpload()) return;
       const current = adapter.state(), takes = new Map(adapter.sources());
       const key = await digest(new TextEncoder().encode(current.key));
       if (automatic && savedRevision === current.revision) return;
@@ -316,7 +350,7 @@
       finally { working = false; controls(); if (savedRevision >= 0 && adapter.state()?.key === current.key && adapter.state()?.revision !== savedRevision) changed(); }
     }
     async function restore() {
-      if (working || !remote || !adapter.state()) return;
+      if (working || !remote || !adapter.state() || readOnly()) return;
       const before = adapter.state(), payload = remote.payload;
       if (!confirm("Restore the cloud track? The current track can be restored with Undo until your next recording.")) return;
       working = true; controls(); message("Restoring recordings...");
@@ -605,6 +639,6 @@
       if(session?.user)return open();pendingLibrary=true;signIn();}, changed,
       resume: () => connect({interactive: false}).then(changed).catch(() => {})};
   }
-  root.MeleteCloud = {create, digest, signature, hasReceipt, rememberReceipt, forgetReceipt, localOnly};
+  root.MeleteCloud = {create, digest, signature, hasReceipt, publicationReceipts, rememberReceipt, forgetReceipt, localOnly};
   if (typeof module !== "undefined" && module.exports) module.exports = root.MeleteCloud;
 })(globalThis);

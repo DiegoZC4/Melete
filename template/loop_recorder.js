@@ -27,7 +27,7 @@
     if (!Number.isFinite(maxBytes) || maxBytes < 0) throw new Error("Invalid history storage limit");
     const records = new Map(takes.map(t => [t.id, t]));
     const pinned = new Set(comps.flatMap(s => [...s.segments, ...(s.undo || [])].map(p => p.takeId)));
-    for (const t of takes) if (t.favorite || t.active || t.unsaved || !t.finalized || !t.complete || t.deleteAfter) pinned.add(t.id);
+    for (const t of takes) if (t.publication || t.favorite || t.active || t.unsaved || !t.finalized || !t.complete || t.deleteAfter) pinned.add(t.id);
     const all = histories.map(item => ({song:item.song,
       history:{...item.history, past:[...item.history.past], future:[...item.history.future]}}));
     const before = new Set(histories.flatMap(item => historySources(item.history)));
@@ -461,12 +461,59 @@
       });
     }
 
+    sealPublications(song, archiveReceipt, receipts = {}) {
+      // Seal source identities and their existing comp in one transaction. PCM is in a separate store.
+      return this.transaction(["comps","takes","counters"], "readwrite", (tx, done) => {
+        const takes=tx.objectStore("takes"), comps=tx.objectStore("comps");
+        takes.index("song").getAll(song).onsuccess = ({target}) => {
+          const sources=new Map(target.result.map(t=>[t.id,t]));
+          function sealSource(t,publication) {
+            if (!t || t.publication || !publication || !t.finalized || t.active) return;
+            const sealed={...t,publication};
+            delete sealed.deleteAfter;
+            delete sealed.deleteFavorite;
+            takes.put(sealed); sources.set(t.id,sealed);
+          }
+          for (const t of sources.values()) sealSource(t,archiveReceipt?.(t));
+          comps.index("song").getAll(song).onsuccess = ({target}) => {
+            const locked=new Set();
+            for (const state of target.result) {
+              const receipt=receipts[state.key];
+              if (!receipt) continue;
+              for (const id of receipt.sourceIds) sealSource(sources.get(id),{kind:"submission",
+                id:receipt.id,owner:receipt.owner,sourceId:id,manifestSha256:receipt.manifestSha256});
+            }
+            for (const state of target.result) {
+              const receipt=receipts[state.key], ids=[...new Set(state.segments.map(s=>s.takeId))];
+              const published=ids.filter(id=>sources.get(id)?.publication);
+              if (!state.publication && !receipt && !published.length) continue;
+              locked.add(state.key);
+              if (state.publication) continue;
+              let publication=receipt ? {kind:"submission",id:receipt.id,owner:receipt.owner,
+                uploaded:receipt.uploaded,sourceIds:receipt.sourceIds,manifestSha256:receipt.manifestSha256}
+                : {kind:"archived-sources",sourceIds:published};
+              if (receipt?.segments && JSON.stringify(receipt.segments)!==JSON.stringify(state.segments))
+                publication={kind:"local-variant",sourceIds:ids,original:publication};
+              comps.put({...state,publication,revision:state.revision+1});
+            }
+            if (!locked.size) { done(false); return; }
+            readCompHistory(tx,song,history=>{
+              const past=history.past.filter(e=>!locked.has(e.key)), future=history.future.filter(e=>!locked.has(e.key));
+              if (past.length!==history.past.length || future.length!==history.future.length)
+                tx.objectStore("counters").put({...history,past,future,revision:history.revision+1},historyKey(song));
+              done(true);
+            });
+          };
+        };
+      });
+    }
+
     creditTake(song, id, previous, person, advanceMs, previousAdvance) {
       return this.transaction(['takes'], 'readwrite', (tx, done, fail) => {
         const takes=tx.objectStore('takes');
         takes.get(id).onsuccess=({target})=>{
           const take=target.result;
-          if (!take || take.song!==song || !take.finalized || take.active || !person?.id || !person.name
+          if (!take || take.publication || take.song!==song || !take.finalized || take.active || !person?.id || !person.name
               || (take.performer?.id ?? null)!==previous || take.playbackAdvanceMs!==previousAdvance
               || !Number.isInteger(advanceMs) || Math.abs(advanceMs)>500) {
             fail(new Error('This take changed. Reopen the singer log to credit the saved take.')); return;
@@ -482,13 +529,14 @@
         const comps = tx.objectStore("comps"), takes = tx.objectStore("takes");
         comps.get(key).onsuccess = ({target}) => {
           const old = target.result, d = old?.descriptor;
-          if (!d?.station || old.revision !== revision || !person?.id || !person.name) {
+          if (!d?.station || old.publication || old.revision !== revision || !person?.id || !person.name) {
             fail(new Error("This track changed. Reopen it to correct the singer.")); return;
           }
           if (d.station.id === person.id) { done(old); return; }
           const samePart = r => r && r.part === d.reference.part && (r.line ?? null) === (d.reference.line ?? null) && r.rate === d.reference.rate;
           comps.index("song").getAll(old.song).onsuccess = event => {
             const states = event.target.result, family = states.filter(s => s.descriptor.slot === d.slot && samePart(s.descriptor.reference));
+            if (family.some(s=>s.publication)) { fail(new Error("Published recordings are read-only.")); return; }
             const named = {id:person.id, name:person.name, voice:person.voice || "", stage:d.station.stage};
             const base = `station:${named.id}:${named.stage}`;
             let occupied=states.some(s => s.descriptor.slot === base && samePart(s.descriptor.reference));
@@ -500,6 +548,7 @@
                 if (samePart(take.pitchReference)) {
                   if (take.trackSlot===base) occupied=true;
                   if (take.trackSlot===d.slot) {
+                    if (take.publication) { fail(new Error("Published recordings are read-only.")); return; }
                     if (take.active) { fail(new Error("Stop recording this take before changing its singer.")); return; }
                     sources.push(take);
                   }
@@ -535,12 +584,12 @@
       return this.transaction(["comps","takes"],"readwrite",(tx,done,fail)=>{
         tx.objectStore("comps").get(key).onsuccess=({target})=>{
           const state=target.result, takes=tx.objectStore("takes");
-          if (!previous || !person?.name || !person.id || state?.revision!==revision || state.descriptor.station || !state.segments.length) {
+          if (!previous || !person?.name || !person.id || state?.publication || state?.revision!==revision || state.descriptor.station || !state.segments.length) {
             fail(new Error("Track changed. Reopen it to correct the singer.")); return;
           }
           for (const id of new Set(state.segments.map(s=>s.takeId))) takes.get(id).onsuccess=e=>{
             const take=e.target.result;
-            if (!take || take.active || take.station || take.performer?.id!==previous) {
+            if (!take || take.publication || take.active || take.station || take.performer?.id!==previous) {
               fail(new Error("Source credit changed. Reopen the track.")); return;
             }
             takes.put({...take,performer:{id:person.id,name:person.name}});
@@ -600,6 +649,7 @@
         const store = tx.objectStore("comps");
         store.get(state.key).onsuccess = e => {
           const previous = e.target.result;
+          if (previous?.publication) { fail(new Error("Published recordings are read-only.")); return; }
           if ((previous?.revision || 0) !== expectedRevision) { fail(new Error("Comp changed in another tab. Reload and try again.")); return; }
           tx.objectStore("takes").getAll().onsuccess = result => {
             const records = new Map(result.target.result.map(t => [t.id, t]));
@@ -607,7 +657,9 @@
             if (ids.some(id => !records.has(id) || records.get(id).deleteAfter)) { fail(new Error("A comp source was deleted. Reload before editing.")); return; }
             readCompHistory(tx, state.song, history => {
               const next = {...state, undo: null, historyManaged: true, revision: expectedRevision + 1, updatedAt: Date.now()};
-              if (remember) {
+              const published=[...new Set(next.segments.map(s=>s.takeId))].filter(id=>records.get(id)?.publication);
+              if (published.length && !next.publication) next.publication={kind:"archived-sources",sourceIds:published};
+              if (remember && !next.publication) {
                 let before = previous;
                 for (const after of [...steps.map(s => ({...next, ...s})), next]) {
                   history = recordCompEdit(history, before, after); before = after;
@@ -632,7 +684,7 @@
           const snapshot = direction === "undo" ? edit.before : edit.after;
           tx.objectStore("comps").get(edit.key).onsuccess = event => {
             const state = event.target.result;
-            if (!state || !sameCompContent(state, direction === "undo" ? edit.after : edit.before)) {
+            if (!state || state.publication || !sameCompContent(state, direction === "undo" ? edit.after : edit.before)) {
               fail(new Error("This track changed outside its edit history. Current recordings kept.")); return;
             }
             tx.objectStore("takes").getAll().onsuccess = event => {
@@ -671,6 +723,7 @@
       return this.transaction(["comps", "takes", "chunks", "counters"], "readwrite", (tx, done, fail) => {
         tx.objectStore("comps").get(state.key).onsuccess = e => {
           const previous = e.target.result;
+          if (previous?.publication) { fail(new Error("Published recordings are read-only.")); return; }
           if ((e.target.result?.revision || 0) !== expectedRevision) { fail(new Error("Local comp changed during download. Try again.")); return; }
           tx.objectStore("counters").get(state.song).onsuccess = counter => {
             let number = counter.target.result || 0;
@@ -699,6 +752,7 @@
         takes.get(record.id).onsuccess = event => {
           const previous = event.target.result;
           if (previous?.deleteAfter) { fail(new Error("This take is pending deletion")); return; }
+          if (previous?.publication) { fail(new Error("Published recordings are read-only.")); return; }
           if ((previous?.frames || 0) !== offset) { fail(new Error("The take changed in another tab")); return; }
           const write = number => {
             const next = {...record, ...previous, ...status, number, frames: offset + pcm.length, updatedAt: Date.now()};
@@ -728,7 +782,7 @@
         const takes = tx.objectStore("takes");
         takes.get(take.id).onsuccess = event => {
           const record = event.target.result;
-          if (!record || !record.finalized || record.deleteAfter || record.updatedAt !== take.updatedAt || record.frames !== take.frames
+          if (!record || record.publication || !record.finalized || record.deleteAfter || record.updatedAt !== take.updatedAt || record.frames !== take.frames
             || JSON.stringify(record.pitchReference) !== JSON.stringify(take.pitchReference)) {
             done(null); return;
           }
@@ -751,7 +805,7 @@
         const takes = tx.objectStore("takes");
         takes.get(take.id).onsuccess = event => {
           const record = event.target.result;
-          if (!record || record.frames !== take.frames || record.updatedAt !== take.updatedAt
+          if (!record || record.publication || record.frames !== take.frames || record.updatedAt !== take.updatedAt
             || JSON.stringify(record.pitchReference) !== JSON.stringify(take.pitchReference)) { done(null); return; }
           const next = getPitch().rebaseTake(record, reference);
           if (next && next !== record) takes.put(next);
@@ -767,7 +821,7 @@
           const record = event.target.result;
           // Never resurrect a deleted take, grade a growing checkpoint, or
           // overwrite a concurrent favorite/deletion edit with stale metadata.
-          if (!record || !record.finalized || record.deleteAfter || record.frames !== frames
+          if (!record || record.publication || !record.finalized || record.deleteAfter || record.frames !== frames
             || JSON.stringify(record.pitchReference) !== JSON.stringify(reference)) { done(null); return; }
           if (contour && (contour.audioFrames !== record.frames || contour.sampleRate !== record.sampleRate
             || contour.reference !== JSON.stringify(reference) || contour.analysisVersion !== result.version)) { done(null); return; }
@@ -801,7 +855,7 @@
         if (protectedIds.has(id)) { fail(new Error("This recording is used by a track or its Undo/Redo history. It has been kept.")); return; }
         takes.get(id).onsuccess = event => {
           const record = event.target.result;
-          if (!record || record.song !== song || (record.favorite && !includeFavorites) || record.deleteAfter) { done(null); return; }
+          if (!record || record.publication || record.song !== song || (record.favorite && !includeFavorites) || record.deleteAfter) { done(null); return; }
           if (includeFavorites) record.deleteFavorite = true;
           record.deleteAfter = now + DELETE_UNDO_MS;
           takes.put(record);
@@ -839,7 +893,7 @@
           const cursor = event.target.result;
           if (!cursor) return;
           const record = cursor.value;
-          if (!protectedIds.has(record.id) && record.deleteAfter && record.deleteAfter <= now && (!record.favorite || record.deleteFavorite)) {
+          if (!record.publication && !protectedIds.has(record.id) && record.deleteAfter && record.deleteAfter <= now && (!record.favorite || record.deleteFavorite)) {
             deleted.push(record.id);
             cursor.delete();
             tx.objectStore("chunks").index("takeId").openCursor(record.id).onsuccess = event => {
@@ -867,7 +921,7 @@
           if (protectedIds.has(id)) continue;
           takes.get(id).onsuccess = event => {
             const record = event.target.result;
-            if (record && (record.song !== song || (protectFavorites && record.favorite))) return;
+            if (record && (record.publication || record.song !== song || (protectFavorites && record.favorite))) return;
             deleted.push(id);
             takes.delete(id);
             tx.objectStore("chunks").index("takeId").openCursor(id).onsuccess = chunk => {
@@ -896,7 +950,7 @@
               catch (error) { fail(error); return; }
               for (const record of records) {
                 const keep = used.get(record.id);
-                if (!keep?.length) continue;
+                if (record.publication || !keep?.length) continue;
                 chunks.index("takeId").getAllKeys(record.id).onsuccess = event => {
                   // After an earlier trim the next offset can lie past a gap,
                   // which overstates this chunk's end and only ever keeps more.
@@ -1033,7 +1087,8 @@
       const entry = this.entries.get(take);
       if (entry && !this.failed) entry.trimStopNoise = trimStopNoise;
       if (entry && take.end - take.start >= Math.round(entry.record.seconds * this.buffer.sampleRate)) take.completed = true;
-      if (entry && !this.failed && this.spec.mode === "segment" && segment
+      // Stopping during a loop is also a punch-out. Score exactly the recorded passage.
+      if (entry && !this.failed && segment
         && take.end - take.start > (entry.record.leadInSeconds || 0) * this.buffer.sampleRate) {
         const seconds = Math.min(entry.record.seconds, (take.end - take.start) / this.buffer.sampleRate);
         entry.finalMetadata = {...segment(entry.record, seconds), seconds};

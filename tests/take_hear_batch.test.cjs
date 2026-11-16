@@ -16,7 +16,7 @@ function fixture() {
       commits.push({add:add.map(r=>r.id),remove:[...remove]});
     }};
   const context = vm.createContext({engine,takeHearBatch:null,takeLayerLoads:new Map(),
-    compPanel:{layers:()=>tracks},looseTakes:()=>[],updateTakePreview:()=>{},
+    compPanel:{layers:()=>tracks},standaloneTakes:()=>[],updateTakePreview:()=>{},
     window:{MeleteTakeLoudness:{track:async()=>({gain:2})}},showToast:message=>errors.push(message)});
   vm.runInContext(cycle,context);
   const release = id => gates.get(id).resolve({id,buffer:{}});

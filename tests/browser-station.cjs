@@ -144,7 +144,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     assert.equal(await page.locator('#stationSingerList').isVisible(), false);
     assert.equal(await stage(page), 'Start');
     assert.equal(await slot(page), 'station:demoa:start');
-    assert.deepEqual((await rows(page)).filter(row => row.armed).map(row => [row.singer, row.part]), [['DemoA', 'Start']]);
+    assert.deepEqual(await rows(page), [], 'selecting a singer does not create an empty take');
 
     await seed(page, 30);
     assert.equal(await stage(page), 'Scratchpad', 'a landed Start take protects the baseline');
@@ -173,7 +173,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
 
     await page.locator('[data-take-sort="singer"]').click();
     await page.waitForFunction(() => document.querySelector('[data-take-sort="singer"]').dataset.sorted);
-    assert.deepEqual((await rows(page)).map(row => [row.singer, row.part, cents(row.mean), row.median]), [['DemoZ', 'Scratchpad', '—', '—'], ['DemoA', 'Start', 30, '30.0'],
+    assert.deepEqual((await rows(page)).map(row => [row.singer, row.part, cents(row.mean), row.median]), [['DemoA', 'Start', 30, '30.0'],
       ['DemoA', 'Scratchpad', 10, '10.0'], ['DemoA', 'Final', 12, '12.0'], ['DemoZ', 'Start', 40, '40.0']]);
     assert.equal(await page.locator('#compRows .comp-row:first-child .take-part').innerText(),'A');
     assert.equal(await page.locator('[data-take-sort="stage"],.take-stage').count(),0);
@@ -321,12 +321,8 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
 
     await open(page, `${origin}?station`);
     await pick(page,'DemoZ');
-    const newRow=page.locator('#compRows .comp-row.is-new').first();
-    if (mobile) { await newRow.locator('.edit-take-singer').tap(); await newRow.locator('.edit-take-singer').tap(); }
-    else await newRow.locator('.edit-take-singer').dblclick();
-    await page.locator('#takeSingerName').fill('DemoS');
-    await page.locator('#takeSingerDialog button[type=submit]').click();
-    await page.waitForFunction(()=>document.querySelector('#compRows .comp-row:first-child .take-singer')?.textContent==='DemoS');
+    assert.equal(await page.locator('#compRows .comp-row.is-new').count(),0);
+    await pick(page,'DemoS');
     assert.deepEqual(await page.locator('[data-visible-index][aria-pressed=true]').allTextContents(),['S']);
     await pick(page,'DemoZ');
     const capture=async(who,source)=>page.evaluate(async({who,source})=>{
@@ -427,9 +423,54 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     const corrected=page.locator('#compRows .comp-row').filter({hasText:'Demo Corrected'});
     assert.equal(await corrected.getAttribute('data-comp-key'),stableKey,'archival credit does not reroute the personal comp');
     assert.equal(await slot(page),null);
+    const published=await page.evaluate(async key=>{
+      const q=__qa,store=q.takeStore,song=q.takeSong;
+      const state=(await store.comps(song)).find(s=>s.key===key);
+      const sources=new Map((await store.list(song)).map(t=>[t.id,t]));
+      const id=state.segments[0].takeId,hash=await MeleteCloud.digest(await (await store.wav(id)).arrayBuffer());
+      const receipt=MeleteCloud.rememberReceipt(key,MeleteCloud.signature(state,sources),{id:'test-review',uploaded:4},'test-singer',hash);
+      await store.sealPublications(song,MeleteStation.archiveReceipt,{[key]:receipt});
+      await q.reloadTakes();await q.refreshComp();
+      return {key,id,hash,segments:state.segments};
+    },stableKey);
+    assert.ok(await slot(page),'recording on the same part gets a fresh track after submission');
+    await seed(page,14);
+    const preserved=await page.evaluate(async p=>{
+      const q=__qa,store=q.takeStore,states=await store.comps(q.takeSong),original=states.find(s=>s.key===p.key);
+      return {segments:original.segments,hash:await MeleteCloud.digest(await (await store.wav(p.id)).arrayBuffer()),
+        separate:q.compState.key!==p.key && !q.compState.publication && q.compState.segments.every(s=>s.takeId!==p.id)};
+    },published);
+    assert.deepEqual(preserved,{segments:published.segments,hash:published.hash,separate:true});
+    let submissions=0, blobs=0;
+    await page.route('**/qa-submit?*',route=>{
+      const action=new URL(route.request().url()).searchParams.get('action');
+      if(action==='submit')submissions++;
+      if(action==='blob')blobs++;
+      const reply=action==='status' ? {configured:true,user:{id:'tester',name:'Test singer'}} :
+        action==='submit' ? {id:'new-review',uploaded:5} : {profile:null,items:[],next:null};
+      return route.fulfill({json:reply});
+    });
+    await page.evaluate(async()=>{
+      const q=__qa,state=q.compState,store=q.takeStore,song=q.takeSong;
+      const sources=new Map((await store.list(song)).map(t=>[t.id,t]));
+      const blob=await store.wav(state.segments[0].takeId);
+      window.confirm=()=>true;
+      const client=MeleteCloud.create({cloudConfig:{api:'/qa-submit'},song:()=>song,state:()=>state,
+        sources:()=>sources,store,selected:()=>null,clear:()=>{},metadata:()=>({pitchScore:null}),
+        renderSubmission:async()=>({frames:[{start:0,end:1,cents:6000}],origin:0,blob}),
+        submitted:()=>{window.__published=true;},toast:()=>{}});
+      await client.resume();
+      window.__upload=()=>client.uploadTrack();
+      __upload();__upload();
+    });
+    await page.waitForFunction(()=>window.__published);
+    const accepted=blobs;
+    await page.evaluate(()=>{__upload();__upload();});
+    assert.equal(submissions,1,'two clicks and a later repeat submit the performance only once');
+    assert.ok(accepted>0);assert.equal(blobs,accepted);
     await page.close();
   } finally { await fresh.close(); }
-  return {viewport: label, beginnerGuide:150, backing:35, pendingRowFirst:true, expandsInPlace:true,
+  return {viewport: label, beginnerGuide:150, backing:35, savedRowsOnly:true, separatePublishedTakes:true, expandsInPlace:true,
     sameAudioAfterSingerCorrection:true, samePitchAndScoreAfterCorrection:true, collisionPreservesBothTracks:true, archivalCreditKeepsSlot:true, geometry};
 }
 

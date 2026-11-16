@@ -66,6 +66,48 @@
       this.state = state;
       this.received = performance.now();
     }
+    acceptMedia(info) {
+      if (this.mediaToken !== info.mediaToken) {
+        this.guideKey = null; this.assets = {}; this.layerAssets.clear();
+      }
+      this.mediaToken = info.mediaToken;
+      if (!info.cachedAssets.includes(this.assets.guide)) { delete this.assets.guide; this.guideKey=null; }
+      this.pruneLayerCache(info);
+    }
+    async guidePlan() {
+      if (!this.config.assetStageVersion) return null;
+      const e=this.engine, notes=e.playbackNotes || e.notes, channels=(e.trackStrips.length || this.channels)+1;
+      const origin=e.secondsAtTick(e.leadInTicks), frames=Math.ceil((e.duration-origin)/e.rate*RENDER_RATE);
+      const descriptor={origin,frames,channels,rate:e.rate,sampleRate:RENDER_RATE};
+      const format=JSON.stringify(descriptor);
+      if (!this.plan || this.plan.notes!==notes || this.plan.clicks!==e.clicks || this.plan.format!==format) {
+        // Version the rendered instrument along with every input that changes its PCM.
+        const bytes=new TextEncoder().encode(JSON.stringify(["melete-guide-v1",descriptor,notes,e.clicks]));
+        const ready=crypto.subtle.digest("SHA-256",bytes).then(hash=>({
+          key:"guide-"+Array.from(new Uint8Array(hash),n=>n.toString(16).padStart(2,"0")).join(""),descriptor}));
+        this.plan={format,notes,clicks:e.clicks,ready};
+      }
+      return this.plan.ready;
+    }
+    async stage(guide) {
+      if (!this.config.assetStageVersion) return;
+      const info=await this.request("stage",{client:this.client,guide});
+      this.acceptMedia(info);
+      if (info.cachedAssets.includes(guide.key)) {
+        this.assets.guide=guide.key;
+        this.guideKey=`${guide.descriptor.rate}:${this.engine.divisiPlaybackKey}`;
+      }
+    }
+    warm(channels) {
+      if (channels) this.channels = channels;
+      if (!this.config.assetStageVersion || !this.channels || root.document.hidden ||
+        root.frameElement?.getAttribute("aria-hidden")==="true") return;
+      clearTimeout(this.warmTimer);
+      this.warmTimer=setTimeout(()=>{
+        if (!root.document.hidden && root.frameElement?.getAttribute("aria-hidden")!=="true")
+          void this.prepareMedia().catch(()=>{}); // Play retries and surfaces device or transfer failures.
+      },30);
+    }
     async open() {
       clearTimeout(this.idleTimer);
       if (this.state?.session) return;
@@ -76,10 +118,11 @@
         const state = await this.request("open", {client: this.client});
         this.frame = 0;
         this.sequence = 0;
-        this.assets = {};
-        this.layerAssets.clear();
-        this.guideKey = null;
-        this.layerKey = null;
+        if (!state.mediaToken) {
+          this.assets = {}; this.layerAssets.clear(); this.guideKey = null;
+        } else if (this.mediaToken !== state.mediaToken) this.acceptMedia(state);
+        this.boundAssets = null;
+        this.sentMix = null;
         this.pausePromise = null;
         this.acceptState(state);
         this.history.fill(0);
@@ -185,30 +228,31 @@
       const age = Math.min(.12, Math.max(0, (performance.now()-this.received)/1000)+Math.min(.02, state.callbackAge));
       return state.position+(age-(audible ? state.outputLatency : 0))*state.rate;
     }
-    async upload(key, buffer, {origin, offset = 0, gain = 1} = {}) {
+    async upload(key, buffer, {origin, offset = 0, gain = 1, rate=this.engine.rate} = {}) {
       const frames = buffer.length-offset, channels = buffer.numberOfChannels;
-      const descriptor = {frames, channels, sampleRate: buffer.sampleRate, origin, rate: this.engine.rate};
+      const descriptor = {frames, channels, sampleRate: buffer.sampleRate, origin, rate};
+      const session = this.mediaToken || this.state?.session;
       const sources = Array.from({length: channels}, (_, i) => buffer.getChannelData(i));
-      const block = Math.floor(262144/channels);
+      const block = Math.floor(1048576/channels);
       for (let at = 0; at < frames; at += block) {
         this.transfer = {key, frames:at, total:frames};
         const n = Math.min(block, frames-at), pcm = new Float32Array(n*channels);
         for (let c = 0; c < channels; c++) for (let f = 0; f < n; f++) pcm[f*channels+c] = sources[c][offset+at+f]*gain;
-        await this.request("asset", pcm, {"X-Melete-Asset": JSON.stringify({session: this.state.session,
+        await this.request("asset", pcm, {"X-Melete-Asset": JSON.stringify({session,
           key, offset: at*channels*4, ...(at === 0 ? {descriptor} : {})})}, true);
       }
       this.transfer = null;
       return key;
     }
-    async guide() {
-      const engine = this.engine, key = `${engine.rate}:${engine.divisiPlaybackKey}`;
+    async guide(plan) {
+      const engine = this.engine, rate = engine.rate, key = `${rate}:${engine.divisiPlaybackKey}`;
       if (this.guideKey === key && this.assets.guide) return;
       const started=performance.now();
       const origin = engine.secondsAtTick(engine.leadInTicks);
-      const channels = engine.trackStrips.length+1;
-      const context = new OfflineAudioContext(channels, Math.ceil((engine.duration-origin)/engine.rate*RENDER_RATE), RENDER_RATE);
+      const channels = (engine.trackStrips.length || this.channels)+1;
+      const context = new OfflineAudioContext(channels, Math.ceil((engine.duration-origin)/rate*RENDER_RATE), RENDER_RATE);
       const renderer = Object.create(Object.getPrototypeOf(engine));
-      Object.assign(renderer, {context, rate: engine.rate, wave: engine.createWave(context),
+      Object.assign(renderer, {context, rate, wave: engine.createWave(context),
         scheduled: new Set(), scheduledClicks: new Map(), metronomeVolume: 1});
       const merger = context.createChannelMerger(channels);
       merger.connect(context.destination);
@@ -222,8 +266,8 @@
       const notes=engine.playbackNotes || engine.notes, clicks=engine.clicks;
       let nextNote=0,nextClick=0;
       const ahead = until => {
-        const position=origin+context.currentTime*engine.rate;
-        const limit=origin+until*engine.rate;
+        const position=origin+context.currentTime*rate;
+        const limit=origin+until*rate;
         while(nextNote<notes.length && notes[nextNote].start<limit)renderer.scheduleNote(notes[nextNote++],position,0,engine.duration);
         while(nextClick<clicks.length && clicks[nextClick].time<limit)renderer.scheduleClick(clicks[nextClick++],position,0);
       };
@@ -235,7 +279,8 @@
       const buffer = await context.startRendering();
       await Promise.all(batches);
       const rendered=performance.now();
-      this.assets.guide = await this.upload("guide-"+(++this.counter), buffer, {origin});
+      if (key !== `${engine.rate}:${engine.divisiPlaybackKey}`) return;
+      this.assets.guide = await this.upload(plan?.key || "guide-"+(++this.counter), buffer, {origin,rate});
       this.preparationTiming={renderMs:rendered-started, uploadMs:performance.now()-rendered};
       this.guideKey = key;
     }
@@ -255,10 +300,11 @@
             layer.rate, layer.octave, layer.pan, gain, engine.rate, engine.duration, reverb]);
           let asset = this.layerAssets.get(key);
           if (!asset) {
+            const rate = engine.rate;
             const rendered = await root.MeleteTakeMix.renderAudio([{...layer, loudness:{gain}}],
-              {duration:engine.duration, rate:engine.rate, reverb, sampleRate:RENDER_RATE});
+              {duration:engine.duration, rate, reverb, sampleRate:RENDER_RATE});
             asset = await this.upload("layer-"+(++this.counter), rendered.buffer,
-              {origin:Math.min(0, layer.start), offset:rendered.offset});
+              {origin:Math.min(0, layer.start), offset:rendered.offset, rate});
             this.layerAssets.set(key, asset);
           }
           assets[`${prefix}:${index}`] = asset;
@@ -267,19 +313,33 @@
       this.recordingNormalization = root.MeleteTakeLoudness.mix(layers.map(x=>x.loudness), {reverb:this.reverb || 0}).gain;
       this.assets = {...(this.assets.guide ? {guide:this.assets.guide} : {}), ...assets};
     }
+    async prepareMedia() {
+      if (this.mediaJob) {
+        this.mediaChanged=true;
+        return this.mediaJob;
+      }
+      this.mediaJob=(async()=>{
+        do {
+          this.mediaChanged=false;
+          const route=this.engine.divisiPlaybackKey, rate=this.engine.rate, plan=await this.guidePlan();
+          await this.stage(plan);
+          if (route!==this.engine.divisiPlaybackKey || rate!==this.engine.rate) {this.guideKey=null;this.mediaChanged=true;continue;}
+          await this.guide(plan);
+          await this.layers();
+        } while(this.mediaChanged || this.guideKey!==`${this.engine.rate}:${this.engine.divisiPlaybackKey}`);
+      })().finally(()=>{this.mediaJob=null;});
+      return this.mediaJob;
+    }
     async prepare() {
       await this.open();
       if (this.preparing) return this.preparing;
       this.preparing = (async () => {
-        if (!this.state.playing && this.guideKey !== `${this.engine.rate}:${this.engine.divisiPlaybackKey}`) {
-          this.pruneLayerCache(await this.control("assets", {assets:{}}));
-          this.assets = {};
-          this.layerKey = null;
+        await this.prepareMedia();
+        const binding=JSON.stringify(this.assets);
+        if (binding!==this.boundAssets) {
+          this.pruneLayerCache(await this.control("assets", {assets:this.assets}));
+          this.boundAssets=binding;
         }
-        await this.guide();
-        await this.layers();
-        const state = await this.control("assets", {assets: this.assets});
-        this.pruneLayerCache(state);
         await this.mix();
       })().finally(() => { this.preparing = null; this.releaseWhenIdle(); });
       return this.preparing;
@@ -298,16 +358,17 @@
         do {
           const values = this.pendingMix;
           this.pendingMix = null;
-          await this.control("mix", values);
+          const signature=JSON.stringify(values);
+          if (this.sentMix!==signature) { await this.control("mix", values); this.sentMix=signature; }
           // Drag events (including all-part pans) replace obsolete values;
           // they never restart transport or flood the capture connection.
-          await sleep(25);
+          if (this.pendingMix) await sleep(25);
         } while (this.pendingMix && this.state?.session);
       })().finally(() => { this.mixing = null; });
       return this.mixing;
     }
     refreshLayers() {
-      if (!this.state?.session) return;
+      if (!this.state?.session) {this.warm();return;}
       if (this.preparing) {
         if (!this.refreshPending) {
           this.refreshPending = true;
@@ -430,16 +491,17 @@
       this.idleTimer = setTimeout(() => {
         if (this.state?.session !== session || this.engine.playing || this.state.playing ||
           this.inputEnabled || this.listeners.size || this.heldPreviews || this.preparing) return;
-        void this.close();
+        void this.close(true);
       }, delay);
     }
-    async close() {
+    async close(keepMedia=false) {
       clearTimeout(this.idleTimer);
+      clearTimeout(this.warmTimer);
       if (this.closing) return this.closing;
       if (!this.state?.session) return;
       const session = this.state.session;
       this.state = null;
-      this.closing = this.request("control", {session, kind:"close"}).catch(() => {}).finally(() => {this.closing=null;});
+      this.closing = this.request("control", {session, kind:"close", keepMedia}).catch(() => {}).finally(() => {this.closing=null;});
       return this.closing;
     }
   }

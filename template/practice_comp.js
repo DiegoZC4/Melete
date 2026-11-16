@@ -31,7 +31,7 @@
     }
     if (current && (current.segments.length || current.processed.length || current.freshAt
       || current.track || current.undo || current.revisionOf)) return current;
-    const previous = saved.filter(s => s.key !== key(descriptor) && s.song === descriptor.song
+    const previous = saved.filter(s => !s.publication && s.key !== key(descriptor) && s.song === descriptor.song
       && (s.descriptor.slot || null) === (descriptor.slot || null)
       && pitch.sameTimeline(s.descriptor.reference, descriptor.reference)
       && protectedIds(s).every(id => takes.has(id) && eligible(takes.get(id), descriptor)))
@@ -128,8 +128,9 @@
   function reconcile(descriptor, saved, takes) {
     // Decode/clean each contour once for the entire reconciliation, not once
     // for every candidate phrase and every statistics pass.
-    takes = new Map([...takes].map(([id, t]) => [id, {...t, analysisFrames: t.analysisFrames || pitch.readContour(t)}]));
+    takes = new Map([...takes].map(([id, t]) => [id, {...t, analysisFrames: t.analysisFrames || pitch.readContour(t) || (t.publication ? [] : null)}]));
     let state = migrate(adoptRevision(saved, descriptor, takes, saved.find(s => s.key === key(descriptor))));
+    if (state.publication) return {state,replaced:[],silent:[],edits:[],score:stats(state,takes),frames:framesFor(state.segments,takes)};
     state = repairMargins({...state, descriptor}, takes);
     const backfill = (state.offerVersion || 1) < OFFER_VERSION, replaced = [], silent = [], edits = [];
     // Migration fills gaps from the newest recording first. Older audio kept
@@ -264,7 +265,7 @@
     const used = new Set([...comps.flatMap(protectedIds), ...historyIds]);
     const adopted = new Set(comps.flatMap(s => s.adopted || []));
     return takes.filter(t => !used.has(t.id) && adopted.has(t.id) && t.complete && t.finalized
-      && !t.favorite && !t.active && !t.unsaved && !t.deleteAfter).map(t => t.id);
+      && !t.publication && !t.favorite && !t.active && !t.unsaved && !t.deleteAfter).map(t => t.id);
   }
   // Frames of each source that a track or its Undo/Redo history can still play.
   // A source is left out, and so kept whole, when any use of it cannot be mapped

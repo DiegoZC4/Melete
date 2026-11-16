@@ -39,10 +39,4 @@ async function toggleRecording(frame) {
   const active = await frame.evaluate(() => (window.__qa || window.__probe).recording.state !== 'off');
   return active ? stopRecording(frame) : startRecording(frame);
 }
-async function deleteUnused(frame) {
-  if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await frame.locator('#settingsToggle').click();
-  const heading = frame.locator('[data-settings-section="takes"] .settings-section-toggle');
-  if (await heading.isVisible() && await heading.getAttribute('aria-expanded') === 'false') await heading.click();
-  await frame.locator('#deleteLooseTakes').click();
-}
-module.exports = {choosePart, nextPart, enableSing, startRecording, stopRecording, toggleRecording, deleteUnused};
+module.exports = {choosePart, nextPart, enableSing, startRecording, stopRecording, toggleRecording};

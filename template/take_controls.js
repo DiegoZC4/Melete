@@ -112,19 +112,18 @@
       for (const [id, check] of Object.entries(checks)) {
         check.parentElement.hidden = !available.includes(id); check.checked = visible.includes(id);
       }
-      for (const view of [find("#compView"), find("#takeLoose")]) {
-        if (fitIdentity && view.id==="compView") view.style.setProperty("--take-singer-width",nameWidth+"px");
-        else view.style.removeProperty("--take-singer-width");
-        const displayed = visible.filter(id => view.id === "compView" || id !== "singer");
-        const hidden = Object.keys(fields).filter(id => !displayed.includes(id)).join(" ");
-        if (view.dataset.hiddenFields === hidden) continue;
-        const vars = ["number", ...displayed.filter(id => id !== "octave")].map(id => `var(--take-${id}-width)`);
-        view.dataset.hiddenFields = hidden;
-        view.style.setProperty("--take-value-columns", vars.join(" "));
-        view.style.setProperty("--take-value-width", "calc(" + vars.join(" + ") + ")");
-        view.style.setProperty("--take-octave-slot", displayed.includes("octave") ? "var(--take-octave-width)" : "0px");
-        view.style.setProperty("--take-table-width", "calc(var(--take-value-width) + var(--take-octave-slot) + var(--take-hear-width) + var(--take-actions-width))");
-      }
+      const view=find("#compView");
+      if (fitIdentity) view.style.setProperty("--take-singer-width",nameWidth+"px");
+      else view.style.removeProperty("--take-singer-width");
+      const displayed = visible;
+      const hidden = Object.keys(fields).filter(id => !displayed.includes(id)).join(" ");
+      if (view.dataset.hiddenFields === hidden) return;
+      const vars = ["number", ...displayed.filter(id => id !== "octave")].map(id => `var(--take-${id}-width)`);
+      view.dataset.hiddenFields = hidden;
+      view.style.setProperty("--take-value-columns", vars.join(" "));
+      view.style.setProperty("--take-value-width", "calc(" + vars.join(" + ") + ")");
+      view.style.setProperty("--take-octave-slot", displayed.includes("octave") ? "var(--take-octave-width)" : "0px");
+      view.style.setProperty("--take-table-width", "calc(var(--take-value-width) + var(--take-octave-slot) + var(--take-hear-width) + var(--take-actions-width))");
     }
     function positionMenu() {
       if (!menu.matches(":popover-open")) return;

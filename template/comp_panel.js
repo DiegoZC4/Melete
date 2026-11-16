@@ -35,6 +35,7 @@
     let historyBudgetStamp = "", usedAudioStamp = "";
     const prepared = new Map(), preparing = new Map(), rows = new Map(), statsCache = new WeakMap();
     const cloudRows = new Map();
+    let sourceRows=[];
     let cloudSelection = 0;
     let followRequest = null, reviewIntent = null, revealReviewId = null;
     const metricChanges = new Map();
@@ -74,13 +75,36 @@
         if(person)followSinger({key:`directory:${person.id}`,name:person.name});
         else {cancelFollow();reviewIntent=null;adapter.clear();}
       }});
-    void station.handoffReady().then(()=>{ if (ready) void refresh({force:true}); });
+    const publicationsReady=station.handoffReady().then(async()=>{
+      const receipts=root.MeleteCloud.publicationReceipts();
+      if (Object.keys(receipts).length || root.MeleteLocalStationRoster?.archivedSources)
+        await adapter.store.sealPublications(adapter.song(),stations.archiveReceipt,receipts);
+    });
     root.MeleteTakeControls.tablePreferences(byId("takePanel"), !adapter.audition?.() && stations.requested());
+    const locked = track => root.MeleteCloud.hasReceipt(track?.state,track?.sources);
+    function writableDescriptor(base) {
+      if (!base) return base;
+      let d=base;
+      for (let n=2;;n++) {
+        const key=model.key(d), state=saved.find(s=>s.key===key) || saved.find(s=>s.publication
+          && identity(s.descriptor)===identity(d) && s.descriptor.reference.rate===d.reference.rate && (s.descriptor.slot||null)===(d.slot||null));
+        if (!root.MeleteCloud.hasReceipt(state || {key},tracks.get(key)?.sources)) return d;
+        d={...base,slot:(base.slot || "practice")+":pass-"+n,layerNumber:n};
+      }
+    }
     function currentDescriptor() {
       const d = adapter.descriptor();
       const named = d && station.descriptor(d);
-      if (named) return named;
-      return d && slots[identity(d)] ? {...d, slot: slots[identity(d)]} : d;
+      return writableDescriptor(named || (d && slots[identity(d)] ? {...d,slot:slots[identity(d)]} : d));
+    }
+    function recordingPlan(spec) {
+      const plan=stations.recordingPlan(spec,station.current());
+      const assign=pass=>{
+        if (!pass?.station) return pass;
+        const base=adapter.descriptor(), d=base && writableDescriptor(stations.descriptor(base,pass.station,pass.station.stage));
+        return d ? {...pass,trackSlot:d.slot} : pass;
+      };
+      return plan.initial ? {...assign(plan),initial:assign(plan.initial)} : assign(plan);
     }
     function recordingKey() {
       const descriptor = currentDescriptor();
@@ -287,7 +311,7 @@
       row.querySelector(".take-part").textContent = label(state);
       row.style.setProperty("--take-part-color",adapter.trackPaint(state.descriptor.reference.part,state.descriptor.reference.line ?? null));
       const credit=row.querySelector(".edit-take-singer");
-      credit.hidden=!station.enabled;
+      credit.hidden=!station.enabled || locked(track);
       credit.disabled=busy || recording;
       credit.title=`${performer?.name || ""} · ${label(state)}. Double-click to change singer.`;
       credit.setAttribute("aria-label",`Change singer for ${name}`);
@@ -302,7 +326,9 @@
           summary += ` ${(s.completion * 100).toFixed(1)}% of written singing filled from ${numbers.length === 1 ? `take ${numbers[0]}` : `takes ${numbers.join(", ")}`}. ${pitch.restLabel(s)}`;
         }
       } catch (e) { metrics(row, null); summary = e.message; }
-      review.title = `${summary} Click to toggle playback and contour.`;
+      const version=state.publication?.kind;
+      const origin=version==="local-variant" ? "Local edit of a submitted recording." : version==="archived-sources" ? "Archived sources." : "Published recording.";
+      review.title = `${locked(track) ? origin+" Read-only. " : ""}${summary} Click to toggle playback and contour.`;
       adapter.octaveControl(row.querySelector(".take-octave"), empty ? null : id, name);
       const hear = row.querySelector(".take-hear");
       hear.disabled = empty || busy && !audible;
@@ -315,24 +341,18 @@
       download.title = `Download ${name} as WAV`;
       download.setAttribute("aria-label", download.title);
       const remove = row.querySelector(".take-delete");
+      remove.hidden=locked(track);
       remove.disabled = busy || recording || empty && !state.track;
       remove.title = `Remove ${name}. Click twice; Undo is available.`;
       if (!remove.classList.contains("is-delete-armed")) remove.setAttribute("aria-label", `Remove ${name}`);
       remove.dataset.deleteToken = `${state.key}:${state.revision}`;
       const upload = row.querySelector(".take-upload");
       // Named singers cannot be submitted under the operator's Google identity.
-      const archived = ids.length > 0 && ids.every(id => stations.archived(sources.get(id)));
-      const privateTrack = root.MeleteCloud.localOnly(state) && !archived;
-      upload.hidden = !privateTrack && (Boolean(named) || archived || root.MeleteCloud.hasReceipt(state, sources)
-        || !adapter.cloudConfig?.api || !/^https?:$/.test(new URL(document.baseURI).protocol));
-      upload.disabled = privateTrack || busy || recording || empty;
-      upload.classList.toggle("is-local-only",privateTrack);
-      upload.querySelector("path").setAttribute("d",privateTrack
-        ? "M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5ZM12 15v2"
-        : "M12 13v8m-4-4 4-4 4 4M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29");
-      upload.title = privateTrack ? "Kept on this device. Uploading is disabled for this private track."
-        : "Submit this comp's audio and pitch to the choir reviewers under your Google name";
-      upload.setAttribute("aria-label", privateTrack ? `${name}: kept on this device` : `Upload ${name} for review`);
+      upload.hidden = Boolean(named) || empty || locked(track) || root.MeleteCloud.localOnly(state)
+        || !adapter.cloudConfig?.api || !/^https?:$/.test(new URL(document.baseURI).protocol);
+      upload.disabled = upload.hidden || busy || recording;
+      upload.title = "Submit this comp for review under your Google name";
+      upload.setAttribute("aria-label",`Upload ${name} for review`);
     }
     function render() {
       const container = byId("compRows");
@@ -349,12 +369,14 @@
       const top = scroll.scrollTop, left = scroll.scrollLeft;
       const fresh = key => key === armed && tracks.get(key).state.descriptor.station && !tracks.get(key).state.segments.length;
       const sorted = [...shown.map(key => ({key,fresh:Boolean(fresh(key)),record:sortRecord(tracks.get(key))})),
-        ...shared.map(item => ({item,fresh:false,record:cloudRecord(item)}))]
-        .sort((a,b) => Number(b.fresh)-Number(a.fresh) || pitch.compareTakes(a.record,b.record,adapter.sort()));
-      sorted.forEach(({key,item}, index) => {
-        const row = item ? cloudRow(item) : rowFor(key);
+        ...shared.map(item => ({item,fresh:false,record:cloudRecord(item)})), ...sourceRows]
+        .sort((a,b) => Number(!!b.fresh)-Number(!!a.fresh) || pitch.compareTakes(a.record,b.record,adapter.sort()));
+      const individual=new Map([...container.querySelectorAll(":scope > .take-row[data-take-id]")].map(row=>[row.dataset.takeId,row]));
+      sorted.forEach(({key,item,source}, index) => {
+        const row = source ? individual.get(source) : item ? cloudRow(item) : rowFor(key);
+        if (!row) return;
         if (container.children[index] !== row) container.insertBefore(row, container.children[index] || null);
-        if (!item) fill(row, tracks.get(key));
+        if (key) fill(row, tracks.get(key));
       });
       const add = byId("addTrack"), waiting = armed && !shown.includes(armed) ? tracks.get(armed) : null;
       add.disabled = busy || recording || Boolean(station.current());
@@ -370,14 +392,14 @@
       }
       const singers=saved.flatMap(s=>stations.trackSinger(s,tracks.get(s.key)?.sources) || []);
       byId("compView").classList.toggle("has-singers", station.render({disabled: busy || recording,
-        named: singers.length>0, singers, reviewing:captureReviewSinger()}) || shared.length>0);
+        named: singers.length>0, singers, reviewing:captureReviewSinger()}) || shared.length>0 || sourceRows.some(item=>item.record.singer));
       byId("stationExport").disabled = busy || recording;
       byId('stationTakeLog').hidden = !station.enabled;
       const configured = Boolean(adapter.cloudConfig?.api) && /^https?:$/.test(new URL(document.baseURI).protocol);
       byId("openCloudLibrary").hidden=!configured;
       if (configured) makeCloud();
       const table = byId("takePanel").querySelector(".take-review");
-      table.style.setProperty("--take-actions-width", configured && [...container.children].some(row => !row.querySelector(".take-upload").hidden) ? "80px" : "54px");
+      table.style.setProperty("--take-actions-width", configured && container.querySelector(".take-upload:not([hidden])") ? "80px" : "54px");
       root.MeleteTakeControls.fitTable(table);
       scroll.scrollTop = top; scroll.scrollLeft = left;
       if (revealReviewId) {
@@ -411,6 +433,7 @@
       for (const s of saved) {
         const r = s.descriptor.reference;
         if (!(s.segments.length || s.track) || current && r.rate !== current.reference.rate) continue;
+        if (s.publication) {result.set(s.key,s.descriptor);continue;}
         const base = adapter.descriptor(r.part, r.line ?? null);
         const d = base && {...base, ...(s.descriptor.slot ? {slot:s.descriptor.slot, layerNumber:s.descriptor.layerNumber} : {}),
           ...(s.descriptor.station ? {station:s.descriptor.station} : {})};
@@ -437,10 +460,11 @@
       return result;
     }
     async function reconcile() {
+      await publicationsReady;
+      saved = await adapter.store.comps(adapter.song());
       history = await adapter.store.compHistory(adapter.song());
       const request = autoReview;
       if (request?.initial) {
-        saved = await adapter.store.comps(adapter.song());
         if (request !== autoReview) { dirty = true; return; }
         request.initial = false;
         const base = adapter.descriptor();
@@ -448,7 +472,7 @@
           && s.descriptor.reference.rate === base.reference.rate && (s.track || s.segments.length))
           .sort((a, b) => (b.editedAt || b.updatedAt || b.createdAt || 0) - (a.editedAt || a.updatedAt || a.createdAt || 0))[0];
         if (base) slots[identity(base)] = newest?.descriptor.slot || null;
-        request.key = base ? model.key(currentDescriptor()) : null;
+        request.key = newest?.publication ? newest.key : base ? model.key(currentDescriptor()) : null;
       }
       const current = currentDescriptor(), takes = adapter.takes();
       const stamp = JSON.stringify([[...targets(current, takes).keys()], saved.map(s => [s.key, s.revision]),
@@ -456,7 +480,6 @@
         takes.map(t => [t.id, t.frames, t.finalized, t.deleteAfter, t.restAudioVersion, t.updatedAt,
           t.pitchContour?.analysisVersion, t.pitchScore?.meanAbsCents,t.performer?.id,t.playbackAdvance])]);
       if (signature === stamp && !checkSingerRoute) { render(); return; }
-      saved = await adapter.store.comps(adapter.song());
       if (checkSingerRoute && !recording && !busy) {
         checkSingerRoute=false;
         if (station.verifyStage()) {
@@ -469,8 +492,9 @@
       const wanted = targets(current, takes), next = new Map(), replaced = [], silent = [];
       let stored = saved;
       for (const [key, descriptor] of wanted) {
-        const eligible = new Map(takes.filter(t => model.eligible(t, descriptor)).map(t => [t.id, t]));
         const existing = stored.find(s => s.key === key);
+        const publishedSources=new Set(existing?.publication ? existing.segments.map(s=>s.takeId) : []);
+        const eligible = new Map(takes.filter(t => publishedSources.has(t.id) || model.eligible(t, descriptor)).map(t => [t.id, t]));
         const inputKey = state => JSON.stringify([key, state?.revision || 0, [...eligible.values()].map(sourceVersion)]);
         const cached = tracks.get(key);
         if (cached?.inputKey === inputKey(existing)) { next.set(key, cached); continue; }
@@ -534,9 +558,7 @@
       }
       tracks = next;
       armed = current ? model.key(current) : null;
-      const display = [...next.values()].filter(t => t.state.segments.length || t.state.track
-        || t.state.key === armed && t.state.descriptor.station);
-      if (!display.length && armed) display.push(next.get(armed));
+      const display = [...next.values()].filter(t => t.state.segments.length || t.state.track);
       shown = display.sort((a, b) => a.state.descriptor.reference.part - b.state.descriptor.reference.part
         || (a.state.descriptor.reference.line ?? -1) - (b.state.descriptor.reference.line ?? -1)).map(t => t.state.key);
       const historyIds = root.MeleteRecording.historySources(history);
@@ -634,7 +656,7 @@
       return result;
     }
     async function edit(key, fn) {
-      if (busy || recording || !tracks.has(key)) return;
+      if (busy || recording || !tracks.has(key) || locked(tracks.get(key))) return;
       byId("takeActions").open = false;
       busy = true; render();
       try {
@@ -774,7 +796,7 @@
           noteExplicitSelection();
         }
         const current = adapter.descriptor();
-        if (current && identity(current) === identity(state.descriptor) && !state.descriptor.station && !station.current()) {
+        if (!locked(track) && current && identity(current) === identity(state.descriptor) && !state.descriptor.station && !station.current()) {
           slots[identity(current)] = state.descriptor.slot || null;
           localStorage.setItem(slotKey, JSON.stringify(slots));
           armed = key;
@@ -840,7 +862,7 @@
           if(fit)timing.title=(fit.test?"Setup test. ":"")+"Historical score fit: "+fit.status+
             (fit.basis?" ("+fit.basis+")":"")+". Not measured device latency.";
           const save=document.createElement('button');save.type='button';save.textContent='Save';save.className='take-command';
-          save.disabled=true;input.disabled=!take.finalized || Boolean(take.active);
+          save.disabled=true;input.disabled=!take.finalized || Boolean(take.active) || stations.archived(take);
           timing.disabled=input.disabled;
           input.oninput=timing.oninput=()=>{save.disabled=!stations.directorySinger(station.choices(), input.value) || !timing.validity.valid || !Number.isInteger(timing.valueAsNumber)
             || input.value.trim()===name && timing.valueAsNumber===stations.advanceMs(logTakes[index]);};
@@ -863,12 +885,12 @@
         if(!logDialog.open)logDialog.showModal();
       } catch(e){error(e);}
     }
-    byId('stationTakeLog').onclick=()=>{void openSingerLog();};
+    byId('stationTakeLog').onclick=()=>{byId('takeFieldMenu').hidePopover();void openSingerLog();};
     byId('stationLogClose').onclick=()=>logDialog.close();
     byId('stationLogDownload').onclick=()=>adapter.downloadBlob(new Blob([stations.takeLogCsv(logTakes)],{type:'text/csv'}),`${adapter.song()}-singer-log.csv`);
     function correctSinger(key) {
       const track=tracks.get(key), state=track?.state, singer=track && stations.trackSinger(state,track.sources);
-      if (!station.enabled || !state || recording || busy || creditDialog.open) return;
+      if (!station.enabled || !state || locked(track) || recording || busy || creditDialog.open) return;
       if (!state.descriptor.station && state.segments.length && (!singer || state.segments.some(s=>!track.sources.get(s.takeId)?.performer))) {
         void openSingerLog(new Set(state.segments.map(s=>s.takeId)));return;
       }
@@ -917,7 +939,7 @@
           try { score = model.stats(state, sources); } catch {}
           const singer=stations.trackSinger(state,sources);
           return {order: stations.sortName(singer, state.descriptor.reference) ?? "\uffff",
-            ...stations.summary({song, state, singer, part: adapter.trackLabel(part, line), bars, score,
+            ...stations.summary({song, state, singer, sources, part: adapter.trackLabel(part, line), bars, score,
               dates: root.MeleteTakeControls.trackDates(state, sources)})};
         }).sort((a, b) => a.order.localeCompare(b.order, undefined, {numeric: true}));
         const date = new Date().toLocaleDateString("en-CA");
@@ -941,20 +963,16 @@
         sources: () => cloudTrack()?.sources || new Map(),
         metadata: () => cloudTrack() ? sortRecord(cloudTrack()) : null,
         renderSubmission: () => prepare(cloudTrack()),
-        submitted: render, libraryChanged: render,
+        submitted: async()=>{signature="";adapter.changed();await adapter.reload();await refresh({force:true});}, libraryChanged: render,
         directoryChanged:data=>{station.directory(data);render();},
         identityChanged:()=>{if(followRequest?.singer.key.startsWith("cloud:"))cancelFollow();reviewIntent=null;},
         restored: async () => { signature = ""; await adapter.reload(); await refresh(); }});
     }
-    // Only failed/incomplete captures need a separate recovery surface.
-    // Normal sources belong to tracks/history, never an "unused" take table.
-    function loose(take, failed = false) {
-      if (!ready || take.active || used.has(take.id) || garbage.has(take.id)) return false;
-      if (adapter.audition?.()) return true;
-      return Boolean(take.unsaved || failed || !take.complete || take.gap);
+    function standalone(take) {
+      return ready && !take.active && take.frames > 0 && !used.has(take.id) && !garbage.has(take.id);
     }
     render();
-    return {refresh, loose, stepHistory, noteExplicitSelection, slot: () => currentDescriptor()?.slot || null, selected: render,
+    return {refresh, standalone, sourceRows:items=>{sourceRows=items;}, stepHistory, noteExplicitSelection, slot: () => currentDescriptor()?.slot || null, selected: render,
       resumePractice:async () => {
         noteExplicitSelection();
         await refresh({force:true});
@@ -971,7 +989,7 @@
         saved=await adapter.store.comps(adapter.song());
         if (station.verifyStage()) await refresh({force:true});
       } : null,
-      recordingPlan: spec => stations.recordingPlan(spec, station.current()), recordingKey,
+      recordingPlan, recordingKey,
       advanceStart: slot => station.advance(slot) ? recordingKey() : null,
       settleStation: station.settle, playbackChanged: station.playbackChanged, refreshStationMix: station.refreshMix,
       layers: () => shown.filter(key => tracks.get(key).state.segments.length)
