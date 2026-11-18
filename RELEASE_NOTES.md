@@ -63,7 +63,7 @@ players with the preceding website and laptop builds identified the following
 behaviors to restore in the shared template.
 
 - Left and right arrow keys preview the selected part directly. A held key
-  sustains its note until release. Key repeat and arrow presses during a take
+  sustains its note through a score redraw until release. Key repeat and arrow presses during a take
   leave the transport alone. The Step button and its toolbar are removed.
 - Continuous Pitchbar follows its own playhead horizontally. The printed
   cursor reaches the current barline before crossing into the next measure
@@ -85,7 +85,7 @@ behaviors to restore in the shared template.
   Pitchbar during capture with a different voice part.
 
 The corrected two-song player has SHA-256
-`112ed3a85e5be1262bea98b3909140dbfe661f8ce41e021898a92edec0ff6151`.
+`03417f26ddae7465c88da21ee8d8005cd49afb3920801bf5d34c2a0da9c5caf7`.
 The regular desktop shortcut served these bytes for both songs, with the
 station's usual native configuration supplied at request time. Both songs
 retained their previous score inputs, playback data and song configuration.

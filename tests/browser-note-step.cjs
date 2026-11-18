@@ -35,6 +35,8 @@ async function run(page,mobile,output){
   await page.keyboard.down('ArrowRight');
   await page.waitForFunction(()=>previewVoices>0);
   const first=await tick();
+  const viewport=page.viewportSize();
+  await page.setViewportSize({width:viewport.width-8,height:viewport.height});
   await page.waitForTimeout(350);
   assert.ok(await page.evaluate(()=>previewVoices>0),await page.evaluate(()=>window.previewReleaseStack || 'held arrow ended early'));
   await page.keyboard.down('ArrowRight');

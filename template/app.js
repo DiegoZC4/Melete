@@ -4796,10 +4796,13 @@
     return { key, track: mixerParts[channel].source, channel, tick: start, endTick: end };
   }
 
-  function cancelPitchAuditions() {
+  function cancelPitchAuditions({preserveVisibleKey = false} = {}) {
     for (const finish of pitchAuditions.values()) finish();
-    keyboardAudition?.();
-    keyboardAudition = null;
+    if (keyboardAudition && !(preserveVisibleKey && keyboardStepAnchor?.track === currentScorePartIndex()
+      && keyboardStepAnchor.channels === [...visibleChannels].join(","))) {
+      keyboardAudition();
+      keyboardAudition = null;
+    }
     hoverNote(null);
   }
 
@@ -7773,7 +7776,7 @@
     barRenderFrame = 0;
     if (!sequence?.measures?.length || !elements.barScore.clientWidth) return;
     stopBarPlayheadMotion();
-    cancelPitchAuditions();
+    cancelPitchAuditions({preserveVisibleKey:true});
     cancelScoreScrub();
     const rawNotes = visiblePitchNotes();
     const segments = buildPitchSegments(rawNotes);
@@ -10901,7 +10904,7 @@
       discardScoreRenderSnapshot();
       return;
     }
-    cancelPitchAuditions();
+    cancelPitchAuditions({preserveVisibleKey:true});
     cancelScoreScrub();
     notationRenderInFlight = true;
     notationRenderQueued = false;
