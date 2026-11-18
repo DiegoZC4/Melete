@@ -75,11 +75,12 @@ async function checkTakeDominance(frame, page, {mobile, output, label, reload}) 
   }, originalTheme);
   await frame.locator(`.take-row[data-take-id="${fixtures.better.id}"] .take-delete`).click();
   await frame.locator(`.take-row[data-take-id="${fixtures.better.id}"] .take-delete.is-delete-armed`).click();
-  await frame.waitForFunction(id => !document.querySelector(`[data-take-id="${id}"]`), fixtures.better.id);
+  const undo = frame.locator(`[data-take-id="${fixtures.better.id}"] .take-undo button`);
+  await undo.waitFor({state:'visible'});
   assert.equal(await frame.locator(`.take-row[data-take-id="${fixtures.dominated.id}"]`).evaluate(el => el.classList.contains('is-dominated')), false,
     'deleting the only dominator immediately clears the hint');
-  await frame.locator('#undoTakeDelete').click();
-  await frame.waitForFunction(id => document.querySelector(`[data-take-id="${id}"]`), fixtures.better.id);
+  await undo.click();
+  await undo.waitFor({state:'hidden'});
   await assertHints(true);
   const restored = await frame.evaluate(() => (window.__qa || window.__probe).recording.takes);
   for (const take of saved.filter(t => Object.values(fixtures).some(item => item.id === t.id))) {

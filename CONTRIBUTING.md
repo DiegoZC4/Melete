@@ -32,6 +32,9 @@ system libraries. On Windows set `PYTHON=python` if `python3` is not on PATH.
 `QA_BROWSER_CHANNEL=chrome` uses an already installed Chrome instead of the
 Playwright Chromium download. `GUI_QA_NODE_MODULES` can optionally select an
 existing dependency directory; it is never required.
+`QA_SILENT_OUTPUT=1` renders Web Audio to Chromium's silent output for testing
+while a rehearsal station owns an exclusive audio device. Audio graphs, capture
+and clocks still run; this does not verify physical speakers or device latency.
 `QA_OUTPUT_DIR` isolates reports/screenshots for a separate validation run.
 The standalone take-column and settings-cleanup browser checks use synthetic
 scores by default; set `QA_COLLECTION_PROJECT` to a restored rehearsal project

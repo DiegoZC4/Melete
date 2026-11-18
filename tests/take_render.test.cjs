@@ -2,19 +2,49 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const R = require('../template/take_render.js');
 const A = require('../template/comp_audio.js');
+const P = require('../template/take_pitch.js');
 const point = f => ({x: f.start * 100, y: f.cents, track: 0, error: 1});
-test('live display joins delivery jitter but never an explicit unvoiced interval or long dropout',()=>{
+test('saved display joins delivery jitter but never an explicit unvoiced interval or long dropout',()=>{
   const frames=[{start:0,end:.01,cents:6000,live:true},{start:.015,end:.025,cents:6001,live:true},
     {start:.03,end:.04,cents:null,live:true},{start:.045,end:.055,cents:6001,live:true},
-    {start:.12,end:.13,cents:6001,live:true}];
+    {start:.12,end:.13,cents:6001,live:true},{start:.4,end:.41,cents:6001,live:true}];
   const before=JSON.stringify(frames),result=R.tracePaths(frames,0,frames.length,point,()=> 'green');
-  assert.equal(result.edges,1);assert.equal(JSON.stringify(frames),before,'scores keep all exact gaps');
+  assert.equal(result.edges,2);assert.equal(JSON.stringify(frames),before,'scores keep all exact gaps');
+});
+
+test('stopping and restoring irregular live observations preserves display continuity without filling scoring gaps',()=>{
+  const frames=Array.from({length:30},(_,i)=>({start:i*.06,end:i*.06+.02,cents:6000+10*Math.sin(i/3)}));
+  const ref={version:1,fingerprint:'jitter',part:0,line:null,start:0,end:8,rate:1,seconds:2,latency:0,notes:[[0,2,[60]]]};
+  const take={sampleRate:48000,frames:96000,pitchReference:ref};
+  const restored=P.readContour({...take,pitchContour:P.packLiveContour(frames,take)});
+  const before=JSON.stringify(restored),score=P.scoreFrames(restored,ref,2);
+  assert.equal(R.tracePaths(restored,0,restored.length,point,()=> 'green').edges,29);
+  assert.ok(Math.abs(score.trackedSeconds-.6)<1e-8,'display connections are not extra tracked singing');
+  assert.equal(JSON.stringify(restored),before);
+});
+
+test('shared display rule bounds time and pitch jumps in score seconds',()=>{
+  assert.equal(R.connects(0,6000,.25,6400),true);
+  assert.equal(R.connects(0,6000,.251,6000),false);
+  assert.equal(R.connects(0,6000,.02,6401),false);
+  assert.equal(R.connects(0,null,.02,6000),false);
+  const frames=[{start:0,end:.02,cents:6000},{start:.2,end:.22,cents:6000}];
+  assert.equal(R.tracePaths(frames,0,2,point,()=> 'green',{rate:1}).edges,1);
+  assert.equal(R.tracePaths(frames,0,2,point,()=> 'green',{rate:1.5}).edges,0);
+  frames[1].cents=6500;
+  assert.equal(R.tracePaths(frames,0,2,point,()=> 'green').edges,0);
+});
+
+test('hidden or different staff points break continuity even inside the jitter allowance',()=>{
+  const frames=Array.from({length:4},(_,i)=>({start:i/20,end:i/20+.01,cents:6000}));
+  assert.equal(R.tracePaths(frames,0,4,f=>f===frames[1]?null:point(f),()=> 'green').edges,1);
+  assert.equal(R.tracePaths(frames,0,4,f=>({...point(f),track:f===frames[1]?1:0}),()=> 'green').edges,1);
 });
 test('batched paths retain every pitch sample but never bridge missing detection or a splice', () => {
-  const frames = [1, 2, null, 4, 5, 6, 7].map((cents, i) => ({start: i, end: i+1, cents, takeId: i<5?'a':'b'}));
+  const frames = [1, 2, null, 4, 5, 6, 7].map((cents, i) => ({start: i/100, end: (i+1)/100, cents, takeId: i<5?'a':'b'}));
   const before = JSON.stringify(frames), result = R.tracePaths(frames, 0, frames.length, point, ()=>'green');
   assert.equal(result.edges,3);
-  assert.deepEqual(result.colors,[['green','M0.000 1.000L100.000 2.000M300.000 4.000L400.000 5.000M500.000 6.000L600.000 7.000']]);
+  assert.deepEqual(result.colors,[['green','M0.000 1.000L1.000 2.000M3.000 4.000L4.000 5.000M5.000 6.000L6.000 7.000']]);
   assert.equal(result.halo, result.colors[0][1]);
   assert.equal(JSON.stringify(frames),before);
 });

@@ -119,6 +119,7 @@
   function segmentCount(segments, notes) {
     let previous, count = 0;
     for (const s of segments) {
+      if (!clipNotes(notes, [s]).length) continue;
       if (!previous || previous.takeId !== s.takeId
         || notes.some(([a,b]) => Math.min(b,s.from) - Math.max(a,previous.to) > EPS)) count++;
       previous = s;
@@ -175,6 +176,7 @@
   }
   function bindMargins(segments, descriptor, takes) {
     const ref = descriptor.reference;
+    segments = segments.filter(s => clipNotes(ref.notes, [s]).length);
     if (!pitch.restPolicyValid(ref)) return normalize(segments);
     const notes = pitch.mergeRanges(ref.notes.map(n => n.slice(0, 2)));
     const sung = normalize(segments.flatMap(s => notes.map(([a, b]) => ({...s,
@@ -293,7 +295,8 @@
       }
     };
     for (const state of comps) use([...state.segments, ...(state.undo || [])], state.key);
-    for (const edit of edits) for (const side of [edit.before, edit.after]) use(side?.segments, edit.key);
+    for (const entry of edits) for (const edit of entry.group || [entry])
+      for (const side of [edit.before, edit.after]) use(side?.segments, edit.key);
     return new Map([...kept].filter(([id]) => !whole.has(id)).map(([id, ranges]) => [id, pitch.mergeRanges(ranges)]));
   }
   function validate(state, takes) {
@@ -307,6 +310,60 @@
     normalize(state.segments);
     return true;
   }
+  // A singer's song is one reviewable performance. Retain the underlying
+  // captures and comp snapshots, and assemble their chosen passages for review.
+  function singerTracks(tracks, singerFor, preferredKey = null) {
+    const groups = new Map();
+    for (const track of tracks.values()) {
+      const singer = singerFor(track);
+      const group = singer?.id ? JSON.stringify([track.state.song, singer.id, track.state.descriptor.reference.rate]) : track.state.key;
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push(track);
+    }
+    const views = new Map(), owners = new Map();
+    for (const members of groups.values()) {
+      const sources = new Map(members.flatMap(t => [...t.sources]));
+      const time = segment => sources.get(segment.takeId)?.createdAt || 0;
+      const latest = members.slice().sort((a,b) => Math.max(0,...b.state.segments.map(time)) - Math.max(0,...a.state.segments.map(time)))[0];
+      const primary = members.find(t => t.state.key === preferredKey) || latest;
+      const singer = singerFor(primary) || singerFor(latest);
+      if (!singer || members.length === 1) {
+        views.set(primary.state.key, primary);
+        owners.set(primary.state.key, primary.state.key);
+        continue;
+      }
+      const passages = members.flatMap(t => t.state.segments.map(s => ({...s, reference:t.state.descriptor.reference})))
+        .sort((a,b) => time(a)-time(b) || a.takeId.localeCompare(b.takeId));
+      let selected = [];
+      for (const passage of passages) selected = replace(selected, passage);
+      // Overlapping stages can leave an older entrance/release fragment that
+      // contains only rest. It is not another sung segment. Keep source captures
+      // and member snapshots intact, but omit those orphans from the review mix.
+      selected = selected.filter(s => clipNotes(s.reference.notes, [s]).length);
+      const segments = selected.map(({reference, ...s}) => s);
+      // Preserve each selected passage's scoring target when the singer changed
+      // divisi parts. Unrecorded passages retain the latest part's target.
+      let notes = latest.state.descriptor.reference.notes.map(n => [...n]);
+      for (const s of selected) {
+        notes = notes.flatMap(([from,to,pitches]) => [
+          [from,Math.min(to,s.from),pitches], [Math.max(from,s.to),to,pitches]
+        ].filter(([a,b]) => b-a>EPS));
+        notes.push(...clipNotes(s.reference.notes,[s]));
+      }
+      notes.sort((a,b) => a[0]-b[0]);
+      const descriptor = {...primary.state.descriptor, station:{...singer},
+        reference:{...latest.state.descriptor.reference,notes}};
+      const state = {...primary.state, descriptor, segments,
+        processed:[...new Set(members.flatMap(t => t.state.processed || []))],
+        firstTakeNumber:Math.min(...members.map(t => t.state.firstTakeNumber).filter(Number.isFinite)),
+        updatedAt:Math.max(...members.map(t => t.state.updatedAt || 0))};
+      if (!Number.isFinite(state.firstTakeNumber)) state.firstTakeNumber=null;
+      const view = {state,sources,members,frames:framesFor(segments,sources),score:stats(state,sources)};
+      views.set(state.key,view);
+      for (const member of members) owners.set(member.state.key,state.key);
+    }
+    return {views,owners};
+  }
   return {OFFER_VERSION, TRACK_VERSION, AUDIO_MARGIN_SECONDS, key, empty, adoptRevision, migrate, normalize, replace, clipNotes, matches, eligible, reconcile, reconcileAsync, workerSource, segmentCount,
-    segment, framesFor, stats, lastSung, bindMargins, repairMargins, offer, remove, undo, protectedIds, discardable, usedAudio, validate};
+    segment, framesFor, stats, lastSung, bindMargins, repairMargins, offer, remove, undo, protectedIds, discardable, usedAudio, validate, singerTracks};
 });

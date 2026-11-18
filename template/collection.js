@@ -214,7 +214,7 @@
     currentFrame.title = `${song.title} practice score`;
     currentFrame.inert = index !== selected;
     currentFrame.setAttribute("aria-hidden", "true");
-    currentFrame.setAttribute("allow", "microphone; fullscreen; autoplay; clipboard-write");
+    currentFrame.setAttribute("allow", "microphone; fullscreen; autoplay; clipboard-write; screen-wake-lock");
     currentFrame.addEventListener("load", () => {
       const child = currentFrame.contentDocument;
       const play = child.getElementById("playPause");

@@ -81,3 +81,27 @@ test('saved contours grade and filter rests against their recorded division, nev
   assert.equal(group.attrs['data-selected'],'true');
   assert.match(edge.attrs.d,/77\.000/, '8va changes display register without changing the grading target');
 });
+
+test('switching from the live renderer to saved review keeps the same jittered trace edges',()=>{
+  const frames=[0,.06,.12,.18,.24,.30,.60,.66,.72,.78].map((start,i)=>({start,end:start+.02,
+    cents:i===3?null:i===8?6700:6000,live:true}));
+  const review={id:'comp:qa',track:0,ref:{line:null},start:0,rate:1,frames};
+  const node=(tag,attrs={})=>({tag,attrs,children:[],append(...items){this.children.push(...items);}});
+  const system=()=>({startTick:0,endTick:100,traceLayer:node('g'),traceEdges:new Map(),traceEdgesByBin:new Map(),
+    pointAtPitch:(tick,cents)=>({x:tick,y:cents,track:0,error:0})});
+  const live=system(),saved=system();
+  const c=vm.createContext({window:{MeleteTakeRender:require('../template/take_render.js')},
+    engine:{secondsAtTick:t=>t/100,tickAtSeconds:s=>s*100},
+    pitchTraceTickAtBin:i=>(frames[i].start+frames[i].end)/2*100,
+    liveTraceVisible:()=>true,pitchRestState:()=>'sing',pitchTraceColor:()=> 'green',
+    pendingCaptureTrace:null,visibleChannels:new Set([0]),takeReview:review,trackLabel:()=> 'B2',createSvgElement:node});
+  vm.runInContext(source('appendPitchTraceEdge')+'\n'+source('renderTakeTrace'),c);
+  const lane={pitches:frames.map(f=>f.cents),breaks:[]};
+  for(let i=1;i<frames.length;i++)c.appendPitchTraceEdge(live,null,lane,i-1,i);
+  c.renderTakeTrace(saved,review);
+  const liveEdges=live.traceLayer.children.map(g=>g.children[0].attrs).map(a=>
+    `M${a.x1.toFixed(3)} ${a.y1.toFixed(3)}L${a.x2.toFixed(3)} ${a.y2.toFixed(3)}`).join('');
+  const savedEdges=saved.traceLayer.children[0].children.find(n=>n.tag==='path').attrs.d;
+  assert.equal(live.traceEdges.size,4);
+  assert.equal(savedEdges,liveEdges,'stopping creates neither new breaks nor bridges over silence, a long dropout or pitch jumps');
+});

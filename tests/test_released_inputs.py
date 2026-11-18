@@ -21,7 +21,8 @@ def fixture():
         solo = {"name": "Extra", "short": "S2 solo"}
         cfg = {"sourceScore": {"data": b64(score)}, "printPdf": b64(b"pdf"), "partsPdf": b64(b"parts"),
                "referenceAudio": {"data": b64(b"audio"), "label": "Guide", "mime": "audio/mpeg"},
-               "parts": [{"name": "Source"}, solo], "practiceRoutes": [{"soloist": solo}], "roster": ["PRIVATE"]}
+               "parts": [{"name": "Source"}, solo], "practiceRoutes": [{"soloist": solo}], "roster": ["PRIVATE"],
+               "vowelTargets": {"lexicon": {"sky": ["a>i"]}, "anchors": {"i": {"men": [350, 2200]}}, "tracks": []}}
         html = "".join(f'<script type="application/json" id="{k}">{script_json(v)}</script>'
                        for k, v in [("trainer-config", cfg), ("build-metadata", meta), ("portable-state", {"take": "PRIVATE"})])
         songs.append(dict(id=slug, title=title, html=html))
@@ -63,6 +64,7 @@ class ReleasedProjectTest(unittest.TestCase):
             self.assertEqual((project / "Autumn.mscz").read_bytes(), b"Autumn")
             cfg = json.loads((project / "the-seed.config.json").read_text(encoding="utf-8"))
             self.assertEqual(cfg["parts"], [{"name": "Source"}])
+            self.assertEqual(cfg["vowelTargets"]["lexicon"], {"sky": ["a>i"]})
             self.assertNotIn("roster", cfg)
             self.assertNotIn("PRIVATE", str([p.read_bytes() for p in project.rglob("*") if p.is_file()]))
             with self.assertRaises(ValueError):

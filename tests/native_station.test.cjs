@@ -98,3 +98,32 @@ test('native Hear toggles reuse rendered PCM per recording instead of mastering 
   a.buffer={};await b.layers();assert.equal(renders,2,'re-decoding unchanged audio preserves the native cache');
   a.octave=1;await b.layers();assert.equal(renders,3,'changing octave invalidates only that recording');
 });
+
+test('individual Hear changes the active native assets during playback without stopping or seeking',async()=>{
+  const {bridge:b,engine:e,context:c}=fixture();
+  const app=fs.readFileSync(require.resolve('../template/app.js'),'utf8');
+  const start=app.indexOf('    setTakeReview(review) {'),end=app.indexOf('    stopVoices(',start);
+  const node=()=>({gain:{},connect(){return this;},disconnect(){}});
+  const Engine=vm.runInNewContext(`(class {${app.slice(start,end)}})`,{
+    URL:{createObjectURL:()=>'',revokeObjectURL:()=>{}},Audio:class{load(){} removeAttribute(){}},
+    window:{MeleteTakeMix:{bus:()=>({input:{}})}},takeReverbControl:{value:()=>0},takeVolumeControl:{value:()=>100},
+    takeOctave:()=>0,SCHEDULER_LEAD_SECONDS:.03});
+  Object.setPrototypeOf(e,Engine.prototype);
+  Object.assign(e,{native:b,playing:true,basePosition:17,duration:40,takeLayers:new Map(),referenceLayers:new Map(),
+    pinnedTakeIds:new Set(),context:{createGain:node,createMediaElementSource:node},
+    stopTakeLayerAudio(){},balanceTakeLayers(){this.takeBalanceJob=Promise.resolve();}});
+  b.state={session:'same-session',playing:true,position:17};b.open=async()=>{};b.releaseWhenIdle=()=>{};
+  b.prepareMedia=async()=>b.layers();
+  const changes=[];let renders=0;
+  b.control=async(kind,value)=>{assert.equal(kind,'assets','no pause, play or seek to apply a Hear toggle');changes.push({...value.assets});};
+  c.MeleteTakeMix={renderAudio:async()=>{renders++;return {buffer:{},offset:0};}};
+  c.MeleteTakeLoudness={mix:()=>({gain:1})};b.upload=async key=>key;
+  const settle=async()=>{await new Promise(r=>setImmediate(r));await b.preparing;};
+  const review=()=>({id:'take',buffer:{},blob:{},start:0,end:40,loudnessKey:'same-recording',loudness:{gain:1}});
+  e.addTakeLayer(review(),true);await settle();assert.ok(changes.at(-1)['recording:0']);
+  e.removeTakeLayer('take');await settle();assert.deepEqual(changes.at(-1),{});
+  e.addTakeLayer(review(),true);await settle();assert.ok(changes.at(-1)['recording:0']);
+  assert.equal(renders,1,'cached audio returns immediately without another render');
+  assert.equal(changes.length,3);assert.equal(e.playing,true);assert.equal(e.basePosition,17);
+  assert.equal(b.state.session,'same-session');assert.equal(b.state.playing,true);
+});

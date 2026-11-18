@@ -2,6 +2,21 @@
   "use strict";
   const rehearsalReview = window.MeleteRehearsalReview;
 
+  // Handle fullscreen before tips, popovers or settings consume Escape.
+  let fullscreenExitedAt = -Infinity;
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement) fullscreenExitedAt = performance.now();
+  });
+  window.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    let owner = document;
+    try { if (!owner.fullscreenElement && window.top.document.fullscreenElement) owner = window.top.document; } catch {}
+    if (!owner.fullscreenElement && performance.now() - fullscreenExitedAt > 150) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (owner.fullscreenElement) void owner.exitFullscreen().catch(() => {});
+  }, {capture:true});
+
   // Voice-part colours live in the stylesheet, as --part-1 upward, so the dark
   // theme can lift them off its own ground. These are only the fallbacks the
   // var() calls carry, and they match the light theme's values.
@@ -46,8 +61,6 @@
   const PITCH_TRACE_STORAGE_VERSION = 3;
   const PITCH_TRACE_BINS_PER_QUARTER = 64;
   const PITCH_TRACE_SAVE_DELAY_MS = 850;
-  const PITCH_TRACE_MAX_DRAW_GAP_SECONDS = 0.25;
-  const PITCH_TRACE_RENDER_JUMP_CENTS = 400;
   const PITCH_TRACE_GREEN_TOLERANCE_CENTS = 10;
   const PITCH_TRACE_RED_CENTS = 50;
   const STAFF_TRACE_CENTS_PER_STEP = 50;
@@ -128,6 +141,7 @@
   let pendingLoopLink;
   let linkedPracticeState = null;
   let practicePartIndex = null;
+  let vowelView;
   let partDivisi = [];
   let mixerParts = [];
   const practiceMixerIndex = () => {
@@ -204,6 +218,12 @@
   let pitchTracePaintFrame = 0;
   const pitchTraceDirty = new Map();
   let pitchCaptureState = "off";
+  const rehearsalWake = window.MeleteMicrophoneCheck.rehearsalWakeLock(navigator.wakeLock);
+  function syncRehearsalWake() {
+    const rehearsing = playing || pitchCaptureState === "armed" || pitchCaptureState === "recording"
+      || takeState === "counting" || takeState === "recording";
+    rehearsalWake(Boolean(pitchCapturePageActive && !document.hidden && rehearsing));
+  }
   let microphoneRequest = null;
   let microphoneDeviceId = "";
   let microphoneStreamDeviceId = "";
@@ -370,9 +390,6 @@
     takeDeletePrompt: document.getElementById("takeDeletePrompt"),
     takeDeleteMessage: document.getElementById("takeDeleteMessage"),
     takeActions: document.getElementById("takeActions"),
-    takeUndo: document.getElementById("takeUndo"),
-    takeUndoMessage: document.getElementById("takeUndoMessage"),
-    undoTakeDelete: document.getElementById("undoTakeDelete"),
     confirmTakeDelete: document.getElementById("confirmTakeDelete"),
     cancelTakeDelete: document.getElementById("cancelTakeDelete"),
   };
@@ -2393,7 +2410,9 @@
     updateMixerAppearance();
     updateLoopState();
     engine?.setMetronome(metronomeControl.value());
-    if (api) api.playbackSpeed = tempoControl.value() / 100;
+    // AlphaTab seeks even when its speed setter receives the current value.
+    // A pan/volume/display reset must leave the recording clock alone.
+    if (api && api.playbackSpeed !== tempoControl.value() / 100) api.playbackSpeed = tempoControl.value() / 100;
     updateNoteActionLabel();
     savePreferences();
     if (lyricsMode !== previousLyrics) {
@@ -2450,7 +2469,8 @@
         }
         if(index>=0){
           const memory=roleMemory("station");
-          if(resetPreset) Object.assign(next,window.MeleteStation.guideMix(mixerParts,index,preset,roles));
+          // followsOldDefault above updates untouched presets. A custom singer
+          // mix survives changes to the station default, including one-slider edits.
           const shared=!resetPreset && !linked && memory && mixerParts[memory.index];
           const source=shared?memory.settings:linked?current:next;
           const moved=followRole("station",source,shared?memory.index:index,index,{reset:!shared});
@@ -3338,6 +3358,7 @@
     const changed = pitchTraceBaseKey && nextKey !== pitchTraceKey;
     if (changed) savePitchTraceNow();
     practicePartIndex = index;
+    vowelView?.position();
     if (changed) {
       pitchTraceKey = nextKey;
       // A new practice part starts with a clean live trace. Saved takes remain
@@ -5630,6 +5651,7 @@
     // AlphaTab owns only the printed score; our audio clock also owns its lead-in.
     api.tickPosition = Math.max(0, tick);
     if (tick < 0) engine.seek(engine.secondsAtTick(tick));
+    vowelView?.position(tick);
   }
 
   function restorePlaybackPosition(milliseconds) {
@@ -6177,10 +6199,11 @@
       const valid = Number.isFinite(startTick) && Number.isFinite(endTick) && endTick > startTick;
       const nextStart = valid ? this.secondsAtTick(startTick) : null;
       const nextEnd = valid ? this.secondsAtTick(endTick) : null;
-      if (nextStart !== this.loopStartSeconds || nextEnd !== this.loopEndSeconds) {
-        this.onTransportChange?.("range");
-        this.stopTakeReviewAudio();
-      }
+      // Reapplying settings is not a new loop edit. In particular, preserve a
+      // recording's lead-in outside the loop when a mixer control is reset.
+      if (nextStart === this.loopStartSeconds && nextEnd === this.loopEndSeconds) return;
+      this.onTransportChange?.("range");
+      this.stopTakeReviewAudio();
       if (!Number.isFinite(startTick) || !Number.isFinite(endTick) || endTick <= startTick) {
         this.loopStartSeconds = null;
         this.loopEndSeconds = null;
@@ -6549,7 +6572,12 @@
       URL.revokeObjectURL(review.url);
       this.takeLayers.delete(id);
       this.referenceLayers?.delete(id);
-      if (!review.reference && !deferMix) this.balanceTakeLayers();
+      if (!deferMix) {
+        if (!review.reference) this.balanceTakeLayers();
+        // The native host owns its own playing asset list. Disconnecting the
+        // browser nodes alone leaves that recording audible until the next Play.
+        this.scheduleTakeReview(SCHEDULER_LEAD_SECONDS);
+      }
     }
 
     updateTakeLayers(add = [], remove = []) {
@@ -7298,8 +7326,9 @@
         secondsAtTick: t => engine.secondsAtTick(t), start: 0, end: sequence.endTick, rate: 1,
         fingerprint: "display", part, line, measures: sequence.measures, division: sequence.division}));
     const ref = restTraceReferences.get(key), seconds = engine.secondsAtTick(tick);
-    if (!window.MeleteTakePitch.containsTime(ref.restPolicy.keep, seconds)) return "discard";
-    return window.MeleteTakePitch.containsTime(ref.restPolicy.guards, seconds) ? "rest" : "sing";
+    // Rest-audio retention windows are not scoring or display targets. Show
+    // singing anywhere in a written rest in red, including long/initial rests.
+    return window.MeleteTakePitch.containsTime(ref.notes, seconds) ? "sing" : "rest";
   }
   function expectedPitchAt(tick, line = practiceDivisi[practicePartIndex] ?? null, part = practicePartIndex) {
     const mine = Number.isInteger(part);
@@ -7640,8 +7669,7 @@
     if (pitchRestState(fromTick) === "discard" || pitchRestState(toTick) === "discard") return;
     const fromSeconds = engine.secondsAtTick(fromTick);
     const toSeconds = engine.secondsAtTick(toTick);
-    const gap = Math.abs(toSeconds - fromSeconds);
-    if (gap > PITCH_TRACE_MAX_DRAW_GAP_SECONDS || Math.abs(toCents - fromCents) > PITCH_TRACE_RENDER_JUMP_CENTS) return;
+    if (!window.MeleteTakeRender.connects(fromSeconds, fromCents, toSeconds, toCents)) return;
     let x1, y1, x2, y2, error;
     if (system.pointAtPitch) {
       const a = system.pointAtPitch(fromTick, fromCents, line), b = system.pointAtPitch(toTick, toCents, line);
@@ -8208,6 +8236,7 @@
   }
 
   function updatePitchCaptureAppearance() {
+    syncRehearsalWake();
     const requesting = takeState === "requesting" || pitchCaptureState === "requesting";
     const armed = pitchCaptureEnabled();
     const recording = ["counting", "recording"].includes(takeState);
@@ -9404,14 +9433,16 @@
   async function saveTakeAnalysis(take, result) {
     const {frames, ...metrics} = result;
     const contour = window.MeleteTakePitch.packContour(frames, take);
-    const record = await takeStore.pitchScore(take.id, take.frames, take.pitchReference, metrics, contour);
+    const record = await takeStore.pitchScore(take.id, take.frames, take.pitchReference, metrics, contour,
+      take.finalized ? null : take.updatedAt);
     if (record) { takeLibrary.set(record.id, record); announceTakeChange(); compPanel?.invalidate(); }
     return record;
   }
 
   async function scoreNextTake() {
     if (takeScoring || !pitchCapturePageActive || document.hidden) return;
-    const take = allTakes().find(item => !window.MeleteStation.archived(item) && !item.active && !item.unsaved && item.finalized && item.frames > 0
+    const take = allTakes().find(item => !window.MeleteStation.archived(item) && !item.active && !item.unsaved && item.frames > 0
+      && (item.finalized || window.MeleteRecording.scoreableCheckpoint(item))
       && (!window.MeleteTakePitch.currentScore(item.pitchScore)
         || (item.pitchReference?.fingerprint === pitchTraceFingerprint(item.pitchReference?.part) && !window.MeleteTakePitch.readContour(item))
         || (item.pitchContour && !window.MeleteTakePitch.hasPitchBand(item.pitchScore)))
@@ -9498,7 +9529,10 @@
     else if (window.MeleteTakePitch.validReference(take.pitchReference)) {
       if (pitch && pitch.expectedSeconds === 0) { text = "No sung notes"; reason = "Only written rests in this recording."; }
       else if (takeScoreFailures.has(take.id)) reason = takeScoreFailures.get(take.id);
-      else if (!take.finalized) reason = "The recording ended before its final timing was saved.";
+      else if (!take.finalized) {
+        text = takeScoring?.id === take.id ? "Scoring saved audio..." : "Pitch pending";
+        reason = "Saved audio can be scored after the recorder stops writing checkpoints.";
+      }
       else { text = takeScoring?.id === take.id ? "Scoring pitch..." : "Pitch pending"; reason = "Local pitch analysis runs on each saved loop."; }
     }
     return {tracked: "\u2014", error: "\u2014", median: "\u2014", within: "\u2014", text, title: `${date}\n${text}. ${reason}`};
@@ -9520,9 +9554,17 @@
 
   function scheduleTakeDeletion() {
     window.clearTimeout(takeDeleteTimer);
-    const pending = [...takeLibrary.values()].filter(take => take.deleteAfter);
-    if (!pending.length) return;
-    const deadline = Math.min(...pending.map(take => take.deleteAfter));
+    const deadlines = [];
+    const now = Date.now();
+    for (const take of takeLibrary.values()) {
+      if (take.deleteAfter) deadlines.push(take.deleteAfter);
+      else if (!take.finalized && take.frames && !take.pitchScore && Number.isFinite(take.updatedAt)) {
+        const at = take.updatedAt + window.MeleteRecording.MAX_LOOP_SECONDS * 1000;
+        if (at > now) deadlines.push(at);
+      }
+    }
+    if (!deadlines.length) return;
+    const deadline = Math.min(...deadlines);
     takeDeleteTimer = window.setTimeout(() => {
       void loadTakeLibrary().then(announceTakeChange).catch(() => {
         takeNotice = "Deletion could not finish; audio was kept. Reopen settings to retry.";
@@ -9567,7 +9609,12 @@
       await refreshRecordingTime();
       await takeStore.purgeDeleted(takeSongKey());
       const library = await takeStore.usage();
-      const records = library.filter(record => record.song === takeSongKey());
+      let records = library.filter(record => record.song === takeSongKey());
+      const silent = new Set(await takeStore.discardSilent(takeSongKey(), records));
+      if (silent.size) {
+        records = records.filter(record => !silent.has(record.id));
+        announceTakeChange();
+      }
       let revised = false;
       // Score corrections regrade saved observations, never rewrite the audio.
       // Changed bar timing must be realigned explicitly instead of guessed.
@@ -10001,7 +10048,7 @@
           error: tick < 0 ? "preparation" : expectedPitchErrorCents(tick, frame.cents, line, review.track)};
     // Bound paint nodes by a small color palette, not detector sample count.
     // Coordinates and grades retain their original precision.
-    }, error => grey ? "var(--muted)" : pitchTraceColor(Number.isFinite(error) ? Math.round(Math.abs(error) / 2) * 2 : error));
+    }, error => grey ? "var(--muted)" : pitchTraceColor(Number.isFinite(error) ? Math.round(Math.abs(error) / 2) * 2 : error), {rate: review.rate});
     if (!paths.edges) return;
     const ensemble = !system.pointAtPitch && visibleChannels.size > 1;
     const label = `${trackLabel(review.track, review.ref.line ?? null)}: ${review.label || "Recording"}`;
@@ -10160,12 +10207,12 @@
     finally { takeActionBusy = false; renderTakePanel(); }
   }
 
-  async function undoTakeDeletion() {
+  async function undoTakeDeletion(id) {
     if (takeActionBusy) return;
     takeActionBusy = true;
     renderTakePanel();
     try {
-      const restored = await takeStore.undoDeletes(takeSongKey());
+      const restored = await takeStore.undoDeletes(takeSongKey(), Date.now(), id);
       restored.forEach(take => takeLibrary.set(take.id, take));
       takeNotice = restored.length ? `${restored.length} take${restored.length === 1 ? "" : "s"} restored` : "Undo period has ended";
       scheduleTakeDeletion();
@@ -10261,11 +10308,7 @@
       takeLibraryReady ? `This song: ${all.length} take${all.length === 1 ? "" : "s"} · ${takeSizeLabel(bytes)}.` : "Local storage not loaded.",
       `${takePersistence ? "Persistent storage" : "This browser"}. Microphone only; local autosave, no uploads. Browser data can be cleared; download important takes.`,
     ].join(" ");
-    const individual = standaloneTakes(all);
-    const deleted = [...takeLibrary.values()].filter(take => take.deleteAfter);
-    elements.takeUndo.hidden = !deleted.length;
-    elements.takeUndoMessage.textContent = `${deleted.length} take${deleted.length === 1 ? "" : "s"} deleted`;
-    elements.undoTakeDelete.disabled = takeActionBusy || !deleted.some(take => take.deleteAfter > Date.now());
+    const individual = standaloneTakes(allTakes(true));
     elements.retryTakeSave.hidden = active || !pending;
     elements.retryTakeSave.disabled = takeActionBusy;
     const filtered = individual.sort((a, b) => window.MeleteTakePitch.compareTakes(
@@ -10306,7 +10349,7 @@
         preview.addEventListener("click", () => { void previewTake(take.id); });
         attachTakeHear(row.querySelector(".take-hear"), () => take.id, () => { void toggleTakeLayer(take.id); });
         row.addEventListener("click", event => {
-          if (!preview.disabled && !event.target.closest("button, [role=spinbutton]")) void previewTake(take.id);
+          if (!row.classList.contains("is-pending-delete") && !preview.disabled && !event.target.closest("button, [role=spinbutton]")) void previewTake(take.id);
         });
         download.addEventListener("click", () => { void downloadTake(take.id); });
         remove.addEventListener("click", () => { void removeTake(take.id); });
@@ -10316,7 +10359,11 @@
     }
     takes.forEach(take => {
       const row = elements.takeList.querySelector(`:scope > .take-row[data-take-id="${take.id}"]`);
+      row.dataset.recordingSource = take.publication || window.MeleteStation.archived(take) ? "cloud" : "local";
       const name = `take ${take.number || "unsaved"}`;
+      window.MeleteTakeControls.deletionRow(row, take.deleteAfter ? name : "", () => undoTakeDeletion(take.id),
+        takeActionBusy || take.deleteAfter <= Date.now());
+      if (take.deleteAfter) return;
       const better = dominated.get(take.id);
       const comparison = better ? `Outscored by take ${better.number}` : "";
       row.classList.toggle("is-dominated", Boolean(better));
@@ -10517,7 +10564,8 @@
           if (record.finalized && takeState === "stopping" && pendingCaptureTrace) pendingCaptureTrace.id = record.id;
           announceTakeChange();
           renderTakePanel();
-          if (record.finalized) window.setTimeout(() => { void scoreNextTake(); }, 0);
+          if (window.MeleteRecording.silentCandidate(record)) void loadTakeLibrary().catch(() => {});
+          else if (record.finalized) window.setTimeout(() => { void scoreNextTake(); }, 0);
         },
         onDiscard: id => {
           takeLibrary.delete(id);
@@ -11480,6 +11528,7 @@
   }
 
   function syncPlaybackButton() {
+    syncRehearsalWake();
     syncStepAvailability();
     const preparing = Boolean(engine?.preparing);
     stationMixEditor?.transportChanged();
@@ -11625,6 +11674,21 @@
     event.preventDefault();
   });
   attachHoldReset(elements.pitchCapture, togglePitchCapture, clearPitchTrace, "pitch trace");
+  vowelView = window.MeleteVowelView.attach({
+    input: () => pitchCapturePageActive && !document.hidden && pitchCaptureEnabled() && pitchInputIsLive()
+      ? pitchCaptureAnalyser : null,
+    section: () => practiceMixerIndex(),
+    score: {
+      data: () => config.vowelTargets,
+      part: () => practicePartIndex,
+      tick: () => engine ? engine.tickAtSeconds(engine.presentationSeconds()) : null,
+      writtenPitch: tick => {
+        const line = practiceDivisi[practicePartIndex], span = divisiSpanAt(practicePartIndex, tick);
+        return Number.isInteger(line) && span
+          ? span.pitches[divisiLineFor(line, partDivisi[practicePartIndex].maxLines, span.pitches.length)] : null;
+      },
+    },
+  });
   microphoneCheck = new window.MeleteMicrophoneCheck.Check({
     dialog: document.getElementById("microphoneCheck"), trigger: elements.checkMicrophone,
     inline: true, passive: true, select: elements.takeMicrophone,
@@ -11787,7 +11851,6 @@
     finally { takeActionBusy = false; button.setAttribute("aria-busy", "false"); updateTakePreview(); renderTakePanel(); }
   });
   elements.exitTakeReview.addEventListener("click", stopTakePreview);
-  elements.undoTakeDelete.addEventListener("click", () => { void undoTakeDeletion(); });
   elements.retryTakeSave.addEventListener("click", () => { void retryTakeSave(); });
   window.MeleteTakeControls.confirmDeletes(document);
   elements.tempo.addEventListener("input", () => {
@@ -11874,6 +11937,7 @@
     elements.fullscreen.dataset.help = full ? "Exit full screen." : "Enter full screen.";
   });
   document.addEventListener("visibilitychange", () => {
+    syncRehearsalWake();
     if (document.hidden) {
       void stopTakeRecording("Stopped: tab hidden", true);
       disablePitchCapture(false, {preservePreference:true});
@@ -12357,8 +12421,10 @@
         seek: tick => { api.tickPosition = tick; },
       });
       engine.onPresentation = seconds => {
-        if (conductor) conductor.draw(engine.tickAtSeconds(seconds) * config.conductorScore.division / sequence.division);
-        else updateBarPlayhead(engine.tickAtSeconds(seconds));
+        const tick = engine.tickAtSeconds(seconds);
+        vowelView.position(tick);
+        if (conductor) conductor.draw(tick * config.conductorScore.division / sequence.division);
+        else updateBarPlayhead(tick);
       };
       engine.onPresentationStopped = () => {
         stopBarPlayheadMotion();

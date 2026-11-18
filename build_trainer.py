@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from practice_routes import materialize as materialize_practice_routes
+from vowel_targets import load_vowel_targets
 
 
 BUILDER_VERSION = "1"
@@ -887,6 +888,11 @@ def load_config(path: Path | None) -> dict[str, Any]:
         raise BuildError(f"Could not read config JSON {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise BuildError("The config file must contain one JSON object.")
+    if "vowelTargets" in value:
+        try:
+            value["vowelTargets"] = load_vowel_targets(value["vowelTargets"], path.parent)
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            raise BuildError(f"Invalid vowelTargets in {path}: {exc}") from exc
     reference = value.get('referenceAudio')
     if reference is not None:
         if not isinstance(reference, dict):
@@ -1121,7 +1127,7 @@ def copy_builder_sources(project_dir: Path) -> None:
     shutil.copytree(VENDOR_DIR, project_dir / "vendor", dirs_exist_ok=True)
 
 
-def run_extractor(score: Path, playback: Path, metadata: Path) -> None:
+def run_extractor(score: Path, playback: Path, metadata: Path, *, syllables: Path | None = None) -> None:
     if not EXTRACTOR.is_file():
         raise BuildError(f"Score extractor is missing: {EXTRACTOR}")
     node = shutil.which("node")
@@ -1139,6 +1145,8 @@ def run_extractor(score: Path, playback: Path, metadata: Path) -> None:
         "--metadata",
         str(metadata),
     ]
+    if syllables is not None:
+        command.extend(["--syllables", str(syllables)])
     run_checked_command(
         "Score extraction",
         command,
@@ -1858,7 +1866,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         atomic_write(score_path, normalized_xml)
         atomic_write(config_path, stable_json(config, pretty=True))
 
-        run_extractor(score_path, playback_path, extractor_metadata_path)
+        syllables_path = assets / "syllables.json" if config.get("vowelTargets") else None
+        run_extractor(score_path, playback_path, extractor_metadata_path,
+                      syllables=None if practice_roles else syllables_path)
         playback = read_json_object(playback_path, "playback data")
         if config.get('referenceAudio'):
             expected = {key: playback[key] for key in ('division','endTick','measures','tempos')}
@@ -1870,7 +1880,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         if practice_roles or corrected_xml != normalized_xml:
             practice_path = assets / "practice.musicxml"
             atomic_write(practice_path, practice_xml)
-            run_extractor(practice_path, playback_path, extractor_metadata_path)
+            run_extractor(practice_path, playback_path, extractor_metadata_path, syllables=syllables_path)
             playback = read_json_object(playback_path, "practice playback data")
             extracted = read_json_object(extractor_metadata_path, "practice score metadata")
             for role in practice_roles:
@@ -1886,6 +1896,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                         [note for note in playback["notes"] if note[0] == part],
                     ]).encode("utf-8"))
             atomic_write(playback_path, stable_json(playback, pretty=True))
+
+        if syllables_path is not None:
+            config["vowelTargets"]["tracks"] = read_json_object(syllables_path, "syllable timing")["tracks"]
+            atomic_write(config_path, stable_json(config, pretty=True))
 
         template = read_required(TEMPLATE_DIR / "index.html")
         styles = read_required(TEMPLATE_DIR / "styles.css")
@@ -1953,6 +1967,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         app = read_required(TEMPLATE_DIR / "take_cleanup.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "take_pitch.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "live_pitch.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "vowel_view.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "vowel_targets.js") + "\n" + app
+        app = read_required(TEMPLATE_DIR / "vowel_matching.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "vocal_pitch.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "loop_recorder.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "native_station.js") + "\n" + app

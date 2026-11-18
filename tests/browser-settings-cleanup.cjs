@@ -31,6 +31,7 @@ async function main(){
         assert.equal(await page.locator('#score').isVisible(),false);
         await page.reload();await ready();
         assert.equal(await page.locator('[data-visible-index][aria-pressed="true"]').count(),0);
+        await page.locator('#score').waitFor({state:'hidden'});
         assert.equal(await page.locator('#score').isVisible(),false,'an empty See selection survives reload');
         assert.equal(await page.locator('#practiceDivisi').count(),0);
         assert.equal(await page.locator('#mixer [data-volume-index]').count(),channels.length);
@@ -43,7 +44,7 @@ async function main(){
         await page.evaluate(async()=>{__qa.engine.ensureAudio();await __qa.engine.context.resume();});
         const last=channels.length-1;
         await page.locator(`[data-audio-index="${last}"]`).click();
-        await page.waitForTimeout(150);
+        await page.waitForFunction(i=>__qa.engine.trackStrips[i].gain.gain.value<.01,last);
         const gains=await page.evaluate(()=>__qa.engine.trackStrips.map(s=>s.gain.gain.value));
         assert.ok(gains[last]<.01,JSON.stringify({song,mobile,gains,hear:await page.evaluate(()=>__qa.savedPractice.audible)}));assert.ok(gains.slice(0,last).every(g=>g>.99));
         await page.locator(`[data-volume-index="${last}"]`).press('ArrowUp');
@@ -91,7 +92,7 @@ async function main(){
         await page.keyboard.press('Escape');assert.doesNotMatch(await row.locator('.take-delete').getAttribute('class'),/is-delete-armed/);
         await row.locator('.take-delete').click();await row.locator('.take-delete').click();
         await page.waitForFunction(()=>!__qa.compState.segments.length);
-        await require('./browser-history-control.cjs').historyControl(page,'undo');await page.waitForFunction(()=>__qa.compState.segments.length);
+        await page.locator('[data-deleted-comp] .take-undo button').click();await page.waitForFunction(()=>__qa.compState.segments.length);
         report.push({song,mobile,channels:channels.map(p=>p.short),staves:await page.evaluate(()=>__qa.staves),independentMix:true,persisted:true,twoClickDeleteAndUndo:true,dates:true});
       }finally{await context.close();}
     }

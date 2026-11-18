@@ -770,10 +770,10 @@ button { color: inherit; }
 .take-source-filter { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
 .take-source-filter select { flex: 1; min-width: 0; font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 4px; }
 .take-source-filter[hidden], .take-source-empty,
-#takeReviewTable[data-source="local"] [data-cloud-id],
-#takeReviewTable[data-source="cloud"] :is([data-comp-key], .take-row[data-take-id], #practiceTraceRows, #takeMore) { display: none; }
-#takeReviewTable[data-source="cloud"]:not(:has([data-cloud-id])) .take-source-empty[data-source="cloud"],
-#takeReviewTable[data-source="local"]:not(:has([data-comp-key], #practiceTraceRows > *, .take-row[data-take-id])) .take-source-empty[data-source="local"] { display: block; margin: 4px; color: var(--muted); }
+#takeReviewTable[data-source="local"] [data-recording-source="cloud"],
+#takeReviewTable[data-source="cloud"] :is([data-recording-source="local"], #practiceTraceRows, #takeMore) { display: none; }
+#takeReviewTable[data-source="cloud"]:not(:has([data-recording-source="cloud"])) .take-source-empty[data-source="cloud"],
+#takeReviewTable[data-source="local"]:not(:has([data-recording-source="local"], #practiceTraceRows > *)) .take-source-empty[data-source="local"] { display: block; margin: 4px; color: var(--muted); }
 .take-table-tools { display: flex; flex-direction: column; gap: var(--toolbar-row-gap); }
 .take-table-tools > .icon-button { width: var(--toolbar-row-height); height: var(--toolbar-row-height); padding: 3px; min-height: 0; }
 #expandTakes[aria-expanded="true"] svg { transform: rotate(180deg); }
@@ -976,7 +976,9 @@ button { color: inherit; }
 .take-delete-prompt { display: flex; flex-wrap: wrap; gap: 4px; }
 .take-delete-prompt { padding-bottom: 5px; }
 .take-delete-prompt span { flex: 0 0 100%; }
-.take-undo { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-bottom: 5px; }
+.take-row.is-pending-delete > .take-summary { display: none; }
+.take-undo { display: grid; grid-template-columns: 1fr var(--take-actions-width); align-items: center; height: 100%; padding-left: 6px; }
+.take-undo button { justify-self: start; }
 /* Recordings outside every track: older takes and ones that could not be used. */
 .take-undo[hidden], .take-delete-prompt[hidden],
 .take-command[hidden] { display: none; }
@@ -1225,7 +1227,9 @@ button { color: inherit; }
 .display-scale-row { grid-row: 3; }
 .display-feature-row { grid-row: 4; }
 .display-lyric-edit-row { grid-row: 4; grid-column: 1 / 3; }
-#lyricEditing { grid-column: 1 / -1; width: 100%; display: grid; place-items: center; padding: 0; }
+#lyricEditing, #vowelToggle { width: 100%; display: grid; place-items: center; padding: 0; }
+#lyricEditing { grid-column: 1; }
+#vowelToggle { grid-column: 2; }
 #showAllLyrics { grid-column: 3; width: 100%; padding: 3px; }
 .display-utility {
   width: 100%;
@@ -1235,6 +1239,40 @@ button { color: inherit; }
 }
 .display-controls > .display-utility { justify-self: center; }
 .display-fullscreen { grid-row: 4; grid-column: 3; }
+.vowel-panel {
+  position: fixed; right: 12px; bottom: 12px; z-index: 785;
+  width: min(284px, calc(100vw - 24px)); max-height: calc(100dvh - 65px); overflow: auto;
+  box-sizing: border-box; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px;
+  color: var(--ink); background: var(--panel-solid); box-shadow: 0 4px 16px #0002;
+}
+.vowel-panel[hidden], .vowel-panel [hidden] { display: none; }
+.vowel-panel header, .vowel-readings, .vowel-actions { display: flex; align-items: center; gap: 7px; }
+.vowel-panel header, .vowel-readings { justify-content: space-between; }
+.vowel-panel h2 { font: inherit; font-size: 15px; font-weight: 730; margin: 0; }
+.vowel-panel p, .vowel-readings { font-size: 11px; line-height: 1.4; }
+.vowel-panel p { margin: 5px 0 0; color: var(--muted); }
+.vowel-panel .take-command { min-height: 25px; padding-inline: 7px; }
+.vowel-actions { margin-top: 7px; }
+.vowel-syllable, .vowel-corpus { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.vowel-syllable { margin-top: 6px; font-size: 14px; }
+.vowel-corpus { margin-top: 4px; color: var(--muted); font-size: 11px; }
+#vowelSyllablePanel select { font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 4px; }
+#vowelTarget { color: var(--ink); fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+#vowelTarget .optional { stroke-dasharray: 2 2; }
+#vowelHz { font-variant-numeric: tabular-nums; }
+#vowelChart { display: block; width: 100%; margin-top: 6px; }
+#vowelChart text { font: 11px system-ui, sans-serif; fill: var(--muted); }
+#vowelChart .vowel-tick { font-size: 11px; font-variant-numeric: tabular-nums; }
+#vowelChart .vowel-landmark { font-size: 13px; font-weight: 650; }
+.vowel-field { fill: var(--field); stroke: var(--line); }
+.vowel-grid { fill: none; stroke: var(--line); stroke-dasharray: 2 4; }
+#vowelReference { color: var(--ink); }
+.vowel-region { fill: currentColor; fill-opacity: .13; stroke: currentColor; stroke-opacity: .42; }
+.vowel-path { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+#vowelReference .vowel-path { stroke-dasharray: 3 3; }
+#vowelTrail, #vowelDot { color: var(--accent); }
+.vowel-sample, .vowel-beat, #vowelDot { fill: currentColor; }
+#vowelDot { stroke: var(--field); stroke-width: 1.5; }
 .display-demo[hidden] { display: none; }
 .icon-button.display-demo svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.6; }
 .icon-button.display-theme svg { fill: currentColor; stroke: none; }

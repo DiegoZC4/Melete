@@ -7,6 +7,15 @@
   "use strict";
 
   const MAX_LOOP_SECONDS = 300;
+  function scoreableCheckpoint(record, now = Date.now()) {
+    return !record.finalized && record.frames > 0 && Number.isFinite(record.updatedAt)
+      && now - record.updatedAt >= MAX_LOOP_SECONDS * 1000;
+  }
+  function silentCandidate(record) {
+    return record.finalized && !record.publication && !record.favorite && !record.deleteAfter
+      && (record.frames === 0 || record.peak === 0)
+      && (record.storedFrames ?? record.frames) === record.frames;
+  }
   const DELETE_UNDO_MS = 10000;
   const COMP_HISTORY_LIMIT = 20;
   const COMP_HISTORY_BYTES = 128 * 1024 * 1024;
@@ -15,6 +24,7 @@
     track: Boolean(state?.track), firstTakeNumber: state?.firstTakeNumber ?? null});
   const sameCompContent = (a, b) => JSON.stringify(compSnapshot(a)) === JSON.stringify(compSnapshot(b));
   const historySources = history => [...new Set([...(history?.past || []), ...(history?.future || [])]
+    .flatMap(edit => edit.group || [edit])
     .flatMap(edit => [...edit.before.segments, ...edit.after.segments].map(s => s.takeId)))];
   function recordCompEdit(history, before, after) {
     if (sameCompContent(before, after)) return history;
@@ -498,7 +508,8 @@
             }
             if (!locked.size) { done(false); return; }
             readCompHistory(tx,song,history=>{
-              const past=history.past.filter(e=>!locked.has(e.key)), future=history.future.filter(e=>!locked.has(e.key));
+              const editable=e=>!(e.group || [e]).some(member=>locked.has(member.key));
+              const past=history.past.filter(editable), future=history.future.filter(editable);
               if (past.length!==history.past.length || future.length!==history.future.length)
                 tx.objectStore("counters").put({...history,past,future,revision:history.revision+1},historyKey(song));
               done(true);
@@ -673,6 +684,87 @@
       });
     }
 
+    reassignCompGroup(members, previousSinger, person, keyFor) {
+      return this.transaction(["comps","takes","counters"],"readwrite",(tx,done,fail)=>{
+        const comps=tx.objectStore("comps"), takes=tx.objectStore("takes"), song=members[0]?.song;
+        if (!song || !previousSinger || !person?.id || !person.name) {fail(new Error("Choose a singer for this comp."));return;}
+        comps.index("song").getAll(song).onsuccess=event=>{
+          const states=new Map(event.target.result.map(s=>[s.key,s]));
+          if (members.some(s=>!states.has(s.key) || states.get(s.key).revision!==s.revision || states.get(s.key).publication)) {
+            fail(new Error("This singer's comp changed. Reopen its singer field."));return;
+          }
+          const ids=new Set(members.flatMap(s=>[...(s.processed || []),...s.segments.map(p=>p.takeId)]));
+          const moves=new Map(), keys=new Map();
+          for (const member of members) {
+            const old=states.get(member.key), d=old.descriptor;
+            let descriptor=d;
+            if (d.station) {
+              if (d.station.id!==previousSinger) {fail(new Error("Singer attribution changed."));return;}
+              descriptor={...d,station:{...d.station,id:person.id,name:person.name,voice:person.voice || ""},
+                slot:`station:${person.id}:${d.station.stage}:${crypto.randomUUID()}`};
+            }
+            const updated={...old,descriptor,key:keyFor(descriptor),revision:old.revision+1};
+            moves.set(old.key,updated);keys.set(old.key,updated.key);
+          }
+          takes.index("song").getAll(song).onsuccess=event=>{
+            const updated=[];
+            for (const take of event.target.result) {
+              const owner=members.find(s=>s.descriptor.station && take.station?.id===previousSinger
+                && take.trackSlot===s.descriptor.slot && take.pitchReference?.part===s.descriptor.reference.part
+                && (take.pitchReference.line??null)===(s.descriptor.reference.line??null) && take.rate===s.descriptor.reference.rate);
+              if (!owner && !ids.has(take.id))continue;
+              if (take.publication || take.active || (take.performer?.id || take.station?.id)!==previousSinger) {
+                fail(new Error("This comp contains protected, active, or differently credited audio."));return;
+              }
+              const changed={...take,performer:{id:person.id,name:person.name}};
+              if (owner) {const d=moves.get(owner.key).descriptor;changed.station=d.station;changed.trackSlot=d.slot;}
+              updated.push(changed);
+            }
+            readCompHistory(tx,song,history=>{
+              const remap=edit=>({...edit,key:keys.get(edit.key)||edit.key,
+                ...(edit.group?{group:edit.group.map(remap)}:{})});
+              tx.objectStore("counters").put({...history,past:history.past.map(remap),future:history.future.map(remap),revision:history.revision+1},historyKey(song));
+              for (const [key,state] of moves) {if(key!==state.key)comps.delete(key);comps.put(state);}
+              for (const take of updated)takes.put(take);
+              done([...moves.values()]);
+            });
+          };
+        };
+      });
+    }
+
+    removeCompGroup(members, view, expectedRevision) {
+      return this.transaction(["comps","takes","counters"], "readwrite", (tx, done, fail) => {
+        const store=tx.objectStore("comps");
+        store.index("song").getAll(view.song).onsuccess=event=>{
+          const current=new Map(event.target.result.map(s=>[s.key,s]));
+          if (!members.length || members.some(s=>!current.has(s.key) || current.get(s.key).publication
+            || current.get(s.key).revision!==s.revision)) {
+            fail(new Error("This singer's comp changed. Try again.")); return;
+          }
+          tx.objectStore("takes").getAll().onsuccess=event=>{
+            const sources=new Map(event.target.result.map(t=>[t.id,t]));
+            if (members.flatMap(s=>s.segments).some(s=>!sources.has(s.takeId) || sources.get(s.takeId).publication || sources.get(s.takeId).active)) {
+              fail(new Error("This singer's comp contains protected or active recordings.")); return;
+            }
+            readCompHistory(tx,view.song,history=>{
+              if (history.revision!==expectedRevision) { fail(new Error("Comp history changed. Try again.")); return; }
+              const now=Date.now();
+              const changed=members.map(s=>({...current.get(s.key),segments:[],track:false,undo:null,
+                historyManaged:true,freshAt:now,editedAt:now,updatedAt:now,revision:s.revision+1}));
+              const edit={key:view.key,label:view.descriptor.label,at:now,
+                before:compSnapshot(view),after:compSnapshot(),
+                group:members.map((s,i)=>({key:s.key,before:compSnapshot(current.get(s.key)),after:compSnapshot(changed[i])}))};
+              const updated={past:[...history.past,edit].slice(-COMP_HISTORY_LIMIT),future:[],revision:history.revision+1};
+              for (const state of changed) store.put(state);
+              tx.objectStore("counters").put(updated,historyKey(view.song));
+              done({states:changed,history:updated});
+            });
+          };
+        };
+      });
+    }
+
     stepCompHistory(song, direction, expectedRevision) {
       if (!["undo", "redo"].includes(direction)) return Promise.reject(new Error("Invalid history direction"));
       return this.transaction(["comps", "takes", "counters"], "readwrite", (tx, done, fail) => {
@@ -681,26 +773,31 @@
           const from = direction === "undo" ? "past" : "future", to = direction === "undo" ? "future" : "past";
           const edit = history[from].at(-1);
           if (!edit) { done(null); return; }
-          const snapshot = direction === "undo" ? edit.before : edit.after;
-          tx.objectStore("comps").get(edit.key).onsuccess = event => {
-            const state = event.target.result;
-            if (!state || state.publication || !sameCompContent(state, direction === "undo" ? edit.after : edit.before)) {
+          const changes=edit.group || [edit];
+          tx.objectStore("comps").index("song").getAll(song).onsuccess = event => {
+            const states=new Map(event.target.result.map(s=>[s.key,s]));
+            if (changes.some(change=>!states.has(change.key) || states.get(change.key).publication
+              || !sameCompContent(states.get(change.key),direction==="undo" ? change.after : change.before))) {
               fail(new Error("This track changed outside its edit history. Current recordings kept.")); return;
             }
             tx.objectStore("takes").getAll().onsuccess = event => {
               const takes = new Map(event.target.result.map(t => [t.id, t]));
-              if (snapshot.segments.some(s => !takes.has(s.takeId) || takes.get(s.takeId).deleteAfter)) {
+              if (changes.flatMap(change=>(direction==="undo" ? change.before : change.after).segments)
+                .some(s => !takes.has(s.takeId) || takes.get(s.takeId).deleteAfter)) {
                 fail(new Error("An Undo recording is missing. Current track kept.")); return;
               }
               // Keep processed IDs and the deletion watermark: undone captures
               // must not be immediately offered to the comp again.
-              const next = {...state, ...snapshot, undo: null, historyManaged: true,
-                revision: state.revision + 1, updatedAt: Date.now(), editedAt: Date.now()};
+              const next=changes.map(change=>{
+                const state=states.get(change.key), snapshot=direction==="undo" ? change.before : change.after;
+                return {...state,...snapshot,undo:null,historyManaged:true,
+                  revision:state.revision+1,updatedAt:Date.now(),editedAt:Date.now()};
+              });
               const updated = {...history, [from]: history[from].slice(0, -1),
                 [to]: [...history[to], edit], revision: history.revision + 1};
-              tx.objectStore("comps").put(next);
+              for (const state of next) tx.objectStore("comps").put(state);
               tx.objectStore("counters").put(updated, historyKey(song));
-              done({state: next, history: updated});
+              done({state:next.find(s=>s.key===edit.key),history:updated});
             };
           };
         });
@@ -756,6 +853,11 @@
           if ((previous?.frames || 0) !== offset) { fail(new Error("The take changed in another tab")); return; }
           const write = number => {
             const next = {...record, ...previous, ...status, number, frames: offset + pcm.length, updatedAt: Date.now()};
+            if (previous?.checkpointPitch) {
+              delete next.checkpointPitch;
+              if (!status.pitchScore) delete next.pitchScore;
+              if (!status.pitchContour) delete next.pitchContour;
+            }
             addRecordingDays(tx, recordingDays(next));
             next.practiceTimeFrames = next.frames;
             if (pcm.length) tx.objectStore("chunks").add({takeId: record.id, offset, pcm});
@@ -814,18 +916,18 @@
       });
     }
 
-    pitchScore(id, frames, reference, result, contour) {
+    pitchScore(id, frames, reference, result, contour, checkpointAt = null) {
       return this.transaction(["takes"], "readwrite", (tx, done) => {
         const takes = tx.objectStore("takes");
         takes.get(id).onsuccess = event => {
           const record = event.target.result;
-          // Never resurrect a deleted take, grade a growing checkpoint, or
-          // overwrite a concurrent favorite/deletion edit with stale metadata.
-          if (!record || record.publication || !record.finalized || record.deleteAfter || record.frames !== frames
+          if (!record || record.publication || record.deleteAfter || record.frames !== frames
+            || (!record.finalized && (record.updatedAt !== checkpointAt || !scoreableCheckpoint(record)))
             || JSON.stringify(record.pitchReference) !== JSON.stringify(reference)) { done(null); return; }
           if (contour && (contour.audioFrames !== record.frames || contour.sampleRate !== record.sampleRate
             || contour.reference !== JSON.stringify(reference) || contour.analysisVersion !== result.version)) { done(null); return; }
           record.pitchScore = result;
+          if (!record.finalized) record.checkpointPitch = true;
           if (contour) record.pitchContour = contour;
           else if (record.pitchContour?.analysisVersion !== result.version) delete record.pitchContour;
           takes.put(record);
@@ -865,15 +967,17 @@
       });
     }
 
-    undoDeletes(song, now = Date.now()) {
+    undoDeletes(song, now = Date.now(), id = null) {
       return this.transaction(["takes"], "readwrite", (tx, done) => {
         const restored = [];
         done(restored);
-        tx.objectStore("takes").index("song").openCursor(song).onsuccess = event => {
+        const takes = tx.objectStore("takes");
+        const request = id === null ? takes.index("song").openCursor(song) : takes.openCursor(id);
+        request.onsuccess = event => {
           const cursor = event.target.result;
           if (!cursor) return;
           const record = cursor.value;
-          if (record.deleteAfter > now) {
+          if (record.song === song && record.deleteAfter > now) {
             delete record.deleteAfter;
             delete record.deleteFavorite;
             cursor.update(record);
@@ -903,6 +1007,37 @@
           }
           cursor.continue();
         };
+        });
+      });
+    }
+
+    discardSilent(song, candidates) {
+      const ids = candidates.filter(silentCandidate).map(take => take.id);
+      if (!ids.length) return Promise.resolve([]);
+      return this.transaction(["takes","chunks","comps","counters"], "readwrite", (tx, done) => {
+        const removed = [], takes = tx.objectStore("takes"), chunks = tx.objectStore("chunks");
+        done(removed);
+        this.protectedTakes(tx, protectedIds => {
+          for (const id of ids) {
+            if (protectedIds.has(id)) continue;
+            takes.get(id).onsuccess = event => {
+              const record = event.target.result;
+              if (!record || record.song !== song || !silentCandidate(record)) return;
+              const keys = [];
+              let frames = 0;
+              chunks.index("takeId").openCursor(id).onsuccess = event => {
+                const cursor = event.target.result;
+                if (cursor) {
+                  const {offset, pcm} = cursor.value;
+                  if (offset !== frames || !(pcm instanceof Int16Array) || pcm.some(sample => sample !== 0)) return;
+                  frames += pcm.length; keys.push(cursor.primaryKey); cursor.continue();
+                } else if (frames === record.frames) {
+                  for (const key of keys) chunks.delete(key);
+                  takes.delete(id); removed.push(id);
+                }
+              };
+            };
+          }
         });
       });
     }
@@ -1318,5 +1453,5 @@
   return {TakeBuffer, TakeStore, TakeJournal, wavBytes, PcmCapture, CountIn, countInPlan, finishCapture,
     recordingEntrance, auditionEntrances, takeBytes, takeFilename, takeArchive, takePlaybackWindow, takePlaybackGain, DELETE_UNDO_MS,
     recordingDay, recordingDays, compSnapshot, recordCompEdit, historySources, trimCompHistories,
-    COMP_HISTORY_LIMIT, COMP_HISTORY_BYTES, MAX_LOOP_SECONDS, WORKLET_SOURCE};
+    COMP_HISTORY_LIMIT, COMP_HISTORY_BYTES, MAX_LOOP_SECONDS, scoreableCheckpoint, silentCandidate, WORKLET_SOURCE};
 });

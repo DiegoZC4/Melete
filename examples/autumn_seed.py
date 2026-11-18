@@ -24,7 +24,7 @@ EXPORT_LIMIT = 8 * 1024 * 1024
 MARKER = "melete-rehearsal-project-v1"
 FIELDS = {"audition", "beatGroups", "browserTitle", "chapters", "choirShareUrl", "cloud",
           "composer", "demoVideo", "favicon", "parts", "practiceRoutes", "recordingCountInBeats",
-          "schemaVersion", "slug", "title", "lyricCorrections"}
+          "schemaVersion", "slug", "title", "lyricCorrections", "vowelTargets"}
 
 
 class DataScripts(HTMLParser):

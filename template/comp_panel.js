@@ -27,9 +27,12 @@
     // Every reconciled target by comp key, the displayed keys in score order,
     // and the current practice part's key, which receives new recordings.
     let tracks = new Map(), shown = [], armed = null, saved = [], used = new Set(), garbage = new Set();
+    let views = new Map(), viewOwners = new Map(), compSingers = new Set();
+    const viewFor = key => views.get(viewOwners.get(key) || key) || tracks.get(key);
     let signature = "", pending = null, dirty = false, recording = false, busy = false, cloud = null, ready = false, listed = "", cloudKey = null;
     let practiceIdentity = null, autoReview = null, landedStartSlot = null;
     let revealSinger = false, checkSingerRoute = false, correcting = null;
+    let revealAddedTrack = null;
     let singerRevision=0;
     let history = {past: [], future: [], revision: 0};
     let historyBudgetStamp = "", usedAudioStamp = "";
@@ -81,7 +84,7 @@
         await adapter.store.sealPublications(adapter.song(),stations.archiveReceipt,receipts);
     });
     root.MeleteTakeControls.tablePreferences(byId("takePanel"), !adapter.audition?.() && stations.requested());
-    const locked = track => root.MeleteCloud.hasReceipt(track?.state,track?.sources);
+    const locked = track => (track?.members || [track]).some(member => root.MeleteCloud.hasReceipt(member?.state,member?.sources));
     function writableDescriptor(base) {
       if (!base) return base;
       let d=base;
@@ -117,7 +120,7 @@
     const cloudSinger = item => ({key:`cloud:${item.owner}`,name:item.name,date:item.rehearsalDate || null});
     function reviewCandidates() {
       const local = shown.flatMap(key => {
-        const track=tracks.get(key), person=stations.trackSinger(track.state,track.sources);
+        const track=viewFor(key), person=stations.trackSinger(track.state,track.sources);
         return person?.id && track.state.segments.length ? [{id:layerId(track.state),key,
           singer:{key:`station:${person.id}`,name:person.name,stage:track.state.descriptor.station?.stage},
           updatedAt:track.state.editedAt || track.state.updatedAt || track.state.createdAt}] : [];
@@ -148,7 +151,7 @@
       if (!candidate) return;
       request.loading=true;
       try {
-        const review=candidate.item ? await cloud.prepare(candidate.item) : await prepare(tracks.get(candidate.key));
+        const review=candidate.item ? await cloud.prepare(candidate.item) : await prepare(viewFor(candidate.key));
         if (followRequest !== request || !adapter.active() || request.selection !== adapter.selectionRevision()) return;
         followRequest=null;
         adapter.revealReview();
@@ -225,6 +228,7 @@
       if (!cloudRows.has(id)) {
         const row = byId("compRowTemplate").content.firstElementChild.cloneNode(true);
         row.dataset.cloudId = id;
+        row.dataset.recordingSource = "cloud";
         row.querySelector(".comp-review").onclick = () => {void playCloud(id,"review");};
         adapter.hearControl(row.querySelector(".take-hear"), () => id, () => {void playCloud(id,"hear");});
         row.querySelector(".take-download").onclick = () => {void playCloud(id,"download");};
@@ -289,11 +293,13 @@
     }
     function fill(row, track) {
       const {state, sources} = track, id = layerId(state), name = `${trackName(state)} track`, named = state.descriptor.station;
+      // Publication identity survives an offline/cached copy of the audio.
+      row.dataset.recordingSource = locked(track) ? "cloud" : "local";
       const performer=stations.trackSinger(state,sources);
       const selected = adapter.rowSelected(id), audible = adapter.audible(id), loading = preparing.has(state.key);
       const empty = !state.segments.length, isArmed = state.key === armed;
-      const preparingSinger = Boolean(named && isArmed && empty);
-      row.classList.toggle("is-new",preparingSinger);
+      const preparingTake = isArmed && empty;
+      row.classList.toggle("is-new",preparingTake);
       const review = row.querySelector(".comp-review");
       row.classList.toggle("is-selected", selected);
       row.classList.toggle("is-armed", isArmed);
@@ -304,7 +310,7 @@
       review.disabled = !selected && !loading && (busy || recording || empty);
       const ids = [...new Set(state.segments.map(s => s.takeId))];
       const numbers = ids.map(takeId => sources.get(takeId)?.number).filter(Boolean).sort((a, b) => a - b);
-      row.querySelector(".take-number").textContent = preparingSinger ? "New" : String(state.firstTakeNumber ?? numbers[0] ?? "\u2014");
+      row.querySelector(".take-number").textContent = preparingTake ? "New" : String(state.firstTakeNumber ?? numbers[0] ?? "\u2014");
       const singer = row.querySelector(".take-singer");
       singer.textContent = performer?.name || "\u2014";
       singer.title = performer ? [performer.name, performer.voice].filter(Boolean).join(", ") : "";
@@ -354,8 +360,36 @@
       upload.title = "Submit this comp for review under your Google name";
       upload.setAttribute("aria-label",`Upload ${name} for review`);
     }
+    let lastRemoved = null, inlineUndo = null;
+    function deletedTrackRow() {
+      const edit = history.past.at(-1);
+      if (!edit || edit.after.track || edit.after.segments.length ||
+          !(edit.before.track || edit.before.segments.length) || shown.includes(edit.key)) {
+        inlineUndo?.row.remove(); inlineUndo = null;
+        return null;
+      }
+      if (inlineUndo?.revision !== history.revision) {
+        inlineUndo?.row.remove(); inlineUndo = null;
+        const stored = saved.find(state => state.key === edit.key);
+        if (!stored) return null;
+        const revision = history.revision;
+        const record = lastRemoved?.key === edit.key && lastRemoved.revision === revision - 1
+          ? lastRemoved.record : sortRecord({state:{...stored,...edit.before,editedAt:null},
+            sources:new Map(adapter.takes().map(take => [take.id,take]))});
+        const row = document.createElement("div");
+        row.className = "take-row"; row.dataset.deletedComp = edit.key;
+        row.dataset.recordingSource = "local";
+        inlineUndo = {revision, row, record, restore:() => stepHistory("undo", revision)};
+      }
+      const {row,record,restore} = inlineUndo;
+      root.MeleteTakeControls.deletionRow(row, record.number == null ? edit.label+" track" : "take "+record.number,
+        restore, busy || recording);
+      return {deleted:row,record};
+    }
     function render() {
       const container = byId("compRows");
+      const scroll = byId("takePanel").querySelector(".take-review");
+      const top = scroll.scrollTop, left = scroll.scrollLeft;
       const shared = cloud?.entries() || [], cloudIds = new Set(shared.map(item => cloud.itemId(item)));
       for (const [id,row] of cloudRows) if (!cloudIds.has(id)) {
         adapter.releaseOctave(row.querySelector(".take-octave")); row.remove(); cloudRows.delete(id);
@@ -365,18 +399,17 @@
         adapter.releaseOctave(row.querySelector(".take-octave"));
         row.remove(); rows.delete(key);
       }
-      const scroll = byId("takePanel").querySelector(".take-review");
-      const top = scroll.scrollTop, left = scroll.scrollLeft;
-      const fresh = key => key === armed && tracks.get(key).state.descriptor.station && !tracks.get(key).state.segments.length;
-      const sorted = [...shown.map(key => ({key,fresh:Boolean(fresh(key)),record:sortRecord(tracks.get(key))})),
-        ...shared.map(item => ({item,fresh:false,record:cloudRecord(item)})), ...sourceRows]
+      const fresh = key => key === armed && !viewFor(key).state.segments.length;
+      const deleted = deletedTrackRow();
+      const sorted = [...shown.map(key => ({key,fresh:Boolean(fresh(key)),record:sortRecord(viewFor(key))})),
+        ...shared.map(item => ({item,fresh:false,record:cloudRecord(item)})), ...sourceRows, ...(deleted ? [deleted] : [])]
         .sort((a,b) => Number(!!b.fresh)-Number(!!a.fresh) || pitch.compareTakes(a.record,b.record,adapter.sort()));
       const individual=new Map([...container.querySelectorAll(":scope > .take-row[data-take-id]")].map(row=>[row.dataset.takeId,row]));
-      sorted.forEach(({key,item,source}, index) => {
-        const row = source ? individual.get(source) : item ? cloudRow(item) : rowFor(key);
+      sorted.forEach(({key,item,source,deleted}, index) => {
+        const row = deleted || (source ? individual.get(source) : item ? cloudRow(item) : rowFor(key));
         if (!row) return;
         if (container.children[index] !== row) container.insertBefore(row, container.children[index] || null);
-        if (key) fill(row, tracks.get(key));
+        if (key) fill(row, viewFor(key));
       });
       const add = byId("addTrack"), waiting = armed && !shown.includes(armed) ? tracks.get(armed) : null;
       add.disabled = busy || recording || Boolean(station.current());
@@ -402,6 +435,10 @@
       table.style.setProperty("--take-actions-width", configured && container.querySelector(".take-upload:not([hidden])") ? "80px" : "54px");
       root.MeleteTakeControls.fitTable(table);
       scroll.scrollTop = top; scroll.scrollLeft = left;
+      if (revealAddedTrack && rows.get(revealAddedTrack)?.getClientRects().length && fresh(revealAddedTrack)) {
+        scroll.scrollTop = 0; scroll.scrollLeft = 0;
+        revealAddedTrack = null;
+      }
       if (revealReviewId) {
         const row=cloudRows.get(revealReviewId) || [...rows.values()].find(row=>`comp:${row.dataset.compKey}`===revealReviewId);
         if (row?.getClientRects().length) {
@@ -533,15 +570,6 @@
       const latest = currentDescriptor();
       if ((latest && model.key(latest)) !== (current && model.key(current))) { dirty = true; return; }
       const updates = [];
-      for (const [key, old] of tracks) {
-        if (next.has(key) && audioKey(next.get(key).state,next.get(key).sources) === audioKey(old.state,old.sources)) continue;
-        preparing.get(key)?.controller.abort(); prepared.delete(key);
-        if (next.get(key)?.state.segments.length) updates.push(key);
-        else {
-          adapter.mute(layerId(old.state));
-          if (adapter.selected() === layerId(old.state)) adapter.clear();
-        }
-      }
       for (const [key, track] of next) {
         track.state = stored.find(s => s.key === key) || track.state;
         statsCache.set(track.state, track.score);
@@ -558,7 +586,24 @@
       }
       tracks = next;
       armed = current ? model.key(current) : null;
-      const display = [...next.values()].filter(t => t.state.segments.length || t.state.track);
+      const grouped = model.singerTracks(tracks, t => stations.trackSinger(t.state,t.sources), armed);
+      for (const [key, old] of views) {
+        const nextView=grouped.views.get(key);
+        if (nextView && audioKey(nextView.state,nextView.sources) === audioKey(old.state,old.sources)) continue;
+        preparing.get(key)?.controller.abort(); prepared.delete(key);
+        if (nextView?.state.segments.length) updates.push(key);
+        else {
+          adapter.mute(layerId(old.state));
+          if (adapter.selected() === layerId(old.state)) adapter.clear();
+        }
+      }
+      views=grouped.views; viewOwners=grouped.owners;
+      // Choosing a singer prepares their first pass even before a source exists.
+      // Keep that armed row visible without persisting an empty recording.
+      const display = [...views.values()].filter(t => t.state.segments.length || t.state.track
+        || t.state.key === armed && station.current());
+      compSingers=new Set([...display.map(t=>stations.trackSinger(t.state,t.sources)?.id),
+        ...saved.filter(s=>s.processed?.length).map(s=>s.descriptor.station?.id)].filter(Boolean));
       shown = display.sort((a, b) => a.state.descriptor.reference.part - b.state.descriptor.reference.part
         || (a.state.descriptor.reference.line ?? -1) - (b.state.descriptor.reference.line ?? -1)).map(t => t.state.key);
       const historyIds = root.MeleteRecording.historySources(history);
@@ -568,7 +613,7 @@
       signature = stamp;
       render();
       const last = replaced.at(-1);
-      const armedTrack = tracks.get(armed);
+      const armedTrack = viewFor(armed);
       if (!recording && armedTrack && adapter.pendingRecording?.(armed, armedTrack.state.processed)) {
         if (armedTrack.state.segments.length) {
           adapter.patchReview(visualReview(armedTrack), true);
@@ -576,20 +621,20 @@
         } else adapter.captureSettled?.();
       }
       for (const key of updates) {
-        const track = tracks.get(key), id = layerId(track.state);
+        const track = viewFor(key), id = layerId(track.state);
         adapter.patchReview(visualReview(track), false);
         if (adapter.selected() === id || adapter.audible(id)) refreshAudio(track);
       }
       if (autoReview && !recording && !busy) {
         const {key, selection} = autoReview; autoReview = null;
-        const track = tracks.get(key), singer = station.current();
+        const track = viewFor(key), singer = station.current();
         const reviewAllowed = !station.needsSinger() && (!singer || track && stations.playbackSingerId(track.state,track.sources)===singer.id);
         if (reviewAllowed && selection === adapter.selectionRevision() && track?.state.segments.length
           && adapter.selected() !== layerId(track.state)) await play(key, "review", selection);
       }
       // Track membership decides which takes the loose list shows.
       const membership = JSON.stringify([[...used], [...garbage],
-        [...tracks.values()].map(t => [t.state.key, t.state.processed, t.state.freshAt])]);
+        [...tracks.values()].map(t => [t.state.key, t.state.processed, t.state.freshAt]),[...compSingers]]);
       if (membership !== listed) { listed = membership; adapter.relist(); }
       if (replaced.length || silent.length) adapter.changed();
       if (last && !recording) {
@@ -664,8 +709,9 @@
       } catch (e) { error(e); }
       finally { busy = false; await refresh(); }
     }
-    async function stepHistory(direction) {
+    async function stepHistory(direction, revision) {
       if (pending) await pending;
+      if (revision !== undefined && revision !== history.revision) return;
       if (busy || recording || !history[direction === "undo" ? "past" : "future"].length) return;
       busy = true; render();
       try {
@@ -680,16 +726,37 @@
       finally { busy = false; await refresh({force: true}); }
     }
     function removeTrack(key) {
-      const state = tracks.get(key)?.state;
-      if (!state) return;
+      const track = viewFor(key);
+      if (!track || busy || recording || locked(track)) return;
+      const state = track.state;
+      lastRemoved = {key, revision:history.revision, record:sortRecord(track)};
+      if (track.members?.length > 1) { void removeSingerComp(track); return; }
       if (state.segments.length) { void edit(key, model.remove); return; }
       void edit(key, s => ({...s, track: false}));
+    }
+    async function removeSingerComp(track) {
+      busy=true; render();
+      try {
+        await adapter.store.removeCompGroup(track.members.map(t=>t.state),track.state,history.revision);
+        signature=""; adapter.clear(); adapter.mute(layerId(track.state)); adapter.changed();
+      } catch (e) { error(e); }
+      finally { busy=false; await refresh({force:true}); }
     }
     // Adding a track marks the current part's comp as a track. When that part
     // already has one, the singer first chooses another part to practise.
     async function addTrack() {
       if (busy || recording) return;
-      const flag = async key => { if (tracks.has(key)) await save(key, s => ({...s, track: true})); };
+      const reveal = key => {
+        revealAddedTrack = key;
+        // A newly added local take must be visible even from the Cloud filter.
+        if (sourceFilter.value === "cloud") {
+          sourceFilter.value = "all";
+          sourceFilter.dispatchEvent(new Event("change"));
+        }
+      };
+      const flag = async key => {
+        if (tracks.has(key)) { await save(key, s => ({...s, track: true})); reveal(key); }
+      };
       busy = true; render();
       try {
         if (armed && !shown.includes(armed)) { await flag(armed); return; }
@@ -704,6 +771,7 @@
               const descriptor = {...d, slot, layerNumber:1+Math.max(1,...siblings.map(t=>t.state.descriptor.layerNumber||1))};
               const state = await adapter.store.saveComp({...model.empty(descriptor), track:true});
               saved = [...saved, state]; slots[identity(d)] = slot;
+              reveal(state.key);
               try { localStorage.setItem(slotKey, JSON.stringify(slots)); } catch {}
               signature = "";
             } else await flag(armed);
@@ -738,6 +806,7 @@
       if (pending) pending.background = true;
     }
     async function prepare(track) {
+      track=viewFor(track.state.key);
       const {state, sources} = track, context = adapter.context(), cacheKey = `${audioKey(state,sources)}:${context.sampleRate}`;
       if (prepared.get(state.key)?.cacheKey === cacheKey) return {...prepared.get(state.key).review};
       const current = preparing.get(state.key);
@@ -750,7 +819,7 @@
         try {
           const audio = await root.MeleteCompAudio.prepare(context, state, takes, adapter.wav, controller.signal);
           controller.signal.throwIfAborted();
-          const latest=tracks.get(state.key);
+          const latest=viewFor(state.key);
           if (!latest || audioKey(latest.state,latest.sources) !== audioKey(state,sources)) throw new DOMException("Cancelled", "AbortError");
           const review = {...visualReview(track), ...audio,
             loudnessKey:JSON.stringify(["comp", state.key, cacheKey, root.MeleteTakeCleanup?.VERSION])};
@@ -770,7 +839,7 @@
     async function play(key, mode, expectedSelection = null) {
       adapter.cancelHearBatch();
       if (mode === "review" && expectedSelection === null) {autoReview = null;cancelFollow();reviewIntent=null;}
-      const track = tracks.get(key);
+      const track = viewFor(key);
       if (!track) return;
       const {state} = track, id = layerId(state);
       if (mode === "hear" && state.segments.length) return adapter.toggleHear(id, () => prepare(track));
@@ -889,12 +958,12 @@
     byId('stationLogClose').onclick=()=>logDialog.close();
     byId('stationLogDownload').onclick=()=>adapter.downloadBlob(new Blob([stations.takeLogCsv(logTakes)],{type:'text/csv'}),`${adapter.song()}-singer-log.csv`);
     function correctSinger(key) {
-      const track=tracks.get(key), state=track?.state, singer=track && stations.trackSinger(state,track.sources);
+      const track=viewFor(key), state=track?.state, singer=track && stations.trackSinger(state,track.sources);
       if (!station.enabled || !state || locked(track) || recording || busy || creditDialog.open) return;
       if (!state.descriptor.station && state.segments.length && (!singer || state.segments.some(s=>!track.sources.get(s.takeId)?.performer))) {
         void openSingerLog(new Set(state.segments.map(s=>s.takeId)));return;
       }
-      correcting={key,revision:state.revision,person:singer?.id ?? null};
+      correcting={key,revision:state.revision,person:singer?.id ?? null,members:track.members?.map(t=>t.state)};
       byId("takeSingerPart").textContent=`${state.segments.length ? "Take "+state.firstTakeNumber : "New take"} · ${label(state)}`;
       byId("takeSingerOptions").replaceChildren(...station.choices().map(person=>{
         const option=document.createElement("option"); option.value=person.name; option.label=stations.partCode(person.voice); return option;
@@ -906,7 +975,7 @@
     creditInput.oninput=()=>creditInput.setCustomValidity("");
     creditDialog.querySelector("form").onsubmit=async event=>{
       event.preventDefault();
-      const edit=correcting, state=tracks.get(edit?.key)?.state;
+      const edit=correcting, state=viewFor(edit?.key)?.state;
       if (!edit || !state || busy || recording) return;
       const person=stations.directorySinger(station.choices(), creditInput.value);
       if (!person) { creditInput.setCustomValidity("Choose a singer from the directory."); creditInput.reportValidity(); return; }
@@ -914,7 +983,8 @@
       if (!state.segments.length) { creditDialog.close(); station.pick(person); return; }
       busy=true; render();
       try {
-        if (state.descriptor.station) await adapter.store.reassignStationTrack(edit.key,edit.revision,person,model.key);
+        if (edit.members?.length>1) await adapter.store.reassignCompGroup(edit.members,edit.person,person,model.key);
+        else if (state.descriptor.station) await adapter.store.reassignStationTrack(edit.key,edit.revision,person,model.key);
         else await adapter.store.correctSourceCredit(edit.key,edit.revision,edit.person,person);
         const id=layerId(state); if (adapter.selected()===id) adapter.clear();
         adapter.mute(id); prepared.delete(edit.key); signature=""; autoReview=null; checkSingerRoute=true;
@@ -930,8 +1000,10 @@
       try {
         const takes = adapter.takes(), song = adapter.song();
         const comps = (await adapter.store.comps(song)).filter(s => s.segments.length);
-        const rows = comps.map(state => {
-          const sources = new Map(takes.filter(t => model.eligible(t, state.descriptor)).map(t => [t.id, t]));
+        const sourceTracks=new Map(comps.map(state=>[state.key,{state,sources:new Map(takes
+          .filter(t=>state.segments.some(s=>s.takeId===t.id) || model.eligible(t,state.descriptor)).map(t=>[t.id,t]))}]));
+        const grouped=model.singerTracks(sourceTracks,t=>stations.trackSinger(t.state,t.sources));
+        const rows = [...grouped.views.values()].map(({state,sources}) => {
           const {part, line = null, rate} = state.descriptor.reference;
           const bars = pitch.mergeRanges(state.segments.map(s => [s.from, s.to]))
             .map(([from, to]) => `${adapter.address(adapter.tick(Math.max(0, from) * rate))}-${adapter.address(adapter.tick(to * rate))}`).join("; ");
@@ -969,14 +1041,15 @@
         restored: async () => { signature = ""; await adapter.reload(); await refresh(); }});
     }
     function standalone(take) {
-      return ready && !take.active && take.frames > 0 && !used.has(take.id) && !garbage.has(take.id);
+      return ready && !take.active && take.frames > 0 && !used.has(take.id) && !garbage.has(take.id)
+        && !compSingers.has(stations.sourceSinger(take)?.id);
     }
     render();
     return {refresh, standalone, sourceRows:items=>{sourceRows=items;}, stepHistory, noteExplicitSelection, slot: () => currentDescriptor()?.slot || null, selected: render,
       resumePractice:async () => {
         noteExplicitSelection();
         await refresh({force:true});
-        const track=tracks.get(armed);
+        const track=viewFor(armed);
         if(track?.state.segments.length) await play(armed,"review",adapter.selectionRevision());
       },
       stationPerson: () => station.current(),
@@ -992,8 +1065,8 @@
       recordingPlan, recordingKey,
       advanceStart: slot => station.advance(slot) ? recordingKey() : null,
       settleStation: station.settle, playbackChanged: station.playbackChanged, refreshStationMix: station.refreshMix,
-      layers: () => shown.filter(key => tracks.get(key).state.segments.length)
-        .map(key => ({id:layerId(tracks.get(key).state), prepare: () => prepare(tracks.get(key))}))
+      layers: () => shown.filter(key => viewFor(key).state.segments.length)
+        .map(key => ({id:layerId(viewFor(key).state), prepare: () => prepare(viewFor(key))}))
         .concat((cloud?.entries() || []).map(item => ({id:cloud.itemId(item),prepare:() => cloud.prepare(item)}))), invalidate() {
       signature = "";
       for (const job of preparing.values()) job.controller.abort();

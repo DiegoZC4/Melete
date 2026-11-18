@@ -7,9 +7,13 @@
 !/LICENSE
 !/THIRD_PARTY_NOTICES.md
 !/CONTRIBUTING.md
+!/AGENTS.md
+!/RELEASE_NOTES.md
 !/build_trainer.py
 !/collection.py
 !/practice_routes.py
+!/vowel_targets.py
+!/vowel_syllables.mjs
 !/extract_score.mjs
 !/package.json
 !/package-lock.json

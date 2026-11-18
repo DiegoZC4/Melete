@@ -334,7 +334,26 @@
   function deviceEvent(store,event,details) {
     try {store.setItem(logKey,JSON.stringify([...deviceEvents(store),{at:new Date().toISOString(),event,...details}].slice(-40)));}catch{}
   }
-  return {Level, Check, mediaDevicesFor, microphoneNavigator, rawAudioConstraints,captureProfile,verifyRawInput,
+  // A singer can rehearse without touching the screen for longer than the OS idle timeout.
+  function rehearsalWakeLock(api) {
+    let wanted = false, generation = 0, held = null;
+    return active => {
+      if (!api || wanted === active) return;
+      wanted = active;
+      const request = ++generation;
+      if (!active) {
+        if (held) void held.release().catch(() => {});
+        held = null;
+      } else {
+        void api.request("screen").then(lock => {
+          if (request !== generation) return lock.release();
+          held = lock;
+          lock.addEventListener("release", () => { if (held === lock) held = null; }, {once:true});
+        }).catch(() => {});
+      }
+    };
+  }
+  return {Level, Check, rehearsalWakeLock, mediaDevicesFor, microphoneNavigator, rawAudioConstraints,captureProfile,verifyRawInput,
     timingChirp, measuredLatency, calibration,chirpReadings,fitChirps,
     physicalEndpoint,timingProfile,freshCalibration,watchClocks,clockDivergence,passClock,sampleScoreTime,deviceEvents,deviceEvent};
 });

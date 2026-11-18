@@ -5,6 +5,14 @@
   else root.MeleteTakeRender = api;
 })(globalThis, () => {
   "use strict";
+  // Live and saved traces share one display rule. Detector window widths are
+  // not silence boundaries: the browser can deliver voiced samples irregularly.
+  function connects(fromSeconds, fromCents, toSeconds, toCents) {
+    return Number.isFinite(fromSeconds) && Number.isFinite(toSeconds)
+      && Number.isFinite(fromCents) && Number.isFinite(toCents)
+      && Math.abs(toSeconds - fromSeconds) <= .25
+      && Math.abs(toCents - fromCents) <= 400;
+  }
   function frameRange(frames, from, to) {
     const lower = value => {
       let lo = 0, hi = frames.length;
@@ -16,7 +24,7 @@
     };
     return [lower(from), lower(to + 1e-9)];
   }
-  function tracePaths(frames, from, to, pointAt, colorAt) {
+  function tracePaths(frames, from, to, pointAt, colorAt, {rate = 1} = {}) {
     const colors = new Map();
     let previous = null, halo = "", edges = 0;
     for (let i = from; i < to; i++) {
@@ -24,19 +32,20 @@
       if (!Number.isFinite(frame.cents)) { previous = null; continue; }
       const point = pointAt(frame);
       if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) { previous = null; continue; }
+      const seconds = (frame.start + frame.end) / 2 * rate;
       if (previous && previous.point.track === point.track && frame.takeId === previous.frame.takeId
-        && frame.start - previous.frame.end < (frame.live && previous.frame.live ? .025 : 1e-6)) {
-        // Live delivery jitters inside overlapping detector windows. Join those
-        // display points, never an explicit unvoiced frame or a capture dropout.
+        && connects(previous.seconds, previous.frame.cents, seconds, frame.cents)) {
+        // Match live continuity without bridging explicit unvoiced frames,
+        // large pitch jumps, long dropouts, hidden points or comp splices.
         // Separate subpaths retain every edge, including gaps and source changes.
         const edge = `M${previous.point.x.toFixed(3)} ${previous.point.y.toFixed(3)}L${point.x.toFixed(3)} ${point.y.toFixed(3)}`;
         const color = colorAt(point.error);
         colors.set(color, (colors.get(color) || "") + edge);
         halo += edge; edges++;
       }
-      previous = {frame, point};
+      previous = {frame, point, seconds};
     }
     return {colors: [...colors], halo, edges};
   }
-  return {frameRange, tracePaths};
+  return {connects, frameRange, tracePaths};
 });

@@ -13,6 +13,26 @@ does not include choir repertoire, recordings, conductor scores or cloud service
 
 ## Requirements
 
+### One shared UI and release
+
+The website and offline laptop player use the same UI source in `template/` and
+the same generated player release. Desktop, mobile and station modes are
+capabilities of that shared player, not separate platform UI codebases. A UI
+fix made while working on Windows also belongs in the website release.
+
+The local station may inject runtime native-audio configuration to select its
+WASAPI host, devices and calibration. It must not substitute different UI
+templates, table behavior or controls. The native adapter is already included
+in the common build and activates only when the local host supplies it.
+
+Build and validate a release once, then publish and install that same artifact.
+Compare its SHA-256 against `release.json` when checking website/laptop parity.
+Separate checkouts and previews are development tools; they must not become
+independently maintained laptop and website products. Recordings, private roster
+and audio calibration remain outside the shared release.
+
+### Build dependencies
+
 - [Python](https://www.python.org/downloads/) **3.11+**, standard library only.
 - [Node.js](https://nodejs.org/en/download) **22+** for score extraction.
 - [MuseScore Studio](https://musescore.org/en/download) **4.x** to convert
@@ -262,6 +282,7 @@ optional; leave the config out entirely for a normal conversion.
 | `partsPdf` | Optional base64 PDF, embedded in the standalone HTML behind Tools > PARTS. |
 | `partsPdfUrl` | Optional PDF URL instead of embedding; requires access to that URL. |
 | `partColors` | Object mapping exact extracted part names to CSS colors. |
+| `vowelTargets` | Optional syllable guide. Set `song` to a lexicon section and give the paths to `lexicon` and `anchors`, relative to this config. |
 | `parts` | Array of per-part `{ "name", "short", "color" } overrides, in score order. Does not alter music. |
 | `defaults.practicePart` | Initial part name, short name, source ID, or zero-based part index. Omit to let each singer choose. |
 | `defaults.scoreView` | `"standard"` for notation or `"bars"` for pitchbars. |
@@ -312,6 +333,20 @@ optional and is not installed or needed on other machines.
 - Hold a part's **See** cell to isolate it as the recording target. Divided lines
   have separate mixer channels even when notation shares a staff. All MIDI
   **Hear** cells can be off while recordings remain audible.
+- Open **Settings → Display → Vowels** to compare one singer at a time. The view
+  starts off and follows the mic already active in **Sing**, including while parked.
+  Choose **Start example**, sing on the practice note, then **Pin example**. The
+  shade marks the steady middle of the examples for this song and part. The
+  dashed path preserves the latest vowel change, with dots every quarter second.
+  Both axes use fixed Bark spacing. Tick labels and live F1 and F2 readings are
+  in absolute Hz. Higher F2 is to the left and higher F1 is lower on the chart.
+  Silence and uncertain frames leave gaps. Examples last until the page reloads.
+  With a vowel lexicon, the selected part's current syllable appears even with
+  the mic off. A hollow ring marks a steady vowel. An arrow runs from the
+  nucleus to the offglide. Choose a speech reference group or switch between
+  the listed pronunciations. Missing landmarks are named beside the chart.
+  The score supplies syllable timing. The speech landmarks approximate vowel
+  positions and carry no blend score.
 - The **Practice part** pager cycles through the voices. When faded, tap once
   to isolate your last part; if you have never chosen, it asks. **Tools > Copy
   practice link** shares the guide/backing mix and any active loop, not your
@@ -518,7 +553,7 @@ also vary by device.
 ## Development And License
 
 The minimal runtime consists of `build_trainer.py`, `collection.py`, `extract_score.mjs`,
-`practice_routes.py`, `template/`, `vendor/`, and the license notices. Tests and
+`practice_routes.py`, `vowel_targets.py`, `vowel_syllables.mjs`, `template/`, `vendor/`, and the license notices. Tests and
 Git history are not needed for conversion. Keep the bundled vendor files: they
 make both the build and resulting player independent of CDNs.
 

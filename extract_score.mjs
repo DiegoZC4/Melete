@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { syllableTracks } from "./vowel_syllables.mjs";
 
 const require = createRequire(import.meta.url);
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -18,7 +19,7 @@ const alphaTabPath = path.join(
 function usage() {
   return [
     "Usage:",
-    "  node extract_score.mjs --score <musicxml> --playback <json> --metadata <json>",
+    "  node extract_score.mjs --score <musicxml> --playback <json> --metadata <json> [--syllables <json>]",
   ].join("\n");
 }
 
@@ -37,7 +38,7 @@ function parseArguments(argv) {
     }
 
     const key = argument.slice(2);
-    if (!known.has(key)) {
+    if (!known.has(key) && key !== "syllables") {
       throw new Error(`Unknown option: ${argument}\n${usage()}`);
     }
     if (Object.hasOwn(result, key)) {
@@ -62,6 +63,9 @@ function parseArguments(argv) {
   }
   if (result.score === result.playback || result.score === result.metadata) {
     throw new Error("Output files must not overwrite the source score.");
+  }
+  if (result.syllables && [result.score, result.playback, result.metadata].includes(result.syllables)) {
+    throw new Error("--syllables must name a separate output file.");
   }
 
   return result;
@@ -700,6 +704,7 @@ const metadata = {
 await Promise.all([
   writeJson(options.playback, playback),
   writeJson(options.metadata, metadata),
+  ...(options.syllables ? [writeJson(options.syllables, {tracks: syllableTracks(score)})] : []),
 ]);
 
 process.stdout.write(

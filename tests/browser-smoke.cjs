@@ -71,6 +71,7 @@ async function main() {
     await fs.writeFile(fakeMic, Buffer.from(wavBytes(pcm, 48000)));
     browser = await chromium.launch({channel: process.env.QA_BROWSER_CHANNEL || undefined, headless: true,
       args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', `--use-file-for-fake-audio-capture=${fakeMic}`]});
+    require('./browser-silent-output.cjs').useSilentOutput(browser);
     const offlineFile = path.join(temporary, 'offline.html');
     if (process.env.QA_FILE_ORIGIN) await fs.writeFile(offlineFile, html);
     const origin = process.env.QA_FILE_ORIGIN ? pathToFileURL(offlineFile).href : 'http://127.0.0.1:8809/shared-regression-fixture';
@@ -591,7 +592,7 @@ async function main() {
     }
     assert.deepEqual(errors, []);
     assert.deepEqual(requests, []);
-    const report = {passed: true, freshGenericBuild: true, results, errors, externalRequests: requests};
+    const report = {passed: true, freshGenericBuild: true, silentOutput:Boolean(process.env.QA_SILENT_OUTPUT), results, errors, externalRequests: requests};
     const reportName = process.env.QA_MIC_CHECK_ONLY ? 'microphone-check.json' : process.env.QA_COMP_ONLY ? 'comp-smoke.json' : process.env.QA_SECTIONS_ONLY ? 'settings-sections.json' : process.env.QA_LOOP_RELOAD_ONLY ? 'loop-reload.json' : process.env.QA_SING_ONLY ? 'sing-preferences.json' : process.env.QA_TIMING_ONLY ? 'playback-timing.json' : process.env.QA_TAKE_PITCH_ONLY ? 'take-pitch.json' : process.env.QA_PITCH_ONLY ? 'pitch-resolution.json' : process.env.QA_FILE_ORIGIN ? 'recorder-file-smoke.json' : process.env.QA_RECORDER_ONLY ? 'recorder-smoke.json' : 'shared-smoke.json';
     await fs.writeFile(path.join(output, process.env.QA_HORIZONTAL_FOLLOW_ONLY ? 'horizontal-follow.json'
       : process.env.QA_LYRICS_ONLY ? 'selective-lyrics.json'

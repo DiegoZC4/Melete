@@ -155,6 +155,35 @@
       event.preventDefault(); event.stopPropagation(); expanded(false); expand.focus({preventScroll:true});
     });
   }
+  function deletionRow(row, label, restore, disabled) {
+    let notice = row.querySelector(":scope > .take-undo");
+    if (!label && !notice) return;
+    row.classList.toggle("is-pending-delete", Boolean(label));
+    if (!label) {
+      const focused = notice.contains(document.activeElement);
+      notice.remove();
+      if (focused) row.querySelector(".take-delete")?.focus({preventScroll:true});
+      return;
+    }
+    if (!notice) {
+      const focused = row.contains(document.activeElement);
+      notice = document.createElement("div");
+      notice.className = "take-undo";
+      const message = document.createElement("span");
+      message.setAttribute("role", "status");
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "take-command"; button.textContent = "Undo";
+      notice.append(message, button);
+      row.append(notice);
+      if (focused && !disabled) button.focus({preventScroll:true});
+    }
+    const message = notice.firstElementChild, button = notice.lastElementChild;
+    if (message.textContent !== label+" deleted") message.textContent = label+" deleted";
+    button.setAttribute("aria-label", "Undo deletion of "+label);
+    button.disabled = disabled;
+    button.onclick = restore;
+  }
+
   let canvas;
   function fitTable(container) {
     if (!container) return;
@@ -214,7 +243,7 @@
     root.addEventListener?.("blur", clear);
     return clear;
   }
-  const api = {dates, trackDates, showDates, formatDate, compactDates, fitTable, confirmDeletes,
+  const api = {dates, trackDates, showDates, formatDate, compactDates, fitTable, confirmDeletes, deletionRow,
     metricLabels, metricValues, metricDeltas, tablePreferences, visibleFields};
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.MeleteTakeControls = api;

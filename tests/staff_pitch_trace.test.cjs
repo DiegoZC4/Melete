@@ -73,11 +73,11 @@ test('recorded contours use their own part without changing the practice part or
   const hidden=f.c.buildStaffTraceSystems({findMasterBarByIndex:i=>f.masters[i]});
   assert.equal(f.c.staffTracePoint(hidden[0],0,6900,0,0),null,'a hidden staff is never forced visible for a take');
 });
-test('rest guards retain written height but turn red; deeper rests disappear',()=>{
+test('all written rests retain a visible red contour, including beyond the release guard',()=>{
   const f=fixture();
   assert.equal(f.at(350).y,115);
   assert.equal(f.at(350).error,null,'red timing error, not invented cents');
-  assert.equal(f.at(450),null,'more than one beat after release');
+  assert.equal(f.at(450).error,null,'singing deeper into a rest remains red');
   assert.equal(f.c.staffTracePoint(f.rows[0],400,6900,0),null,'never draw diagonally into another system');
   f.c.sequence.notes=[[0,100,300,69]];
   f.c.partDivisi=[{spans:[{start:100,end:300,pitches:[69]}]}];

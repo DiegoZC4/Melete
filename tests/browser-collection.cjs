@@ -209,6 +209,7 @@ async function checkCollections(browser, temporary, output) {
         await context.route('**/station-roster.json',route=>{rosterFetches.push(route.request().url());
           return route.fulfill({json:{singers:[{name:'DemoA',voice:'Alto'}]}});});
         const station=await context.newPage();station.on('pageerror',e=>errors.push(e.message));
+        station.on('console',message=>{if(message.type()==='error')console.error('Station console:',message.text());});
         const oldStation = mobile ? '?station=1#part=B&second-song' : '?station#second-song';
         await station.goto(origin+(count===2?oldStation:'?song=second-song&mode=station'));
         const openStation=async title=>{
@@ -243,6 +244,19 @@ async function checkCollections(browser, temporary, output) {
           const row=document.querySelector('#compRows .comp-row:first-child');
           return document.querySelector('#stationSinger').value==='DemoA' && row?.querySelector('.take-part').textContent==='A'
             && row.querySelector('.take-singer').textContent==='DemoA' && row.classList.contains('is-new');
+        }).catch(async error=>{
+          console.error('Singer continuity errors:',errors);
+          console.error('Singer continuity state:',await frame.evaluate(()=>({
+            singer:document.querySelector('#stationSinger').value,
+            title:document.querySelector('#stationSinger').title,
+            status:document.querySelector('#takeStatus')?.textContent,
+            selected:document.querySelector('#stationSinger').getAttribute('aria-activedescendant'),
+            rows:[...document.querySelectorAll('#compRows .comp-row')].map(row=>({
+              part:row.querySelector('.take-part')?.textContent,
+              singer:row.querySelector('.take-singer')?.textContent,classes:row.className
+            }))
+          })));
+          throw error;
         });
         await checkSinger(firstStation);
         if(count===2)await firstStation.locator('#songToggle').click();

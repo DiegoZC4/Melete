@@ -321,15 +321,16 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   await page.waitForFunction(() => __qa.recording.ready);
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
   if (await page.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true') await page.locator('#settingsToggle').click();
-  assert.equal(await page.locator('#takeUndo').isVisible(), true, 'Undo survives reload within the grace period');
-  await page.locator('#undoTakeDelete').click();
+  const inlineUndo = page.locator(`[data-take-id="${unwanted.id}"] .take-undo button`);
+  await inlineUndo.waitFor({state:'visible'});
+  await inlineUndo.click();
   await page.waitForFunction(id => __qa.recording.takes.some(take => take.id === id), unwanted.id);
   assert.deepEqual(await page.evaluate(async id => Array.from(new Uint8Array(await (await __qa.takeStore.wav(id)).arrayBuffer())), unwanted.id), unwantedWav);
   await page.getByRole('button', {name: `Delete take ${unwanted.number}`, exact: true}).click();
   await page.locator('.take-delete.is-delete-armed').click();
   await page.waitForFunction(id => !__qa.recording.takes.some(take => take.id === id), unwanted.id);
   await page.waitForFunction(async id => !(await __qa.takeStore.usage()).some(take => take.id === id), unwanted.id, {timeout: 15000});
-  await page.locator('#takeUndo').waitFor({state: 'hidden'});
+  await inlineUndo.waitFor({state:'hidden'});
   assert.equal(await page.locator('#compRows > [data-take-id="'+unwanted.id+'"]').count(),0);
 
   // Toggling Sing off leaves the transport running; turning it back on punches in.

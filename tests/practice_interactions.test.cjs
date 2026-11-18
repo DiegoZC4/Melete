@@ -13,15 +13,16 @@ function source(name) {
 const plain = value => JSON.parse(JSON.stringify(value));
 
 test('restoring a collection position bypasses chapter magnets and validates the request', () => {
-  const positions = [];
+  const positions = [], syllablePositions = [];
   const c = vm.createContext({ready:true, engine:{}, api:{set tickPosition(tick) { positions.push(tick); }},
-    seekTickFor: milliseconds => milliseconds * .96,
+    seekTickFor: milliseconds => milliseconds * .96, vowelView:{position:tick=>syllablePositions.push(tick)},
     previewSeek() { assert.fail('restoration must not snap'); },
     snapSeekMilliseconds() { assert.fail('restoration must not snap'); }});
   vm.runInContext(source('seekPlaybackTick'), c);
   vm.runInContext(source('restorePlaybackPosition'), c);
   assert.equal(c.restorePlaybackPosition(2000), true);
   assert.deepEqual(positions, [1920]);
+  assert.deepEqual(syllablePositions, [1920]);
   for (const invalid of [undefined, null, '2000', NaN, Infinity]) assert.equal(c.restorePlaybackPosition(invalid), false);
   c.ready = false;
   assert.equal(c.restorePlaybackPosition(4000), false);
@@ -33,7 +34,7 @@ function mixFixture() {
     stationReview:null,reviewMix:null,lastGuideChannel:0,relativeMix:null,changingReviewFocus:false,
     parts: ['S', 'A', 'T', 'B'].map(name => ({name})), practicePartIndex: 0,
     visibleChannels:new Set([0]), visibleTracks:new Set([0]),
-    pitchCaptureWorker: null,
+    pitchCaptureWorker: null, vowelView: null,
     sequence: {}, pitchTraceBaseKey: '', pitchTraceKey: '',
     activePracticeMix: null, practiceMixPartIndex: null, practiceMixUndo: null,
     audibleTracks: new Set([0, 2, 3]), trackVolumes: [85, 70, 110, 45],
