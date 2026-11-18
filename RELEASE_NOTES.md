@@ -56,6 +56,31 @@ not require changing drivers, recordings, singer directories or audio settings.
 
 ## Release procedure
 
+### Verified deployment and remaining test issue
+
+The 18 November artifact is deployed at `https://diegozc.com/autumn-seed/`
+through the existing DZC/Hostinger hook and installed on the regular laptop
+station. Both match SHA-256
+`256f8c5d91b8af3510121aa9ff915b683b834caabdef7e0b453e0f34773c732d`
+(11,667,216 bytes), built from player source `d421020`. Later commits update
+regression fixtures and these notes only.
+
+Validation passed: 598 JavaScript tests; 151 Python tests with three optional
+checks skipped; source CI on Windows, macOS and Linux; focused desktop/mobile
+recording, comp, scoring, layered playback, station mixing, singer attribution,
+cursor and timing checks; and both songs' take ordering, inline Undo, fullscreen
+and Bark vowel-view checks. Original recording blobs, roster and native audio
+configuration were verified unchanged after installation.
+
+The full Linux browser gate is still not green: run
+`44378830688` timed out at `tests/browser-pitch-resolution.cjs:285` waiting for a
+pitchbar contour after switching views during capture. The same focused
+`QA_PITCH_ONLY=1` suite passed locally on desktop and mobile. The combined-run
+failure remains unexplained; do not describe the entire browser gate as passed.
+The hardware, vowel-estimation and live-cloud limitations above remain open.
+
+### Future releases
+
 Run the source and browser gates in CONTRIBUTING.md. Build the song collection
 once from the reviewed source revision, then create `release.json` with
 `tools.local_station.update_player.release_manifest`. Preserve the previous
