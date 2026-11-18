@@ -287,7 +287,7 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
   }
   const valueHeaders='#takeColumns > span:not(.take-singer-heading):not(.take-download-heading)';
   assert.deepEqual(await frame.locator(valueHeaders).allTextContents(),
-    ['Take', 'Part', 'Segments', 'Tracked (%)', 'Mean (\u00a2)', 'Median (\u00a2)', '\u226450\u00a2 (%)', 'Created', 'Modified', 'Oct', 'Hear']);
+    ['Take', 'Part', 'Tracked (%)', 'Mean (\u00a2)', 'Segments', 'Median (\u00a2)', '\u226450\u00a2 (%)', 'Created', 'Modified', 'Oct', 'Hear']);
   assert.match(await frame.locator(valueHeaders).nth(6).getAttribute('title'),/tracked singing within 50 cents/i);
   assert.match(await frame.locator(`.take-row[data-take-id="${ids.sharp}"] .take-detail`).getAttribute('title'), /% tracked; 30\.1 cents/);
   assert.match(await frame.locator(`.take-row[data-take-id="${ids['current-score']}"] .take-detail`).getAttribute('title'), /25\.235 cents/);
@@ -329,7 +329,7 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
           }),
           metrics: [...document.querySelectorAll('#compRows > [data-take-id] .take-detail')].map(el => {
             const cells = [...el.children].map(child => child.getBoundingClientRect().toJSON());
-            return {cells, values: [...el.querySelectorAll('strong')].map(cell => cell.getBoundingClientRect().toJSON()),
+            return {cells, values: [...el.children].map(cell => (cell.querySelector('strong') || cell).getBoundingClientRect().toJSON()),
               cellsFit: [...el.children].every(cell => cell.scrollWidth <= cell.clientWidth)};
           }), rows: [...document.querySelectorAll('#compRows > .take-row[data-take-id]')].map(row => ({
             summary: row.querySelector('.take-summary').getBoundingClientRect().toJSON(),
@@ -348,10 +348,10 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
       assert.ok(dimensions.review.height >= 48, `at least one take row fits at ${width}`);
       for (const metric of dimensions.metrics) {
         assert.equal(metric.cellsFit, true, `metric labels/values fit at ${width}`);
-        assert.equal(metric.cells.length, 4, 'keep tracking, mean and median alongside the pitch-band column');
-        assert.equal(new Set(metric.cells.map(cell => cell.y)).size, 1, 'four side-by-side metric columns');
+        assert.equal(metric.cells.length, 5, 'four pitch metrics and the passage count');
+        assert.equal(new Set(metric.cells.map(cell => cell.y)).size, 1, 'pitch and passage columns share a row');
         for (const [index, cell] of metric.cells.entries()) {
-          const header = dimensions.headers[index + 3], value = metric.values[index];
+          const header = dimensions.headers[index + 2], value = metric.values[index];
           assert.ok(Math.abs(cell.x + cell.width / 2 - header.x - header.width / 2) < .5, 'values align beneath the shared header');
           assert.ok(Math.abs(value.x + value.width / 2 - cell.x - cell.width / 2) < .5, 'numeric values are centered in their column');
           assert.ok(Math.abs(value.y + value.height / 2 - cell.y - cell.height / 2) < .5, 'values are vertically centered within the row');
@@ -368,7 +368,7 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
         const cells = [...el.querySelector('#compRows > [data-take-id] .take-detail').children];
         const headings = [...el.querySelectorAll('#takeColumns > span:not(.take-singer-heading):not(.take-download-heading)')];
         const aligned = cells.every((cell, i) => {
-          const a = cell.getBoundingClientRect(), b = headings[i + 3].getBoundingClientRect();
+          const a = cell.getBoundingClientRect(), b = headings[i + 2].getBoundingClientRect();
           return Math.abs(a.x + a.width / 2 - b.x - b.width / 2) < .5;
         });
         const result = {reachable, aligned, scrollLeft: el.scrollLeft, clientWidth: el.clientWidth, scrollWidth: el.scrollWidth};

@@ -530,15 +530,6 @@ button { color: inherit; }
 }
 .practice-group .sing-control svg { width:15px; height:15px; flex-shrink:0; color:var(--recording-red); }
 .practice-guide-pager { grid-column:1 / 3; grid-row:3; }
-#noteStepToggle { grid-column:3; grid-row:3; width:100%; height:var(--toolbar-row-height); font:inherit; font-size:11px; }
-.practice-group:has(.station-picker:not([hidden])) #noteStepToggle { grid-row:2; }
-.practice-group:has(.station-picker:not([hidden])) .sing-control { grid-row:1; flex-direction:row; }
-#noteStepToggle[aria-pressed=true] { color:var(--accent); border-color:var(--accent); }
-#noteStepBar { display:flex; align-items:center; justify-content:center; gap:8px; padding:3px; border-top:1px solid var(--line); }
-#noteStepBar[hidden] { display:none; }
-#noteStepBar button { width:64px; height:44px; touch-action:none; user-select:none; -webkit-touch-callout:none; }
-.parked-note { width:80px; display:grid; text-align:center; font-variant-numeric:tabular-nums; line-height:1.2; }
-.parked-note output { min-height:1em; font-size:12px; color:var(--muted); }
 .practice-guide-pager[hidden] { display:none; }
 .practice-guide-pager.is-mixed { opacity:.65; }
 .practice-group:has(.station-picker:not([hidden])) .practice-guide-pager { grid-column:3; }
@@ -643,12 +634,13 @@ button { color: inherit; }
   }
 }
 .take-layout {
-  display: grid; grid-template-columns: calc(4 * var(--toolbar-unit-width) + 3 * var(--toolbar-row-gap)) minmax(0, 1fr);
+  --record-units:3;
+  display: grid; grid-template-columns: calc(var(--record-units) * (var(--toolbar-unit-width) + var(--toolbar-row-gap)) - var(--toolbar-row-gap)) minmax(0, 1fr);
   grid-template-rows: repeat(4, var(--toolbar-row-height)); gap: var(--toolbar-row-gap);
 }
 .take-controls {
   display: grid; grid-column: 1; grid-row: 1 / 5;
-  grid-template-columns: repeat(4, var(--toolbar-unit-width));
+  grid-template-columns: repeat(var(--record-units), var(--toolbar-unit-width));
   grid-template-rows: subgrid; gap: var(--toolbar-row-gap); min-width: 0;
 }
 .take-controls #takeStatus { display: none; }
@@ -680,9 +672,12 @@ button { color: inherit; }
 .take-panel.has-recording > .group-label::after { content: ""; display: inline-block; margin-left: 4px; width: 6px; height: 6px; border-radius: 50%; background: #ed5555; }
 .take-row button:disabled { opacity: .45; cursor: default; }
 .take-actions { display: contents; }
-#addTrack { grid-column: 4; grid-row: 1; }
-#undoComp { grid-column: 4; grid-row: 2; }
-#redoComp { grid-column: 4; grid-row: 4; }
+#addTrack { grid-column: 1; grid-row: 1; }
+#undoComp { grid-column: 4; grid-row: 1; }
+#redoComp { grid-column: 4; grid-row: 2; }
+@media (hover:none), (pointer:coarse) {
+  .take-layout { --record-units:4; }
+}
 @media (hover:hover) and (pointer:fine) {
   #undoComp,#redoComp { display:none; }
 }
@@ -704,7 +699,7 @@ button { color: inherit; }
 .take-actions-menu button:disabled { opacity: .45; cursor: default; }
 .take-actions-menu svg { width: 16px; height: 16px; flex: 0 0 16px; fill: none; stroke: currentColor; stroke-width: 2; }
 .take-microphone {
-  grid-column: 1 / 4; grid-row: 1 / 3; display: grid;
+  grid-column: 1 / -1; grid-row: 3 / 5; display: grid;
   grid-template-columns: minmax(0, 1fr) var(--toolbar-row-height); grid-template-rows: subgrid;
   align-items: center; gap: var(--toolbar-row-gap); min-width: 0;
 }
@@ -713,6 +708,10 @@ button { color: inherit; }
 .take-microphone > .mic-check-inline { grid-column:1 / -1; grid-row:2; }
 #timingCheckDialog { width: min(380px,calc(100vw - 24px)); }
 #timingCheckDialog select { flex:1; }
+#timingCheckDialog .timing-device { display:grid;grid-template-columns:3.7em minmax(0,1fr);align-items:center;margin:4px 0; }
+#timingCheckDialog .timing-device select { grid-column:2;grid-row:auto;min-width:0;width:100%; }
+#timingCheckDialog small { color:var(--muted); }
+#headsetTimingHelp summary { cursor:pointer; }
 #timingCheckDialog .output-signal { display:grid;grid-template-columns:auto minmax(40px,1fr) 8ch;gap:8px;margin:6px 0; }
 .output-signal meter { width:100%; }.output-signal output { text-align:right;font-variant-numeric:tabular-nums; }
 #timingCheckDialog p:empty { display:none; }
@@ -727,8 +726,8 @@ button { color: inherit; }
 .mic-check-inline .mic-check-fill { background: color-mix(in srgb, var(--accent) 35%, transparent); }
 .mic-check-inline[data-state="clipping"] .mic-check-fill { background: #d7525266; }
 .mic-check-inline #checkMicrophone { position: relative; display: flex; align-items: flex-start; gap: 4px; width: 100%; height: 100%; padding: 1px 5px 0; border: 1px solid var(--line); border-radius: 5px; background: transparent; color: inherit; font: inherit; font-size: 9px; line-height: 10px; }
-.take-reverb, .take-volume { display: grid; grid-column: 1 / 3; grid-row: 3; grid-template-columns: 1fr 1fr; align-items: center; height: var(--toolbar-row-height); gap: var(--toolbar-row-gap); }
-.take-reverb { grid-column: 3 / 5; }
+.take-reverb, .take-volume { display: grid; grid-column: 2 / 4; grid-row: 1; grid-template-columns: 1fr 1fr; align-items: center; height: var(--toolbar-row-height); gap: var(--toolbar-row-gap); }
+.take-reverb { grid-row: 2; }
 .take-controls :is(.take-reverb, .take-volume) > span { display: block; width: 100%; font-size: 10px; color: var(--muted); text-align: right; justify-self: end; }
 .take-reverb .drag-number, .take-volume .drag-number { min-width: 0; width: 100%; height: 100%; }
 .mic-check-inline #checkMicrophone svg { align-self: center; width: 12px; height: 14px; flex: 0 0 12px; fill: none; stroke: currentColor; stroke-width: 2; }
@@ -806,7 +805,7 @@ button { color: inherit; }
   --take-modified-width: 86px;
   --take-number-width: 30px; --take-singer-width: 56px; --take-part-width: 40px; --take-tracked-width: 60px;
   --take-mean-width: 46px; --take-median-width: 55px; --take-within-width: 52px;
-  --take-value-columns: var(--take-number-width) var(--take-part-width) var(--take-segments-width) var(--take-tracked-width) var(--take-mean-width) var(--take-median-width) var(--take-within-width) var(--take-created-width) var(--take-modified-width);
+  --take-value-columns: var(--take-number-width) var(--take-part-width) var(--take-tracked-width) var(--take-mean-width) var(--take-segments-width) var(--take-median-width) var(--take-within-width) var(--take-created-width) var(--take-modified-width);
   --take-value-width: calc(var(--take-number-width) + var(--take-part-width) + var(--take-tracked-width) + var(--take-mean-width) + var(--take-median-width) + var(--take-within-width) + var(--take-created-width) + var(--take-modified-width) + var(--take-segments-width));
   --take-actions-width: 54px;
   --take-octave-width: 32px; --take-hear-width: 36px;
@@ -954,20 +953,14 @@ button { color: inherit; }
 .take-command:disabled { opacity: .45; cursor: default; }
 @container (max-width: 442px) {
   .take-layout { grid-template-columns: minmax(0, 1fr); }
-  .take-controls { grid-row: 1 / 3; grid-template-columns: repeat(2, minmax(0, 1.35fr)) minmax(31px, .85fr) minmax(32px, 1fr) repeat(3, minmax(44px, 1fr)); }
-  .take-microphone { grid-column: 1 / 3; }
-  .take-volume { grid-column: 3 / 5; grid-row: 1; }
-  .take-reverb { grid-column: 3 / 5; grid-row: 2; }
-  #addTrack { grid-column: 5; grid-row: 1; }
-  #undoComp { grid-column: 6; grid-row: 1; }
-  #redoComp { grid-column: 7; grid-row: 1; }
+  .take-controls { grid-row: 1 / 3; grid-template-columns: var(--toolbar-unit-width) minmax(0, 1fr) calc(2 * var(--toolbar-unit-width) + var(--toolbar-row-gap)) var(--toolbar-unit-width); }
+  .take-microphone { grid-column: 2; grid-row: 1 / 3; }
+  .take-volume, .take-reverb { grid-column: 3; }
   .take-actions-menu { left: auto; right: 0; }
   .take-review-pane { grid-column: 1; grid-row: 3 / 5; }
   .take-table-tools { display:grid; grid-auto-flow:column; grid-template-rows:repeat(2,var(--toolbar-row-height)); align-content:start; }
   @media (hover:hover) and (pointer:fine) {
-    .take-controls { grid-template-columns:minmax(72px,1fr) minmax(35px,.45fr) minmax(76px,1fr) 44px; }
-    .take-volume,.take-reverb { grid-column:3; }
-    #addTrack { grid-column:4; }
+    .take-controls { grid-template-columns:var(--toolbar-unit-width) minmax(0, 1fr) minmax(78px, .7fr); }
   }
 }
 @container (max-width: 360px) {

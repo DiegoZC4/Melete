@@ -12,7 +12,7 @@ function fixture(scale = 1, score = null) {
     midi: {MidiTickLookupFindBeatResultCursorMode: {ToNextBext: 0}}};
   const player = {settings: {display: {scale, resources: {engravingSettings: {glyphWidths: new Map([[1, 8], [2, 12]])}}}}};
   const system = {realBounds: {x: 0, w: 300}, bars: []};
-  const master = {index: 0, staffSystemBounds: system, visualBounds: {x: 0, y: 40, w: 300, h: 160}, bars: []};
+  const master = {index: 0, staffSystemBounds: system, realBounds: {x:0,w:300}, visualBounds: {x: 0, y: 40, w: 300, h: 160}, bars: []};
   const bar = {masterBarBounds: master, beats: []};
   master.bars.push(bar); system.bars.push(master);
   const add = (center, tick, left, rest = false, full = false) => {
@@ -95,6 +95,12 @@ test('audio-clock cursor places the exact current tick and rejects delayed nativ
   handler.transitionBeatCursor(f.cursor,f.first,100,200,500,0);
   assert.equal(f.calls.length,count,'stale nested AlphaTab callbacks cannot move the live cursor');
   handler.sync(360);assert.equal(f.calls.at(-1)[1],167.5);
+  // The next measure's leading space belongs after this measure's barline.
+  const nextMaster = {...f.master, realBounds:{x:300,w:220}};
+  const nextBar = {...f.second, onNotesX:350, barBounds:{...f.bar,masterBarBounds:nextMaster}};
+  player.boundsLookup.findBeat=beat=>beat==='first'?f.first:nextBar;
+  handler.sync(240);assert.equal(f.calls.at(-1)[1],197);
+  player.boundsLookup.findBeat=beat=>beat==='first'?f.first:f.second;
   handler.release();handler.placeBeatCursor(f.cursor,f.first,100);
   assert.equal(f.calls.at(-1)[1],94,'paused editing keeps native seeks');
   handler.onDetach(); // Bundled 1.8.4 invokes this when installing the new handler.

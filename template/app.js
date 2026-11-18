@@ -51,7 +51,6 @@
   const BEAT_TICK_HEIGHTS = Object.freeze([0.7, 0.55, 0.4]);
   const MIXER_SOLO_HOLD_MS = 500;
   const PITCH_AUDITION_HOLD_MS = 250;
-  const KEYBOARD_NOTE_PREVIEW_SECONDS = 0.22;
   const PITCH_AUDITION_RELEASE_SECONDS = 0.12;
   const PITCH_CAPTURE_INTERVAL_MS = 10;
   const PITCH_CAPTURE_FALLBACK_INTERVAL_MS = 100;
@@ -106,8 +105,9 @@
   let toastTimer = 0;
   let toastAction = null;
   let lastFollow = 0;
-  let followedScoreLeft = null;
+  const followedScrollLeft = new WeakMap();
   let horizontalGestureUntil = 0;
+  let scoreScrollIntentUntil = 0;
   let followScrollFrame = 0;
   let cursorTrimFrame = 0;
   let cursorTrimBurstGeneration = 0;
@@ -189,6 +189,7 @@
   let selectedScoreTick = null;
   let selectedScorePartIndex = null;
   let keyboardAudition = null;
+  let keyboardStepAnchor = null;
   let scoreScrub = null;
   const pitchAuditions = new Map();
   let sectionGuideGeneration = 0;
@@ -225,12 +226,14 @@
     rehearsalWake(Boolean(pitchCapturePageActive && !document.hidden && rehearsing));
   }
   let microphoneRequest = null;
+  let latestDeviceRefresh = null;
   let microphoneDeviceId = "";
   let microphoneStreamDeviceId = "";
   let retainRecordingInput = false;
   let microphoneCheck = null;
   let timingDevices=[], timingOutputDevice = "", timingCache = {key:null, result:null}, recordingPassClock = null;
-  let sessionTiming=null;
+  let sessionTiming=null, timingRouteEpoch=0;
+  function invalidateSessionTiming(){sessionTiming=null;timingRouteEpoch++;}
   let recordingClockWatch=null;
   const warnedTimingRoutes=new Set();
   let takeState = "off";
@@ -1541,7 +1544,13 @@
   }
 
   function setFlow(next, { render = true, persist = true } = {}) {
-    flow = next === "continuous" ? "continuous" : "wrap";
+    const mode = next === "continuous" ? "continuous" : "wrap";
+    if (mode !== flow) {
+      playbackDetached = false;
+      scoreScrollIntentUntil = horizontalGestureUntil = 0;
+      hidePlaybackReturn();
+    }
+    flow = mode;
     elements.flowToggle.querySelectorAll("[data-flow]").forEach((button) => {
       const selected = button.dataset.flow === flow;
       button.classList.toggle("is-active", selected);
@@ -2012,13 +2021,19 @@
         clockDriven = true;
         const master = bounds.barBounds.masterBarBounds;
         const box = master.visualBounds;
-        let end = bounds.realBounds.x + bounds.realBounds.w;
-        if (found.nextBeat && found.cursorMode === alpha.midi.MidiTickLookupFindBeatResultCursorMode.ToNextBext) {
-          const next = player.boundsLookup.findBeat(found.nextBeat.beat);
-          if (next?.barBounds.masterBarBounds.staffSystemBounds === master.staffSystemBounds) end = next.onNotesX;
-        }
+        const next = found.nextBeat && player.boundsLookup.findBeat(found.nextBeat.beat);
         const fraction = Math.max(0, Math.min(1, (tick - found.start) / Math.max(1, found.tickDuration)));
-        const x = position(bounds, bounds.onNotesX + (end - bounds.onNotesX) * fraction);
+        const right = master.realBounds.x + master.realBounds.w;
+        const beatEnd = bounds.realBounds.x + bounds.realBounds.w;
+        let x;
+        if ((next && next.barBounds.masterBarBounds !== master) || (!found.nextBeat && beatEnd >= right - 1)) {
+          const start = position(bounds, bounds.onNotesX);
+          x = start + (right - start) * fraction;
+        } else {
+          const end = next && found.cursorMode === alpha.midi.MidiTickLookupFindBeatResultCursorMode.ToNextBext
+            ? next.onNotesX : beatEnd;
+          x = position(bounds, bounds.onNotesX + (end - bounds.onNotesX) * fraction);
+        }
         beatTarget.transitionToX(0, x);
         beatTarget.setBounds(x, box.y, 1, box.h);
         barTarget.setBounds(box.x, box.y, box.w, box.h);
@@ -3486,7 +3501,8 @@
   function currentShareAddress(mix=sharingMix, publishedBase) {
     const range=engine?.hasLoop() ? loopTickRange() : null;
     return window.MeletePracticeMix.address(mixHost().location.href,mix,
-      range && range.end!==null ? takeBoundaryLabel(range.start)+"-"+takeBoundaryLabel(range.end) : null,publishedBase);
+      range && range.end!==null ? takeBoundaryLabel(range.start)+"-"+takeBoundaryLabel(range.end) : null,publishedBase,
+      scoreView==="bars" ? "pitchbar" : undefined);
   }
   async function copyRelativeLink() {
     const address=currentShareAddress();
@@ -3669,6 +3685,11 @@
   // A collection owns its own address and forwards the part fields it found
   // there, so the parts of this song decide what the name means.
   const linkedLoopState = () => [loopEnabled, loopStartMeasure, loopEndMeasure, loopStartTick, loopEndTick].join(":");
+  function applyLinkedView(value) {
+    const view=!conductorMode && window.MeletePracticeMix.linkedView(value);
+    if(view && scoreView!==view)setScoreView(view,{render:ready});
+    return view;
+  }
   function clearEditedLinkFields() {
     const stale = [];
     if ("part" in linkedPracticeState && linkedPracticeState.part !== practiceMixerIndex()) {
@@ -3679,6 +3700,14 @@
       delete linkedPracticeState.loop;
       stale.push("loop");
     }
+    if ("view" in linkedPracticeState && linkedPracticeState.view !== scoreView) {
+      delete linkedPracticeState.view;
+      stale.push("view");
+      if (mixHost()===window) try {
+        const url=new URL(location.href);url.searchParams.delete("view");
+        history.replaceState(history.state,"",url.href);
+      } catch {}
+    }
     if (!Object.keys(linkedPracticeState).length) linkedPracticeState = null;
     if (stale.length) document.dispatchEvent(new CustomEvent("melete:link-edited", {detail: stale}));
   }
@@ -3686,13 +3715,15 @@
     const detail = event.detail || {};
     const field = (value) => typeof value === "string" ? value : undefined;
     linkedPracticeState = null;
+    const view = applyLinkedView(detail.view);
     const shared = openMixLink(detail);
     const part = shared ? detail.part!==undefined : applyPartLink({ part: field(detail.part), div: field(detail.div) });
     const loop = applyLoopLink(field(detail.loop));
     // A shared passage remains copyable until edited. Clearing a loop or
     // undoing a part choice must not resurrect it the next time the page loads.
-    if (part || loop) linkedPracticeState = {
+    if (part || loop || view) linkedPracticeState = {
       ...(part ? {part: practiceMixerIndex()} : {}), ...(loop ? {loop: linkedLoopState()} : {}),
+      ...(view ? {view} : {}),
     };
     if (detail.loop !== undefined && !loop) document.dispatchEvent(new CustomEvent("melete:link-edited", {detail:["loop"]}));
   });
@@ -4219,7 +4250,6 @@
   }
 
   function updateNoteActionLabel() {
-    syncStepAvailability();
     const unavailable = scoreView === "bars";
     elements.noteMode.disabled = unavailable;
     if (unavailable) {
@@ -4648,7 +4678,6 @@
 
   function applyScoreScrubTarget(target) {
     if (!target || !engine || !ready) return;
-    if(parked && !target.fromStep){parkAt(stepIndexAt(parked.notes,target.tick));return;}
     cancelVerticalFollowAnimation(true);
     const rawTick = clamp(Math.round(Number(target.tick) || 0), pitchTraceOriginTick(), latestSeekTick());
     const requestedTick = target.exactTick ? rawTick : clamp(snapTickToEighth(
@@ -4774,133 +4803,43 @@
     hoverNote(null);
   }
 
-  const stepToggle=document.getElementById("noteStepToggle"),stepBar=document.getElementById("noteStepBar");
-  const stepNotes=new WeakMap();
-  let parked=null, stepTimer=0, stepGesture=null;
-  function stepLane(channel){
-    const part=mixerParts[channel];
-    if(!part?.barNotes)return [];
-    if(!stepNotes.has(part)){
-      const groups=new Map();
-      for(const [start,end,key] of part.barNotes){
-        if(end<=start)continue;
-        if(!groups.has(start))groups.set(start,{start,end,keys:new Set()});
-        const item=groups.get(start);item.keys.add(key);item.end=Math.max(item.end,end);
-      }
-      stepNotes.set(part,[...groups.values()].sort((a,b)=>a.start-b.start));
-    }
-    return stepNotes.get(part);
-  }
-  function syncStepAvailability(){
-    const c=practiceMixerIndex();
-    stepToggle.disabled=!ready || playing || Boolean(engine?.playing) || takeState!=="off" || !stepLane(c).length;
-    if(parked && (stepToggle.disabled || parked.channel!==c))leaveNoteStep();
-  }
-  function cancelStepGesture(){
-    if(!stepGesture)return;
-    const {timer,voices,button,pointer}=stepGesture;stepGesture=null;
-    clearTimeout(timer);
-    for(const v of voices)v.release();
-    if(Number.isInteger(pointer) && button?.hasPointerCapture(pointer))button.releasePointerCapture(pointer);
-  }
-  function leaveNoteStep(){
-    if(!parked)return;
-    parked=null;clearInterval(stepTimer);cancelStepGesture();
-    pitchCaptureWorker?.invalidate();
-    stepBar.hidden=true;stepToggle.setAttribute("aria-pressed","false");updateTransportHeight();
-  }
-  function parkAt(i){
-    const {notes,channel}=parked;
-    parked.i=clamp(i,0,notes.length-1);
-    const note=notes[parked.i],from=playbackCursorPlace();
-    document.getElementById("parkedNote").textContent=[...note.keys].map(pitchLabel).join("/");
-    document.getElementById("parkedCents").textContent="";
-    applyScoreScrubTarget({tick:note.start,exactTick:true,partIndex:mixerParts[channel].source,fromStep:true});
-    followCursorFrom(from);
-  }
-  function stepIndexAt(notes,tick){
-    const i=notes.findIndex(n=>n.end>tick);return i<0?notes.length-1:i;
-  }
-  function sampleParkedNote(){
-    if(!parked || playing || document.hidden || !pitchCapturePageActive || !pitchCaptureEnabled()
-      || !pitchInputIsLive() || !pitchCaptureWorker || !pitchCaptureBuffer || stepGesture?.held){
-      document.getElementById("parkedCents").textContent="";return;
-    }
-    if(pitchCaptureWorker.pending)return;
-    pitchCaptureAnalyser.getFloatTimeDomainData(pitchCaptureBuffer);
-    pitchCaptureWorker.submit(pitchCaptureBuffer,{sampleRate:pitchCaptureAnalyser.context.sampleRate,
-      minimum:PITCH_CAPTURE_MIN_FREQUENCY,maximum:PITCH_CAPTURE_MAX_FREQUENCY},{parked:parked.notes[parked.i]});
-  }
-  stepToggle.addEventListener("click",()=>{
-    if(parked){leaveNoteStep();return;}
-    syncStepAvailability();if(stepToggle.disabled)return;
-    const channel=practiceMixerIndex(),notes=stepLane(channel),tick=Math.round(engine.tickAtSeconds(engine.currentSeconds()));
-    parked={notes,channel,i:0};
-    stepToggle.setAttribute("aria-pressed","true");stepBar.hidden=false;updateTransportHeight();
-    parkAt(stepIndexAt(notes,tick));stepTimer=setInterval(sampleParkedNote,80);
-  });
-  function beginStepGesture(direction,button,pointer,x,y){
-    if(!parked)return;
-    cancelStepGesture();
-    const g=stepGesture={direction,button,pointer,x,y,voices:[],held:false};
-    g.timer=setTimeout(()=>{
-      if(!parked || stepGesture!==g)return;
-      g.held=true;
-      for(const key of parked.notes[parked.i].keys)
-        g.voices.push(engine.holdNote(key,mixerParts[parked.channel].source,{channel:parked.channel}));
-    },PITCH_AUDITION_HOLD_MS);
-  }
-  function finishStepGesture(){
-    if(!stepGesture)return;
-    const {held,direction}=stepGesture;
-    cancelStepGesture();
-    if(parked && !held)parkAt(parked.i+direction);
-  }
-  for(const button of stepBar.querySelectorAll("[data-note-step]")){
-    const dir=Number(button.dataset.noteStep);
-    button.onpointerdown=e=>{if(e.button!==0 || !e.isPrimary)return;e.preventDefault();
-      beginStepGesture(dir,button,e.pointerId,e.clientX,e.clientY);button.setPointerCapture(e.pointerId);};
-    button.onpointermove=e=>{if(stepGesture?.pointer===e.pointerId && Math.hypot(e.clientX-stepGesture.x,e.clientY-stepGesture.y)>12)cancelStepGesture();};
-    button.onpointerup=e=>{if(stepGesture?.pointer===e.pointerId)finishStepGesture();};
-    button.onpointercancel=button.onlostpointercapture=e=>{if(stepGesture?.pointer===e.pointerId)cancelStepGesture();};
-    button.oncontextmenu=e=>e.preventDefault();
-    button.onclick=e=>{if(!e.detail && parked)parkAt(parked.i+dir);};
-    button.onkeydown=e=>{if(e.key!=="Enter" && e.key!==" ")return;e.preventDefault();e.stopPropagation();if(!e.repeat)beginStepGesture(dir,button);};
-    button.onkeyup=e=>{if(e.key!=="Enter" && e.key!==" ")return;e.preventDefault();e.stopPropagation();finishStepGesture();};
-    button.onblur=cancelStepGesture;
-  }
-  window.addEventListener("keyup",e=>{if(parked && stepGesture?.key===e.key){finishStepGesture();e.preventDefault();}});
-  window.addEventListener("blur",cancelStepGesture);
-  window.addEventListener("pagehide",leaveNoteStep);
-  document.addEventListener("visibilitychange",()=>{if(document.hidden)cancelStepGesture();});
-  document.addEventListener("melete:deactivate",leaveNoteStep);
-
   function stepScoreNote(direction) {
-    if (!ready || !engine || !api) return;
+    if (!ready || !engine || !api || takeState !== "off") return;
     const track = currentScorePartIndex();
-    const here = engine.currentSeconds();
-    const candidates = scoreView === "bars"
-      ? visiblePitchNotes().map(([channel, tick, , key]) => ({channel, key, track:mixerParts[channel].source, start:engine.secondsAtTick(tick)}))
-      : engine.notes.flatMap(note => note.segments || [note]);
-    const notes = candidates.filter(note => note.track === track).sort((a, b) => a.start - b.start);
-    const target = direction > 0 ? notes.find((note) => note.start > here + 0.002)
-      : [...notes].reverse().find((note) => note.start < here - 0.002);
-    if (!target) return;
+    const notes = visiblePitchNotes().filter(([channel]) => mixerParts[channel].source === track);
+    if (!notes.length) return;
+    const tick = Math.round(engine.tickAtSeconds(engine.currentSeconds()));
+    const channels = [...visibleChannels].join(",");
+    const advanced = keyboardStepAnchor?.tick === tick && keyboardStepAnchor.channels === channels && keyboardStepAnchor.track === track;
+    const starts = [...new Set(notes.map(n => n[1]))].sort((a,b) => a-b);
+    const target = direction > 0
+      ? starts.find(t => advanced ? t > tick : t >= tick) ?? starts.at(-1)
+      : starts.findLast(t => advanced ? t < tick : t <= tick) ?? starts[0];
     const from = playbackCursorPlace();
     engine.pauseTransport();
     cancelPitchAuditions();
-    applyScoreScrubTarget({ tick: engine.tickAtSeconds(target.start), exactTick: true, partIndex: track });
-    const onset = new Map(notes.filter(note => Math.abs(note.start - target.start) < 1e-6).map(note => [note.key, note]));
-    const voices = [...onset.values()].map(note => engine.holdNote(note.key, track, {channel:note.channel}));
-    const finish = () => {
+    applyScoreScrubTarget({tick:target, exactTick:true, partIndex:track});
+    keyboardStepAnchor = {tick:target, channels, track};
+    const pitches = new Map(notes.filter(n => n[1] === target).map(n => [n[3],n[0]]));
+    const voices = [...pitches].map(([key,channel]) => engine.holdNote(key,track,{channel}));
+    const began = performance.now();
+    let timer;
+    const finish = (tap = false) => {
       window.clearTimeout(timer);
-      for (const voice of voices) voice.release();
+      // Let even a very short key tap speak. Another press or blur releases immediately.
+      const remaining = 65 - (performance.now()-began);
+      if (tap && remaining > 0) { timer = window.setTimeout(finish,remaining); return; }
+      for (const v of voices) v.release();
       if (keyboardAudition === finish) keyboardAudition = null;
     };
-    const timer = window.setTimeout(finish, KEYBOARD_NOTE_PREVIEW_SECONDS * 1000);
+    finish.key = direction > 0 ? "ArrowRight" : "ArrowLeft";
     keyboardAudition = finish;
     followCursorFrom(from);
   }
+
+  window.addEventListener("keyup",event => {
+    if (keyboardAudition?.key === event.key) keyboardAudition(true);
+  });
 
   // The starting region fixes note/chord mode. Audio is immediate; only an
   // unmoved short release seeks. Space outside a music system can still scrub.
@@ -5659,6 +5598,7 @@
   }
 
   function seekPlaybackTick(tick) {
+    keyboardStepAnchor = null;
     // AlphaTab owns only the printed score; our audio clock also owns its lead-in.
     api.tickPosition = Math.max(0, tick);
     if (tick < 0) engine.seek(engine.secondsAtTick(tick));
@@ -5720,8 +5660,7 @@
     updateSeekAppearance(value);
     if (updateScore && ready && engine && api) {
       cancelVerticalFollowAnimation(true);
-      if(parked)parkAt(stepIndexAt(parked.notes,seekTickFor(value)));
-      else seekPlaybackTick(seekTickFor(value));
+      seekPlaybackTick(seekTickFor(value));
     }
     return value;
   }
@@ -5913,6 +5852,8 @@
           ? { latencyHint: "interactive", sampleRate: isolatedRate }
           : { latencyHint: "interactive" });
       } catch (error) { if (this.native) throw error; this.context = new AudioContextClass(); }
+      invalidateSessionTiming();
+      this.context.addEventListener("sinkchange",invalidateSessionTiming);
       this.playbackIsolated = isolatedRate > 0 && this.context.sampleRate === isolatedRate;
       this.context.addEventListener("statechange",()=>{
         if(!this.native && this.playing && this.context.state!=="running"){
@@ -6028,7 +5969,6 @@
 
     async startTransport({ allowLoopLeadIn = false, recordingLeadIn = null } = {}) {
       if (!this.api || this.playing || this.starting || this.preparing) return;
-      recordingLeadIn=this.consumeParkedPosition?.() ?? recordingLeadIn;
       if (this.beforeStart?.()) return;
       const request = ++this.transportRequest;
       this.preparing = true;
@@ -8248,19 +8188,25 @@
     return pitchCaptureState === "armed" || pitchCaptureState === "recording";
   }
 
+  function nativeInputNeedsRetry() {
+    return Boolean(engine?.native && pitchCaptureNotice && pitchCaptureState === "off" && takeState === "off");
+  }
+
   function updatePitchCaptureAppearance() {
     syncRehearsalWake();
     const requesting = takeState === "requesting" || pitchCaptureState === "requesting";
+    const retry = nativeInputNeedsRetry();
     const armed = pitchCaptureEnabled();
     const recording = ["counting", "recording"].includes(takeState);
     elements.pitchCapture.disabled = !ready || conductorMode || Boolean(rehearsalReview);
-    elements.pitchCapture.setAttribute("aria-pressed", String(wantsPitchCapture()));
+    elements.pitchCapture.setAttribute("aria-pressed", String(wantsPitchCapture() && !retry));
     elements.pitchCapture.setAttribute("aria-busy", String(requesting));
     elements.pitchCapture.dataset.state = takeState === "off" && wantsPitchCapture() ? (pitchCaptureNotice ? "unavailable" : "armed") : takeState;
     elements.pitchCapture.classList.toggle("is-pending", wantsPitchCapture() && !recording);
     elements.pitchCapture.classList.toggle("is-recording", recording);
     elements.pitchCapture.setAttribute("aria-label", requesting
       ? "Cancel microphone request"
+      : retry ? "Retry station microphone"
       : wantsPitchCapture() ? "Turn off Sing" : "Turn on Sing to record microphone audio and pitch");
     elements.pitchCapture.dataset.help = !pitchCaptureSupported()
       ? "Microphone requires HTTPS or localhost."
@@ -8722,15 +8668,7 @@
     pitchCapturePreviousSeconds = scoreSeconds;
   }
 
-  function acceptPitchSample([frequency, clarity], {frame, seconds, parked:target}, cost) {
-    if(target){
-      if(!parked || target.start!==parked.notes[parked.i].start || playing)return;
-      const cents=6900+1200*Math.log2(frequency/440);
-      const delta=[...parked.notes[parked.i].keys].map(k=>Math.round(cents-k*100)).sort((a,b)=>Math.abs(a)-Math.abs(b))[0];
-      document.getElementById("parkedCents").textContent=frequency>0 && clarity>=0.85 && pitchCaptureEnabled()
-        ? (delta>0?"+":"")+delta+" \u00a2":"";
-      return;
-    }
+  function acceptPitchSample([frequency, clarity], {frame, seconds}, cost) {
     if (!pitchCaptureEnabled() || !playing || !engine?.playing || !pitchInputIsLive()) {
       pitchCaptureUnvoicedFrame = null;
       pitchOctaveHistory = [];
@@ -8880,15 +8818,8 @@
     const track=pitchCaptureStream?.getAudioTracks()[0], settings=track?.getSettings?.() || {};
     const sink=engine?.context?.sinkId;
     if(!track || !pitchCaptureContext || !engine?.context)return null;
-    const endpoint=window.MeleteMicrophoneCheck.physicalEndpoint;
-    const input=endpoint(timingDevices,"audioinput",settings.deviceId || microphoneDeviceId);
-    const output=endpoint(timingDevices,"audiooutput",sink);
-    const rates=[pitchCaptureContext.sampleRate,engine.context.sampleRate];
-    if(input && output)return "melete:roundtrip:v3:"+JSON.stringify([input,output,...rates]);
-    const proxy=(kind,id)=>timingDevices.find(d=>d.kind===kind && d.deviceId===(id||"default"));
-    const tempIn=input || settings.groupId || proxy("audioinput",settings.deviceId)?.groupId;
-    const tempOut=output || proxy("audiooutput",sink)?.groupId;
-    return tempIn && tempOut ? "session:"+JSON.stringify([tempIn,tempOut,...rates]) : null;
+    return window.MeleteMicrophoneCheck.timingRouteKey(timingDevices,{...settings,deviceId:settings.deviceId || microphoneDeviceId},
+      sink,[pitchCaptureContext.sampleRate,engine.context.sampleRate],timingRouteEpoch,track.id);
   }
   function timingProfile(){
     return window.MeleteMicrophoneCheck.timingProfile(pitchCaptureStream?.getAudioTracks()[0]?.getSettings?.(),pitchCaptureContext,engine?.context);
@@ -8933,7 +8864,7 @@
     const message=document.getElementById("timingCheckStatus"), button=document.getElementById("measureTiming"), close=document.getElementById("closeTimingCheck");
     if(microphoneCheck.calibrating) return;
     if(engine.playing || takeState!=="off" || preparingCapture){message.textContent="Stop playback and finish the current take before measuring.";return;}
-    microphoneCheck.calibrating=true;button.disabled=close.disabled=true;
+    microphoneCheck.calibrating=true;button.disabled=close.disabled=true;syncMicrophoneActivity();refreshTimingRouteHelp();
     let capture;const nodes=[];
     try {
       message.textContent="Measuring three chirps and checking a fourth…";
@@ -8944,7 +8875,7 @@
         return;
       }
       await engine.prepareAudio();await ensureMicrophoneInput();await refreshMicrophoneChoices();
-      const key=timingKey(), ctx=engine.context, mic=pitchCaptureContext, track=pitchCaptureStream.getAudioTracks()[0];
+      const key=timingKey(), epoch=timingRouteEpoch, ctx=engine.context, mic=pitchCaptureContext, track=pitchCaptureStream.getAudioTracks()[0];
       if(!key)throw Error("Cannot identify the audio route. Select the microphone and output by name, then measure again.");
       const blocks=[];let failure=null;
       capture=await window.MeleteRecording.PcmCapture.create(mic,pitchCaptureSource,(frame,samples)=>blocks.push([frame,samples]),e=>{failure=e;});
@@ -8957,7 +8888,7 @@
       offsets.forEach((delta,i)=>{const n=ctx.createBufferSource();n.buffer=buffers[Number(directions[i])];n.connect(engine.master);n.start(anchor+delta);nodes.push(n);});
       await new Promise(resolve=>setTimeout(resolve,3550));
       await capture.stop();capture=null;
-      if(failure || track.readyState!=="live" || document.hidden || !blocks.length || key!==timingKey())throw Error("The device changed or the check was interrupted. No timing setting was changed.");
+      if(failure || track.readyState!=="live" || document.hidden || !blocks.length || epoch!==timingRouteEpoch || key!==timingKey())throw Error("The device changed or the check was interrupted. No timing setting was changed.");
       const first=blocks[0][0], last=blocks.at(-1);
       const data=new Float32Array(last[0]+last[1].length-first);for(const [frame,samples] of blocks)data.set(samples,frame-first);
       const readings=check.chirpReadings(data,mic.sampleRate,offsets.map(v=>micAnchor+v-first/mic.sampleRate),directions);
@@ -8968,8 +8899,9 @@
         let peak=0;for(const sample of data)peak=Math.max(peak,Math.abs(sample));
         const level=peak?Math.round(20*Math.log10(peak))+" dBFS":"silence";
         noteAudioEvent("calibration-rejected",{chirpsMs:values,inputPeak:level,estimateMs});
+        if(count<4)document.getElementById("headsetTimingHelp").open=true;
         throw Error((count===4 ? "Inconsistent delays: "+values.join(", ")+" ms." :
-          "Heard "+count+" of 4 chirps; mic peak: "+level+". Face the earpiece toward the microphone capsule.")+" No timing change was saved. Unverified estimate: "+estimateMs+" ms.");
+          "Heard "+count+" of 4 chirps; mic peak: "+level+". Move one earpiece closer to the selected input or try the headset options above.")+" No timing change was saved. Unverified estimate: "+estimateMs+" ms.");
       }
       result.profile=timingProfile();
       const sessionOnly=key.startsWith("session:");
@@ -8980,23 +8912,42 @@
       }
       noteAudioEvent("calibration",{delayMs:Math.round(result.seconds*1000),spreadMs:result.spreadMs,checkMs:result.residualMs,estimateMs,chirpsMs:values});
       message.textContent="Measured "+Math.round(1000*result.seconds)+" ms (unverified estimate "+estimateMs+" ms). Check chirp: "+result.residualMs+" ms after correction. "+
-        (sessionOnly?"This tab only. Select both devices by name to remember the timing.":"Saved for this audio setup.");
+        (sessionOnly?"This tab only. Keep the same headset connected; measure again after switching devices.":"Saved for this audio setup.");
     }catch(e){message.textContent=e?.message || "No timing setting was changed.";}
-    finally {for(const n of nodes){try{n.stop();n.disconnect();}catch{}}try{await capture?.stop();}catch{}microphoneCheck.calibrating=false;syncMicrophoneActivity();button.disabled=close.disabled=false;}
+    finally {for(const n of nodes){try{n.stop();n.disconnect();}catch{}}try{await capture?.stop();}catch{}microphoneCheck.calibrating=false;syncMicrophoneActivity();refreshTimingRouteHelp();button.disabled=close.disabled=false;}
   }
 
-  async function refreshMicrophoneChoices() {
+  function refreshTimingRouteHelp(){
+    const native=Boolean(engine?.native);
+    const select=document.getElementById("playbackDevice");
+    const canChoose=typeof (window.AudioContext||window.webkitAudioContext)?.prototype.setSinkId==="function" &&
+      timingDevices.some(d=>d.kind==="audiooutput" && d.deviceId && !["default","communications"].includes(d.deviceId));
+    if(!native && !canChoose)select.value="";
+    select.disabled=native || !canChoose || Boolean(microphoneCheck?.calibrating);
+    document.getElementById("timingDefaultOutput").hidden=native || canChoose;
+    document.getElementById("headsetTimingHelp").hidden=native;
+    const label=pitchCaptureStream?.getAudioTracks()[0]?.label || elements.takeMicrophone.selectedOptions[0]?.text;
+    document.getElementById("timingHeadsetModel").hidden=!window.MeleteMicrophoneCheck.isQc35II(label);
+  }
+  function refreshMicrophoneChoices() {
+    const refresh=latestDeviceRefresh={};
+    return refresh.result=updateMicrophoneChoices(refresh);
+  }
+  async function updateMicrophoneChoices(refresh) {
     if (engine?.native) {
       elements.takeMicrophone.replaceChildren(new Option(engine.native.state?.input || "Native station microphone", "native-wasapi"));
       elements.takeMicrophone.disabled = true;
       const selector = document.getElementById("playbackDevice");
       if (selector) { selector.replaceChildren(new Option(engine.native.state?.output || "Native station output", "native-wasapi")); selector.disabled = true; }
-      return [];
+      refreshTimingRouteHelp();return [];
     }
     const devicesApi = window.MeleteMicrophoneCheck.mediaDevicesFor(window);
     if (!devicesApi?.enumerateDevices) return;
     try {
       const allDevices=await devicesApi.enumerateDevices();
+      // A pre-permission enumeration can arrive after the list for the open dialog.
+      // Its callers also need the newer routes, not just a newer-looking selector.
+      if(refresh!==latestDeviceRefresh)return latestDeviceRefresh.result;
       const output=allDevices.find(d=>d.kind==="audiooutput" && d.deviceId==="default");
       timingDevices=allDevices;
       timingOutputDevice=window.MeleteMicrophoneCheck.physicalEndpoint(allDevices,"audiooutput","default");
@@ -9007,7 +8958,7 @@
         selector.replaceChildren(new Option(output?.label || "System default",""),
           ...outputs.map((d,i)=>new Option(d.label||"Output "+(i+1),d.deviceId)));
         if(preferred && !outputs.some(d=>d.deviceId===preferred))selector.add(new Option("Selected output (unavailable)",preferred));
-        selector.value=preferred;selector.disabled=typeof (window.AudioContext||window.webkitAudioContext)?.prototype.setSinkId!=="function";
+        selector.value=preferred;
       }
       const devices = allDevices.filter(device => device.kind === "audioinput");
       const selected = readMicrophoneChoice();
@@ -9020,9 +8971,12 @@
       }
       elements.takeMicrophone.replaceChildren(...options);
       elements.takeMicrophone.value = selected;
-      microphoneCheck?.syncSelector(elements.takeMicrophone);
+      microphoneCheck?.syncSelector(elements.takeMicrophone);refreshTimingRouteHelp();
       return allDevices;
-    } catch { timingDevices=[];timingOutputDevice=""; }
+    } catch {
+      if(refresh!==latestDeviceRefresh)return latestDeviceRefresh.result;
+      timingDevices=[];timingOutputDevice="";refreshTimingRouteHelp();
+    }
   }
 
   function releaseMicrophoneInput() {
@@ -9035,7 +8989,7 @@
   }
 
   function microphoneFailureMessage(error, retryAction = "try again") {
-    if (error?.name === "RawAudioUnavailableError") return error.message;
+    if (error?.name === "RawAudioUnavailableError" || error?.name === "NativeStationError") return error.message;
     if (error?.name === "OverconstrainedError" && ["echoCancellation", "noiseSuppression", "autoGainControl"].includes(error.constraint))
       return "This input cannot disable voice processing. Choose an unprocessed microphone input.";
     if (error?.name === "NotAllowedError") return `Microphone blocked. Allow access in browser settings, then ${retryAction}.`;
@@ -9126,7 +9080,7 @@
 
   async function togglePitchCapture() {
     if(!ready || conductorMode || rehearsalReview)return;
-    if (wantsPitchCapture()) {
+    if (wantsPitchCapture() && !nativeInputNeedsRetry()) {
       disablePitchCapture();
       return;
     }
@@ -9159,8 +9113,9 @@
     // Restoring the page may use an existing grant. Only a recording gesture
     // should open Chrome's permission prompt when the grant has expired.
     try {
-      const permissions = window.MeleteMicrophoneCheck.microphoneNavigator(window).permissions;
-      if ((await permissions?.query({name:'microphone'}))?.state==='granted') {
+      const permitted = engine?.native ||
+        (await window.MeleteMicrophoneCheck.microphoneNavigator(window).permissions?.query({name:'microphone'}))?.state==='granted';
+      if (permitted) {
         await loadTakeLibrary();const spec=recordingLoopSpec();if(spec)await checkTakeSpace(spec);
         if(wantsPitchCapture() && pitchCapturePageActive && !document.hidden && takeState==="off")void armMicrophone();
       }
@@ -10346,8 +10301,7 @@
         row.innerHTML = `<div class="take-summary">
           <button class="take-select" type="button">
           <span class="take-row-label"><span class="take-number"></span><span class="take-singer"></span><span class="take-part"></span></span>
-          <span class="take-segments"></span>
-          <span class="take-detail"><span class="take-tracked"><strong></strong></span><span class="take-error"><strong></strong></span><span class="take-median"><strong></strong></span><span class="take-within"><strong></strong></span></span>
+          <span class="take-detail"><span class="take-tracked"><strong></strong></span><span class="take-error"><strong></strong></span><span class="take-segments" title="Recorded passages"></span><span class="take-median"><strong></strong></span><span class="take-within"><strong></strong></span></span>
           <span class="take-created"></span><span class="take-modified"></span>
           </button>
           <span class="take-warning" hidden>!</span>
@@ -10550,20 +10504,28 @@
       await ensureMicrophoneInput();
       await refreshMicrophoneChoices();
       if (generation !== takeRequestGeneration) { syncMicrophoneActivity(); return; }
-      let journal, initialAudio;
+      let journal, punch;
+      const initialAudio = [];
       const capture = await window.MeleteRecording.PcmCapture.create(pitchCaptureContext, pitchCaptureSource,
         (frame, samples) => {
           if (journal) journal.append(frame, samples);
-          else initialAudio = {frame, samples};
+          else if (samples.length) {
+            initialAudio.push({frame, samples});
+            while (initialAudio.length > 1 && initialAudio[0].frame + initialAudio[0].samples.length <= frame - pitchCaptureContext.sampleRate * 12)
+              initialAudio.shift();
+          }
         },
         error => { void stopTakeRecording(error.message, true, {discardShortTail: false}); });
       if (generation !== takeRequestGeneration) { await capture?.stop(); syncMicrophoneActivity(); return; }
       takeCapture = capture;
       if (joining) {
+        if (engine.native) punch = await engine.native.punchIn();
+        if (generation !== takeRequestGeneration) return;
+        if (!engine.playing) { await stopTakeRecording("Playback ended", true); return; }
         spec = recordingLoopSpec();
         if (!spec) { await stopTakeRecording("Playback ended", true); return; }
-        const start = engine.tickAtSeconds(engine.currentSeconds());
-        spec.initial = {start, entry: start, leadInSeconds: 0,
+        const start = engine.tickAtSeconds(punch?.position ?? engine.currentSeconds());
+        spec.initial = {start, entry: Math.max(0,start), leadInSeconds: Math.max(0,-engine.secondsAtTick(start)/engine.rate),
           seconds: (engine.secondsAtTick(spec.end) - engine.secondsAtTick(start)) / engine.rate,
           label: `${scoreLocationAtTick(start)}-${spec.label.split("-").at(-1)}`};
         if (spec.mode === "segment") Object.assign(spec, {start, seconds: spec.initial.seconds});
@@ -10596,18 +10558,18 @@
         },
       });
       takeJournal = journal || null;
-      // The ready block may straddle the transport start. Keep its real samples
-      // so TakeBuffer can recover that boundary without inserting silence.
-      if (initialAudio) journal.append(initialAudio.frame, initialAudio.samples);
       takeState = joining ? "recording" : "armed";
       if (joining) {
-        beginRecordingPass(journal,engine.secondsAtTick(spec.initial.start),spec.initial.pitchReference);
+        beginRecordingPass(journal,engine.secondsAtTick(spec.initial.start),spec.initial.pitchReference,punch?.frame);
       }
+      for (const block of initialAudio) journal.append(block.frame, block.samples);
       activateCachedPitchCapture({quiet: true});
-      if(!currentCalibration() && lastTimingCheck()){
+      if(!currentCalibration()){
         const key=timingKey() || "unknown";
-        if(!warnedTimingRoutes.has(key)){warnedTimingRoutes.add(key);
-          showToast("Audio setup changed. Entrance timing is estimated until you measure this setup.");}
+        const output=engine?.context?.sinkId || "default";
+        const labels=[pitchCaptureStream?.getAudioTracks()[0]?.label,timingDevices.find(d=>d.kind==="audiooutput"&&d.deviceId===output)?.label];
+        const hint=window.MeleteMicrophoneCheck.timingHint(labels,estimatedRecordingLatency(),Boolean(lastTimingCheck()));
+        if(hint && !warnedTimingRoutes.has(key)){warnedTimingRoutes.add(key);showToast(hint);}
       }
       takeRefreshTimer = window.setInterval(()=>{checkRecordingClocks();renderTakePanel();}, 250);
       renderTakePanel();
@@ -10702,9 +10664,9 @@
     return takeStopPromise;
   }
 
-  function beginRecordingPass(writer,position,ref) {
+  function beginRecordingPass(writer,position,ref,nativeFrame) {
     if (engine.native) {
-      recordingPassClock = {frame:engine.native.startFrame, position, rate:engine.rate,
+      recordingPassClock = {frame:nativeFrame ?? engine.native.startFrame, position, rate:engine.rate,
         sampleRate:48000, latency:ref.latency};
       writer.begin(recordingPassClock.frame);
       recordingClockWatch = null;
@@ -11169,11 +11131,19 @@
   }
 
   function interruptVerticalFollow(event) {
+    if (flow === "continuous") {
+      const target=event?.target;
+      if (target instanceof Node && elements.transport.contains(target)) {
+        scoreScrollIntentUntil=0;
+        return;
+      }
+      scoreScrollIntentUntil=performance.now()+600;
+    }
     pendingLoopRevealTick = null;
     if (verticalFollowAnimationFrame || predictiveFollowRange) cancelVerticalFollowAnimation(true);
     // Real input must also end the grace period after a completed auto-scroll.
     automaticScrollUntil = 0;
-    if (event?.target instanceof Node && elements.score.contains(event.target)) {
+    if (event?.target instanceof Node && (elements.score.contains(event.target) || elements.barScore.contains(event.target))) {
       horizontalGestureUntil = performance.now() + 200;
     }
   }
@@ -11307,10 +11277,12 @@
   }
 
   function followHorizontalScore(now) {
-    if (now < horizontalGestureUntil || !visibleTracks.size || notationRenderInFlight || pinchActive) return;
-    const score = elements.score;
+    const bars = scoreView === "bars";
+    if (now < horizontalGestureUntil || !visibleTracks.size || (!bars && notationRenderInFlight) || pinchActive) return;
+    const score = bars ? elements.barScore : elements.score;
     if (score.scrollWidth <= score.clientWidth) return;
-    const cursor = notationBeatLine();
+    // Continuous Pitchbar has one system; read its animated line, not the measure bounds.
+    const cursor = bars ? barSystems[0]?.cursor.getBoundingClientRect() : notationBeatLine();
     if (!cursor) return;
     const rect = score.getBoundingClientRect();
     const left = Math.max(0, rect.left), right = Math.min(window.innerWidth, rect.right);
@@ -11324,14 +11296,15 @@
     const destination = clamp(score.scrollLeft + cursor.left - anchor, 0, score.scrollWidth - score.clientWidth);
     if (Math.abs(destination - score.scrollLeft) < 0.5) return;
     score.scrollLeft = destination;
-    followedScoreLeft = score.scrollLeft;
+    followedScrollLeft.set(score, score.scrollLeft);
   }
 
   function gentleFollowCursor() {
     if (conductor) return;
-    if (!engine?.playing || pendingNotationReload || scoreScrub) return;
+    if (!engine?.playing || scoreScrub) return;
+    if (scoreView === "standard" && pendingNotationReload) return;
     const now = performance.now();
-    const horizontalScore = flow === "continuous" && scoreView === "standard";
+    const horizontalScore = flow === "continuous";
     if (horizontalScore && !playbackDetached) followHorizontalScore(now);
     if (now - lastFollow < FOLLOW_CHECK_INTERVAL_MS) return;
     lastFollow = now;
@@ -11390,7 +11363,7 @@
   }
 
   function playbackCursorBounds() {
-    if (!engine || pendingNotationReload || !visibleTracks.size) return null;
+    if (!engine || (scoreView === "standard" && pendingNotationReload) || !visibleTracks.size) return null;
     const tick = clamp(engine.tickAtSeconds(engine.currentSeconds()), 0, Math.max(0, sequence.endTick - 1));
     if (scoreView === "bars") {
       const system = barSystems.find((system) => tick >= system.startTick && tick < system.endTick);
@@ -11504,7 +11477,7 @@
       }
     } else {
       // A native smooth scroll would compete with the score's frame-by-frame follow.
-      const followingBeat = flow === "continuous" && scoreView === "standard" && engine.playing;
+      const followingBeat = flow === "continuous" && engine.playing;
       if (followingBeat) behavior = "auto";
       automaticScrollUntil = Date.now() + (behavior === "smooth" ? 800 : 300);
       const scoreSurface = scoreView === "bars" ? elements.barScore : elements.score;
@@ -11521,12 +11494,17 @@
   }
 
   function recordManualScoreScroll(event) {
-    if (event?.currentTarget === elements.score && flow === "continuous" && scoreView === "standard") {
-      if (elements.score.scrollLeft === followedScoreLeft) return;
-      followedScoreLeft = null;
+    const surface = scoreView === "bars" ? elements.barScore : elements.score;
+    // Reflow after isolating a part, switching layout, or focusing a control
+    // fires genuine DOM scroll events without the reader having scrolled.
+    if (flow === "continuous" && performance.now() >= scoreScrollIntentUntil) return;
+    if (flow === "continuous" && event?.currentTarget === surface) {
+      if (surface.scrollLeft === followedScrollLeft.get(surface)) return;
+      followedScrollLeft.delete(surface);
       if (Date.now() >= automaticScrollUntil) horizontalGestureUntil = performance.now() + 200;
     }
     if (Date.now() < automaticScrollUntil) return;
+    if (flow === "continuous") scoreScrollIntentUntil=performance.now()+350;
     cancelVerticalFollowAnimation(true);
     const cursor = playbackCursorBounds();
     if (!cursor) {
@@ -11544,7 +11522,6 @@
 
   function syncPlaybackButton() {
     syncRehearsalWake();
-    syncStepAvailability();
     const preparing = Boolean(engine?.preparing);
     stationMixEditor?.transportChanged();
     elements.playPause.disabled = !ready;
@@ -11585,6 +11562,10 @@
   window.addEventListener("scroll", recordManualScoreScroll, { passive: true });
   window.addEventListener("pointerdown", interruptVerticalFollow, { capture: true, passive: true });
   window.addEventListener("wheel", interruptVerticalFollow, { capture: true, passive: true });
+  window.addEventListener("keydown", event => {
+    if (flow === "continuous" && ["PageUp","PageDown","Home","End","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(event.key)
+      && !elements.transport.contains(event.target) && !event.defaultPrevented) interruptVerticalFollow(event);
+  });
   elements.score.addEventListener("scroll", recordManualScoreScroll, { passive: true });
   elements.barScore.addEventListener("scroll", recordManualScoreScroll, { passive: true });
   elements.score.addEventListener("pointerdown", (event) => {
@@ -11712,13 +11693,18 @@
       return {source: pitchCaptureSource, context: pitchCaptureContext, track: pitchCaptureStream.getAudioTracks()[0]};
     },
     release: syncMicrophoneActivity,
-    busy: () => pitchCaptureState !== "off" || takeState !== "off",
+    busy: () => pitchCaptureState !== "off" || takeState !== "off" || Boolean(microphoneCheck?.calibrating || engine?.native),
     failureMessage: microphoneFailureMessage,
     choose: deviceId => {
+      if(microphoneDeviceId!==deviceId)invalidateSessionTiming();
       microphoneDeviceId = deviceId;
       try { localStorage.setItem("choir-practice:microphone:v1", deviceId); } catch {}
       elements.takeMicrophone.value = deviceId;
       releaseMicrophoneInput();
+      if(timingDialog.open){
+        stopStereoTest();refreshTimingRouteHelp();
+        document.getElementById("timingCheckStatus").textContent="Recording input changed. Measure this input and output together before judging entrances.";
+      }
       takeNotice = "";
       renderTakePanel();
       if (wantsPitchCapture()) void armMicrophone();
@@ -11726,7 +11712,7 @@
   });
   window.MeleteMicrophoneCheck.mediaDevicesFor(window)?.addEventListener?.("devicechange", async () => {
     const before=timingKey(),previousOutput=timingOutputDevice;
-    sessionTiming=null;
+    invalidateSessionTiming();
     const devices=await refreshMicrophoneChoices();
     if(!pitchCapturePageActive || document.hidden)return;
     noteAudioEvent("devices-changed");
@@ -11767,7 +11753,10 @@
     document.getElementById("outputDb").textContent=outputDb===null?"Silent":outputDb+" dBFS";
     outputPoll=setTimeout(sampleOutput,90);
   }
-  timingDialog.addEventListener("close",stopOutputMeter);
+  timingDialog.addEventListener("close",()=>{
+    stopOutputMeter();
+    if(!timingDialog.open)document.getElementById("openTimingCheck").before(elements.takeMicrophone);
+  });
   document.addEventListener("visibilitychange",()=>{if(timingDialog.open)sampleOutput();});
   function savedOutput(){try{return localStorage.getItem("melete:playback-output:v1")||"";}catch{return "";}}
   function noteAudioEvent(event,more={}) {
@@ -11787,7 +11776,8 @@
     try {
       if(engine.playing || takeState!=="off" || microphoneCheck.calibrating)throw Error("Pause playback before changing output.");
       engine.ensureAudio();await engine.routeOutput(device);localStorage.setItem("melete:playback-output:v1",device);
-      noteAudioEvent("output-selected");outputStatus.textContent="Output selected. Check timing on this setup.";
+      invalidateSessionTiming();noteAudioEvent("output-selected");outputStatus.textContent="Output selected.";
+      document.getElementById("timingCheckStatus").textContent="Output changed. Measure this input and output together before judging entrances.";
     } catch(e){playbackDevice.value=savedOutput();outputStatus.textContent=e.message;}
   });
   const stereoButton=document.getElementById("testPlaybackOutput");
@@ -11831,12 +11821,14 @@
     }catch(e){if(stereoRun===nodes){stopStereoTest();outputStatus.textContent=e.message;}}
   });
   document.getElementById("openTimingCheck").addEventListener("click",()=>{
-    outputStatus.textContent="";void refreshMicrophoneChoices();
+    // Reuse the recording selector: calibration can never acquire a separate test-only mic.
+    document.getElementById("timingInputSlot").append(elements.takeMicrophone);
+    outputStatus.textContent="";refreshTimingRouteHelp();void refreshMicrophoneChoices();
     const label=document.getElementById("timingCheckStatus");
-    const cal=currentCalibration(), last=!cal && !pitchCaptureStream && lastTimingCheck();
+    const cal=currentCalibration(), last=!cal && !pitchCaptureStream && (sessionTiming?.result || lastTimingCheck());
     label.textContent=engine.playing || takeState!=="off" ? "Finish the current take and pause playback before measuring." :
       cal ? (cal.backend ? "Native WASAPI: " : "Measured ")+Math.round(cal.seconds*1000)+" ms; measured spread "+cal.spreadMs+" ms." :
-      last ? "Last measurement: "+Math.round(last.seconds*1000)+" ms. Recording rechecks the microphone and output before using it." :
+      last ? "Last measurement: "+Math.round(last.seconds*1000)+" ms. "+(last===sessionTiming?.result?"This tab only. ":"")+"Recording rechecks the microphone and output before using it." :
       "Timing is unverified. Measure this setup before judging early or late entrances.";
     if(!timingDialog.open)timingDialog.showModal();sampleOutput();
   });
@@ -11991,9 +11983,7 @@
     const control = event.target instanceof Element
       ? event.target.closest("button, input, a, [role='button'], [role='spinbutton'], [role='slider'], [tabindex]")
       : null;
-    // Step arrows retain keyboard focus; a delayed blur after a pointer-up
-    // would cancel a keyboard hold that started in the same frame.
-    if (!(control instanceof HTMLElement) || isTextEntryTarget(control) || control.closest("#noteStepBar")) return;
+    if (!(control instanceof HTMLElement) || isTextEntryTarget(control)) return;
     requestAnimationFrame(() => {
       if (document.activeElement === control) control.blur();
     });
@@ -12055,9 +12045,7 @@
     }
     if (["ArrowLeft", "ArrowRight"].includes(event.key) && engine && api) {
       const direction = event.key === "ArrowRight" ? 1 : -1;
-      if(parked){if(!event.repeat){beginStepGesture(direction,null);stepGesture.key=event.key;}
-        event.preventDefault();return;}
-      stepScoreNote(direction);
+      if (!event.repeat) stepScoreNote(direction);
       event.preventDefault();
       return;
     }
@@ -12354,6 +12342,8 @@
       }
       const ownLinkNamesPart = ownPartLink.part !== undefined || ownPartLink.div !== undefined;
       const ownMix=Object.fromEntries(new URLSearchParams(window.location.search));
+      const ownView=applyLinkedView(ownMix.view);
+      if(ownView)linkedPracticeState={...linkedPracticeState,view:ownView};
       const mixArrival=openMixLink({...ownMix,...ownPartLink});
       if (ownLinkNamesPart && !mixArrival) consumePartLink();
       const arrivalLink = pendingPartLink || (ownLinkNamesPart ? ownPartLink : null);
@@ -12409,15 +12399,12 @@
       settings.player.enableUserInteraction = false;
 
       api = new window.alphaTab.AlphaTabApi(elements.score, settings);
-      api.customCursorHandler = createLeftEdgeCursorHandler(window.alphaTab, api, elements.score);
+      api.customCursorHandler = createLeftEdgeCursorHandler(window.alphaTab, api);
       engine = new GuideEngine(sequence);
-      engine.consumeParkedPosition=()=>{
-        if(!parked)return null;
-        const time=engine.secondsAtTick(parked.notes[parked.i].start);
-        leaveNoteStep();return time;
-      };
       void referencePlayer?.sync();
       engine.beforeStart = () => {
+        keyboardAudition?.();
+        keyboardStepAnchor = null;
         if (conductorMode || stationReview || !wantsPitchCapture()) return false;
         if (takeState === "stopping") {
           const request = engine.transportRequest;

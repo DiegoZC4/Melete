@@ -1,5 +1,14 @@
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
+test('a calibration for an unidentified system output expires when its route changes',()=>{
+  const {timingRouteKey}=require('../template/microphone_check.js');
+  const mic={kind:'audioinput',deviceId:'mic',label:'USB input'};
+  const speakers={kind:'audiooutput',deviceId:'jack',label:'Phones'};
+  const key=(devices,output,epoch)=>timingRouteKey(devices,mic,output,[48000,48000],epoch,'stream-track');
+  assert.equal(key([mic,speakers],'jack',1),key([mic,speakers],'jack',2));
+  assert.match(key([mic],null,1),/^session:/);
+  assert.notEqual(key([mic],null,1),key([mic],null,2));
+});
 test('default endpoint identity follows the physical jack across page loads, not rotating group IDs',()=>{
   const {physicalEndpoint}=require('../template/microphone_check.js');
   const endpoint=(deviceId,groupId,label,kind='audiooutput')=>({kind,deviceId,groupId,label});

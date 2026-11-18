@@ -15,3 +15,10 @@ test('old pitch-only practice remains readable, but no writer can create new tra
   assert.notDeepEqual(trace.key('s',1,0,{id:'a'},'f'),trace.key('s',1,0,{id:'b'},'f'));
   assert.notDeepEqual(trace.key('s',1,0,null,'f'),trace.key('s',1,1,null,'f'));
 });
+test('a shared Pitchbar link carries the view with the song and mix',()=>{
+  const link=new URL(mix.address('http://localhost/?song=autumn&mode=station',{myVol:120},null,'https://example.test/practice/','Pitchbar'));
+  assert.deepEqual(Object.fromEntries(link.searchParams),{song:'autumn',view:'pitchbar',myVol:'120'});
+  assert.equal(mix.linkedView(link.searchParams.get('view')),'bars');
+  assert.equal(mix.linkedView('score'),'standard');
+  assert.equal(mix.linkedView('unknown'),null);
+});

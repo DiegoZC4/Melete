@@ -1,6 +1,14 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const model=require('../template/practice_comp.js');
 const {historySources}=require('../template/loop_recorder.js');
+test('archived takes show their recording dates and leave unknown times blank',()=>{
+  const {reviewDates}=require('../template/comp_panel.js');
+  const item={id:'take-a',rehearsalDate:'2026-11-08',uploaded:Date.parse('2026-11-08T12:00:00Z')};
+  assert.deepEqual(reviewDates(item,{}),{createdAt:null,updatedAt:null});
+  const saved={'2026-11-08':{'take-a':{createdAt:100,updatedAt:220}}};
+  assert.deepEqual(reviewDates(item,saved),{createdAt:100,updatedAt:220});
+  assert.deepEqual(reviewDates({...item,createdAt:110},saved),{createdAt:110,updatedAt:220});
+});
 function track(id,singer,stage,from,to,note=60,part=0,date=1) {
   const reference={version:1,fingerprint:'score',part,line:null,rate:1,start:0,end:4,seconds:4,
     latency:0,notes:[[0,4,[note]]]};

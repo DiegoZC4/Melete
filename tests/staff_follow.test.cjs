@@ -134,7 +134,7 @@ test('horizontal Score follows the moving beat, clamps at the ends, and respects
   const c = vm.createContext({elements: {score}, visibleTracks: new Set([0]), window: {innerWidth: 520},
     notationBeatLine: () => ({left: 10 + beat - score.scrollLeft}), notationRenderInFlight: false, pinchActive: false,
     reducedFollowMotion: {matches: false}, HORIZONTAL_READING_FRACTION: .4, horizontalGestureUntil: 0,
-    followedScoreLeft: null, clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v))});
+    scoreView:'standard', followedScrollLeft:new WeakMap(), clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v))});
   vm.runInContext(source('followHorizontalScore'), c);
   const at = x => { beat = x; c.followHorizontalScore(1000); return score.scrollLeft; };
   assert.equal(at(90), 0, 'show the opening margin');
@@ -148,6 +148,12 @@ test('horizontal Score follows the moving beat, clamps at the ends, and respects
   c.reducedFollowMotion.matches = true;
   assert.equal(at(790), 400, 'leave the page still while there is room ahead');
   assert.equal(at(840), 640, 'turn before the beat leaves the visible page');
+  c.scoreView='bars';
+  c.elements.barScore={...score,scrollLeft:0};
+  c.barSystems=[{cursor:{getBoundingClientRect:()=>({left:610})}}];
+  c.notationRenderInFlight=true;
+  c.followHorizontalScore(1000);
+  assert.equal(c.elements.barScore.scrollLeft,400,'continuous Pitchbar follows its own line while the hidden Score renders');
   c.visibleTracks.clear();
   assert.equal(at(1300), 640, 'never chase hidden music');
 });

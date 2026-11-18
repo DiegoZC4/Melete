@@ -2019,7 +2019,8 @@ console.log(JSON.stringify({{
         self.assertIn(".bar-system svg { cursor: ew-resize; }", styles)
         self.assertIn(".is-scrubbing-score", styles)
         self.assertIn(".score:not(.is-continuous),\n.bar-score:not(.is-continuous) { touch-action: pan-y; }", styles)
-        self.assertIn("if (!engine?.playing || pendingNotationReload || scoreScrub) return;", app)
+        self.assertIn("if (!engine?.playing || scoreScrub) return;", app)
+        self.assertIn('if (scoreView === "standard" && pendingNotationReload) return;', app)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
     def test_score_clicks_seek_to_the_renderer_s_own_beat(self) -> None:

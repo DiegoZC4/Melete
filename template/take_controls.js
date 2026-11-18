@@ -58,9 +58,9 @@
       cell.textContent = formatDate(value, {omitYear, timeOnly});
     }
   }
-  const fields = {singer:"Singer", part:"Part", segments:"Segments", tracked:"Tracked (%)", mean:"Mean (\u00a2)",
+  const fields = {singer:"Singer", part:"Part", tracked:"Tracked (%)", mean:"Mean (\u00a2)", segments:"Segments",
     median:"Median (\u00a2)", within:"\u226450\u00a2 (%)", created:"Created", modified:"Modified", octave:"Octave"};
-  const priority = ["singer","part","mean","tracked","within","segments","created","median","modified","octave"];
+  const priority = ["singer","part","mean","segments","tracked","within","created","median","modified","octave"];
   const layouts = new WeakMap();
   function visibleFields(available, widths, budget, preference) {
     if (preference === "all") return available;

@@ -281,6 +281,26 @@
       (proxy.label===d.label || proxy.label?.endsWith(" - "+d.label)));
     return named.length===1 ? named[0].deviceId : "";
   }
+  function timingRouteKey(devices,input,sink,rates,epoch,liveId) {
+    if(!input || !rates.every(v=>v>0) || sink!=null && typeof sink!=="string")return null;
+    const mic=physicalEndpoint(devices,"audioinput",input.deviceId);
+    const output=physicalEndpoint(devices,"audiooutput",sink);
+    if(mic && output)return "melete:roundtrip:v3:"+JSON.stringify([mic,output,...rates]);
+    const group=(kind,id)=>devices.find(d=>d.kind===kind && d.deviceId===(id||"default"))?.groupId;
+    const source=mic || input.groupId || group("audioinput",input.deviceId) || liveId;
+    if(!source)return null;
+    // Browsers need not enumerate the active system output. Never persist a
+    // correction for that anonymous route or reuse it after a device change.
+    return "session:"+JSON.stringify([source,output || group("audiooutput",sink) || null,...rates,epoch]);
+  }
+  function isQc35II(label) {return /\b(?:quietcomfort|qc)[\s-]*35[\s-]*(?:ii|2)\b/i.test(label||"");}
+  function timingHint(labels,seconds,previouslyMeasured) {
+    if(previouslyMeasured)return "Audio setup changed. Use the stopwatch to measure it before judging entrances.";
+    if(labels.some(s=>isQc35II(s) || /bluetooth|airpods|galaxy buds|pixel buds|hands[- ]free/i.test(s||"")))
+      return "Headset timing is estimated. Pause and use the stopwatch before judging entrances.";
+    if(seconds>=.08)return "Audio timing is estimated. Pause and use the stopwatch before judging entrances.";
+    return "";
+  }
   function timingProfile(settings,input,output) {
     const numeric=v=>Number.isFinite(v) && v>=0 ? v : null;
     const flag=v=>typeof v==="boolean" || typeof v==="string" ? v : null;
@@ -354,6 +374,6 @@
     };
   }
   return {Level, Check, rehearsalWakeLock, mediaDevicesFor, microphoneNavigator, rawAudioConstraints,captureProfile,verifyRawInput,
-    timingChirp, measuredLatency, calibration,chirpReadings,fitChirps,
+    timingChirp, measuredLatency, calibration,chirpReadings,fitChirps,timingRouteKey,timingHint,isQc35II,
     physicalEndpoint,timingProfile,freshCalibration,watchClocks,clockDivergence,passClock,sampleScoreTime,deviceEvents,deviceEvent};
 });

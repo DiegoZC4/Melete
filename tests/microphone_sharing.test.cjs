@@ -22,7 +22,7 @@ function fixture() {
     ready:true, conductorMode: false, rehearsalReview:null, stationReview:null, reviewMix:null, pitchCaptureState: 'off', takeState: 'off', microphoneRequest: null,
     singEnabled:false,singArmGeneration:0,compPanel:null,practicePartIndex:0,mixerParts:[{}],takeNotice:'',recordingLoopSpec:()=>null,loadTakeLibrary:async()=>{},
     retainRecordingInput:false, preparingCapture:null, pitchCapturePageActive: true, pitchCaptureNotice: '',
-    microphoneDeviceId: '', microphoneStreamDeviceId: '', microphoneCheck: null,
+    microphoneDeviceId: '', microphoneStreamDeviceId: '', microphoneCheck: null, latestDeviceRefresh:null,
     pitchCaptureContext: null, pitchCaptureStream: null, pitchCaptureSource: null,
     pitchCaptureAnalyser: null, pitchCaptureWorker: null, pitchCaptureBuffer: null, playing: false,
     PITCH_CAPTURE_BUFFER_SIZE: 4096, Float32Array, console,
@@ -40,7 +40,7 @@ function fixture() {
   });
   c.window.navigator = c.navigator;
   c.window.MeleteMicrophoneCheck = require('../template/microphone_check.js');
-  for (const name of ['wantsPitchCapture', 'readMicrophoneChoice', 'refreshMicrophoneChoices', 'releaseMicrophoneInput',
+  for (const name of ['wantsPitchCapture', 'nativeInputNeedsRetry','readMicrophoneChoice', 'refreshMicrophoneChoices', 'updateMicrophoneChoices', 'releaseMicrophoneInput',
     'microphoneFailureMessage', 'syncMicrophoneActivity', 'ensureMicrophoneInput', 'disablePitchCapture',
     'restorePitchCapture', 'armMicrophone','activateCachedPitchCapture','togglePitchCapture']) vm.runInContext(source(name), c);
   return {c, track, audio, constraints, notices, stops, stored, listeners,
@@ -90,6 +90,21 @@ test('mic check and capture share one raw selected input request', async () => {
   assert.equal(f.constraints[0].audio.deviceId.exact, 'chosen-device');
   for (const key of ['echoCancellation','noiseSuppression','autoGainControl']) assert.equal(f.constraints[0].audio[key].exact, false);
   assert.notEqual(f.c.pitchCaptureContext, f.c.engine.context); assert.equal(f.track.enabled, true);
+});
+test('Sing retries an unavailable native input with one press',async()=>{
+  const f=fixture(), c=f.c;
+  c.engine.native={};c.singEnabled=true;c.pitchCaptureNotice='Device unavailable';
+  let attempts=0;c.armMicrophone=async()=>{attempts++;};
+  await c.togglePitchCapture();
+  assert.equal(c.singEnabled,true);assert.equal(attempts,1);assert.equal(c.pitchCaptureNotice,'');
+});
+test('native punch-in starts its writer at the verified input frame during playback',()=>{
+  const c=fixture().c, frames=[];
+  c.engine.native={startFrame:48000};c.engine.rate=1;
+  vm.runInContext(source('beginRecordingPass'),c);
+  c.beginRecordingPass({begin:frame=>frames.push(frame)},3.5,{latency:.01},168000);
+  c.beginRecordingPass({begin:frame=>frames.push(frame)},0,{latency:.01});
+  assert.deepEqual(frames,[168000,48000]);
 });
 test('Sing re-enabled during a save punches in after the flush unless canceled', async () => {
   for (const cancel of [false, true]) {

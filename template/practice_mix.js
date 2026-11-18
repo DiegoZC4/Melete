@@ -123,16 +123,24 @@
       if(!Number.isFinite(next[key]) || next[key]<min || next[key]>max)next[key]=defaults[key];
     return next;
   }
-  function address(base,mix,loop,publishedBase) {
+  function linkedView(value) {
+    switch(String(value??"").trim().toLowerCase()){
+      case "pitchbar":return "bars";
+      case "score":return "standard";
+      default:return null;
+    }
+  }
+  function address(base,mix,loop,publishedBase,view) {
     const url=new URL(publishedBase || base), song=new URL(base).searchParams.get("song") || url.searchParams.get("song");
     if (!/^https?:$/.test(url.protocol)) throw new Error("A hosted player is required to share links.");
     url.username="";url.password="";url.search="";url.hash="";
     if (song) url.searchParams.set("song",song);
+    if (linkedView(view)) url.searchParams.set("view",String(view).trim().toLowerCase());
     if (loop) url.searchParams.set("loop",loop);
     for(const [key,value] of Object.entries(read(mix) || {})) url.searchParams.set(key,String(value));
     return url.href;
   }
-  const api={keys,read,fromMixer,address,factory,defaultWidth,stationDefault,setStationDefault,seatOrder,project,fullPreset,
+  const api={keys,read,fromMixer,address,linkedView,factory,defaultWidth,stationDefault,setStationDefault,seatOrder,project,fullPreset,
     audioState,reviewKey,reviewProfile,roleKey,follow};
   if(typeof module==="object" && module.exports) module.exports=api; else root.MeletePracticeMix=api;
 })(globalThis);

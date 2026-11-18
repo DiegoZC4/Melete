@@ -3,6 +3,15 @@
    no track or Undo uses is deleted. */
 ((root) => {
   "use strict";
+  function reviewDates(item, saved = root.MeleteLocalStationRoster?.performanceDates) {
+    if (!item.rehearsalDate) return {createdAt:item.createdAt ?? item.uploaded, updatedAt:item.updatedAt ?? item.uploaded};
+    const local = saved?.[item.rehearsalDate]?.[item.id];
+    // Older servers sent noon UTC on the collection date for an unknown time.
+    // Only an explicit capture timestamp can disambiguate a real noon recording.
+    const legacy = item.uploaded === Date.parse(item.rehearsalDate + "T12:00:00Z") ? null : item.uploaded;
+    const createdAt = item.createdAt ?? local?.createdAt ?? legacy ?? null;
+    return {createdAt, updatedAt:item.updatedAt ?? local?.updatedAt ?? createdAt};
+  }
   function matchingSinger(candidates, singer) {
     if (!singer?.key) return null;
     let matches=candidates.filter(candidate => candidate.singer.key === singer.key);
@@ -126,7 +135,7 @@
           updatedAt:track.state.editedAt || track.state.updatedAt || track.state.createdAt}] : [];
       });
       return local.concat((cloud?.entries() || []).filter(item=>item.owner).map(item=>({id:cloud.itemId(item),item,
-        singer:cloudSinger(item),updatedAt:item.updatedAt ?? item.uploaded})))
+        singer:cloudSinger(item),updatedAt:reviewDates(item).updatedAt})))
         .map(candidate=>({...candidate,singer:{...candidate.singer,directoryId:stations.singerId(candidate.singer.name)}}));
     }
     function cancelFollow() { followRequest=null; }
@@ -219,7 +228,7 @@
       const segments = review?.timelineSegments || item.segments;
       const numbers = item.segments?.map(s => s[2]).filter(Number.isFinite) || [];
       return {part:item.label, singer:item.name, number:numbers.length ? Math.min(...numbers) : null,
-        createdAt:item.uploaded, updatedAt:item.updatedAt ?? item.uploaded, segmentCount:segments?.length ?? null,
+        ...reviewDates(item), segmentCount:segments?.length ?? null,
         metrics:review?.pitchScore ? root.MeleteTakeControls.metricValues(review.pitchScore)
           : {tracked:item.tracked, mean:item.mean, median:item.median, within:item.within ?? null}};
     }
@@ -1070,6 +1079,6 @@
       prepared.clear();
     }, state: () => tracks.get(armed)?.state || null, sources: () => tracks.get(armed)?.sources || new Map()};
   }
-  root.MeleteCompPanel = {create,matchingSinger};
+  root.MeleteCompPanel = {create,matchingSinger,reviewDates};
   if(typeof module==="object" && module.exports)module.exports=root.MeleteCompPanel;
 })(globalThis);

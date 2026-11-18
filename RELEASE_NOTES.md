@@ -56,11 +56,48 @@ not require changing drivers, recordings, singer directories or audio settings.
 
 ## Release procedure
 
+### November 18 desktop regression audit
+
+The first shared build restored a retired Step control. Comparing its decoded
+players with the preceding website and laptop builds identified the following
+behaviors to restore in the shared template.
+
+- Left and right arrow keys preview the selected part directly. A held key
+  sustains its note until release. Key repeat and arrow presses during a take
+  leave the transport alone. The Step button and its toolbar are removed.
+- Continuous Pitchbar follows its own playhead horizontally. The printed
+  cursor reaches the current barline before crossing into the next measure
+  and retains the release's rendered-rest alignment.
+- Shared Pitchbar links carry the view and mix between songs. Parts and
+  passage boundaries stay specific to their song.
+- Turning Sing on mid-playback uses the native punch-in frame and retains
+  input blocks that arrive while the writer opens. An unavailable native
+  microphone can be retried with one press.
+- Audio Timing offers the recording input selector and headset guidance.
+  An unidentified system output can be calibrated for the current session.
+  A device change invalidates that measurement.
+- Archived review takes use their capture dates when available. An unknown
+  legacy time stays blank instead of acquiring a fictitious noon timestamp.
+- The recording controls use the earlier compact desktop layout. Segments
+  sits beside Mean cents and gets priority over secondary statistics when
+  space is tight. Existing explicit column selections still apply.
+- This build includes the subsequent fix for switching from Score to
+  Pitchbar during capture with a different voice part.
+
+The corrected two-song player has SHA-256
+`112ed3a85e5be1262bea98b3909140dbfe661f8ce41e021898a92edec0ff6151`.
+The regular desktop shortcut served these bytes for both songs, with the
+station's usual native configuration supplied at request time. Both songs
+retained their previous score inputs, playback data and song configuration.
+The tests used synthetic inputs and isolated browser storage. Physical USB
+reliability, measured headphone latency and live cloud login/upload are
+outside those checks.
+
 ### November 18 deployment and follow-up
 
-The 18 November artifact is deployed at `https://diegozc.com/autumn-seed/`
+The first 18 November artifact was deployed at `https://diegozc.com/autumn-seed/`
 through the existing DZC/Hostinger hook and installed on the regular laptop
-station. Both match SHA-256
+station. Both initially matched SHA-256
 `256f8c5d91b8af3510121aa9ff915b683b834caabdef7e0b453e0f34773c732d`
 (11,667,216 bytes), built from player source `d421020`.
 

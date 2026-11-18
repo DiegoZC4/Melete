@@ -1,5 +1,12 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const controls=require('../template/take_controls.js'),pitch=require('../template/take_pitch.js');
+test('Fit keeps the segment count beside mean error before secondary pitch statistics',()=>{
+  const order=['tracked','mean','segments','median','within'];
+  const widths=Object.fromEntries(order.map(field=>[field,50]));
+  assert.deepEqual(controls.visibleFields(order,widths,100,'fit'),['mean','segments']);
+  assert.deepEqual(controls.visibleFields(order,widths,150,'fit'),['tracked','mean','segments']);
+  assert.deepEqual(controls.visibleFields(order,widths,100,['median','within']),['median','within']);
+});
 const score = (coverage,mean,median,within=1) => ({expectedSeconds:10,trackedSeconds:10*coverage,
   coverage,meanAbsCents:mean,medianAbsCents:median,within50CentsSeconds:10*coverage*within});
 test('comp arrows follow numeric direction but color follows each metric\'s goal',()=>{

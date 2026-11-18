@@ -357,10 +357,10 @@ optional and is not installed or needed on other machines.
 - When you isolate another part, the guide's volume, pan and MIDI Hear setting
   move with you. Each part gets its backing settings back when it stops being
   the guide. Recorded **Hear** layers are independent of this handoff.
-- With one part isolated, **Practice > Step** parks the score on a sung note.
-  Tap either arrow to move silently; hold either to hear the current note.
-  With Sing armed you can check your cents without saving a take. Space or
-  Play leaves Step and starts normal timed practice from that note.
+- Use the left and right arrow keys to preview the selected part directly in
+  Score or Pitchbar. The first press can sound the note at the cursor.
+  Each subsequent press moves one written onset. Hold the key to sustain the
+  note and release it to stop. Arrow previews are disabled during a take.
 - For one-to-one practice, open the player with `?mode=station`. Pick a singer in
   **Practice → Singer** by tap, click, or arrow keys and Enter. Search a name,
   a part code such as A2, or the full part name. The first audio take is the baseline;

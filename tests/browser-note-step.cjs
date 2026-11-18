@@ -19,39 +19,43 @@ async function run(page,mobile,output){
   assert.equal(await page.locator('#redoComp').isVisible(),mobile);
   assert.ok(await page.locator('.comp-columns #downloadMix').isDisabled());
   assert.ok(await page.locator('#takeReviewTable').evaluate(el=>el.scrollWidth<=el.clientWidth+1),'default columns fit');
-  await page.locator('#noteStepToggle').click();
+  await page.waitForFunction(()=>!__qa.busy);
+  assert.equal(await page.locator('#noteStepToggle, #noteStepBar, [data-note-step]').count(),0);
   const tick=()=>page.evaluate(()=>Math.round(__qa.engine.tickAtSeconds(__qa.engine.currentSeconds())));
-  const first=await tick(),next=page.locator('[data-note-step="1"]');
-  await page.evaluate(()=>{const e=__qa.engine,fn=e.holdNote.bind(e);window.held=0;e.holdNote=(...args)=>{
-    window.held++;const voice=fn(...args);return {release(){window.held--;voice.release();}};};});
-  await next.click();const second=await tick();assert.ok(second>first);assert.equal(await page.evaluate(()=>held),0);
-  const box=await next.boundingBox();assert.ok(box.height>=44);
-  await page.mouse.move(box.x+10,box.y+10);await page.mouse.down();
-  await page.waitForFunction(()=>held===1);await page.mouse.up();
-  assert.equal(await tick(),second);assert.equal(await page.evaluate(()=>held),0);
-  await page.mouse.down();await page.waitForFunction(()=>held===1);
-  await page.mouse.move(box.x+35,box.y+10);await page.mouse.up();
-  assert.equal(await tick(),second,'dragging away cancels without moving');
-  assert.equal(await page.evaluate(()=>held),0,'cancellation releases the sounding voice');
-  await page.locator('body').press('ArrowLeft');assert.equal(await tick(),first);
-  await next.press('Enter');assert.equal(await tick(),second);
-  await next.focus();await page.keyboard.down('Enter');
-  try {await page.waitForFunction(()=>held===1,null,{timeout:2500});}
-  catch(e){throw new Error('Key hold did not sustain: '+JSON.stringify(await page.evaluate(()=>({
-    focused:document.activeElement?.outerHTML.slice(0,120),pressed:noteStepToggle.getAttribute('aria-pressed'),held,note:parkedNote.textContent
-  }))),{cause:e});}
-  await page.keyboard.up('Enter');
-  assert.equal(await tick(),second,'keyboard hold previews without stepping on release');
-  await page.locator('#pitchCapture').click();await page.waitForFunction(()=>parkedCents.textContent.includes('\u00a2'),null,{timeout:12000});
+  await page.evaluate(()=>{
+    document.activeElement?.blur();
+    const engine=__qa.engine, hold=engine.holdNote.bind(engine);
+    window.previewVoices=0;
+    engine.holdNote=(...args)=>{
+      const voice=hold(...args);
+      window.previewVoices++;
+      return {release(){window.previewVoices--;window.previewReleaseStack=new Error().stack;voice.release();}};
+    };
+  });
+  await page.keyboard.down('ArrowRight');
+  await page.waitForFunction(()=>previewVoices>0);
+  const first=await tick();
+  await page.waitForTimeout(350);
+  assert.ok(await page.evaluate(()=>previewVoices>0),await page.evaluate(()=>window.previewReleaseStack || 'held arrow ended early'));
+  await page.keyboard.down('ArrowRight');
+  assert.equal(await tick(),first,'key repeat must not advance');
+  await page.keyboard.up('ArrowRight');
+  await page.waitForFunction(()=>previewVoices===0);
+  await page.keyboard.press('ArrowRight');
+  const second=await tick();assert.ok(second>first);
+  await page.keyboard.press('ArrowLeft');assert.equal(await tick(),first);
+  await page.locator('#pitchCapture').click();
   assert.equal(await page.evaluate(()=>__qa.recording.state),'off');
   assert.equal(await page.evaluate(async()=>(await __qa.takeStore.list(__qa.takeSong)).length),0);
   await page.screenshot({path:path.join(output,`note-step-${mobile?'touch':'desktop'}.png`)});
   await page.locator('#playPause').click();
   await page.waitForFunction(()=>__qa.recording.state==='recording' && __qa.engine.playing);
-  assert.ok(!await page.locator('#noteStepBar').isVisible());
-  assert.ok(await page.evaluate(t=>Math.abs(__qa.engine.tickAtSeconds(__qa.engine.basePosition)-t)<2,second));
+  const pass=await page.evaluate(()=>__qa.recording.takes.find(t=>t.active)?.id);
+  assert.ok(pass,'capture has a live take');
+  await page.locator('body').press('ArrowRight');
+  assert.ok(await page.evaluate(id=>__qa.engine.playing && __qa.recording.state==='recording' && __qa.recording.takes.some(t=>t.id===id && t.active),pass),
+    'an arrow during capture leaves the same take running');
   await page.locator('#playPause').click();await page.waitForFunction(()=>__qa.recording.state==='off');
-  return {mobile,first,second,holdReleasedAt:second,timedRecordingStartedAt:second,heldPreview:true,parkedPitch:true,noParkedTake:true,
-    backingMuteRestored:true,columnsFit:true};
+  return {mobile,first,second,heldPreview:true,recordingContinued:true,backingMuteRestored:true,columnsFit:true};
 }
 module.exports={run};

@@ -53,20 +53,22 @@ test('paused position changes cannot start a follow-scroll', () => {
 
 test('arrow navigation follows note onsets, includes slur notes, skips rests and does not wrap', () => {
   const sounded=[], seeks=[];
-  let position=0, timer;
-  const c=vm.createContext({ready:true,api:{},scoreView:'standard',keyboardAudition:null,KEYBOARD_NOTE_PREVIEW_SECONDS:.22,
+  let position=0, released=0;
+  const c=vm.createContext({ready:true,api:{},takeState:'off',keyboardAudition:null,keyboardStepAnchor:null,
+    visibleChannels:new Set([1]),mixerParts:[{source:0},{source:1}],
+    visiblePitchNotes:()=>[[0,240,960,70],[1,0,2880,60],[1,2880,3840,62],[1,4800,5760,64],[1,5760,6720,65]],
     currentScorePartIndex:()=>1,playbackCursorPlace:()=>'',followCursorFrom(){},cancelPitchAuditions(){},
-    window:{setTimeout:fn=>{timer=fn;return 1;},clearTimeout(){}},
-    engine:{notes:[{track:0,start:.25,end:1,key:70},
-      {track:1,start:0,end:3,key:60}, {track:1,start:3,end:4,key:62},
-      {track:1,start:5,end:7,key:64,segments:[{track:1,start:5,end:6,key:64},{track:1,start:6,end:7,key:65}]}],
-      currentSeconds:()=>position,tickAtSeconds:t=>t*960,pauseTransport(){},
-      holdNote:key=>{sounded.push(key); return {release(){}};}},
+    window:{clearTimeout(){}}, performance:{now:()=>100},
+    engine:{currentSeconds:()=>position,tickAtSeconds:t=>t*960,pauseTransport(){},
+      holdNote:key=>{sounded.push(key); return {release(){released++;}};}},
     applyScoreScrubTarget:target=>{position=target.tick/960;seeks.push(position);},
   });
   vm.runInContext(source('stepScoreNote'),c);
   c.stepScoreNote(1); c.stepScoreNote(1); c.stepScoreNote(1); c.stepScoreNote(1);
-  assert.deepEqual(seeks,[3,5,6]); assert.deepEqual(sounded,[62,64,65]);
-  c.stepScoreNote(-1); assert.equal(position,5); timer();
+  assert.deepEqual(seeks,[0,3,5,6]); assert.deepEqual(sounded,[60,62,64,65]);
+  c.stepScoreNote(1);assert.equal(position,6);
+  c.stepScoreNote(-1); assert.equal(position,5); c.keyboardAudition();
+  assert.equal(released,1);
+  c.takeState='recording';c.stepScoreNote(-1);assert.equal(position,5);
   assert.equal(c.keyboardAudition,null);
 });

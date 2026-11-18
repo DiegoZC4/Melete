@@ -53,7 +53,9 @@
   } catch {}
   let selected = -1, frame = null, settingsOpen = null, saving = false;
   let reviewSinger = null;
-  const passageKeys = ["part", "div", "loop", "myVol", "otherVol", "myPan", "otherPan", "layout", "width"];
+  const presetKeys = ["view", "myVol", "otherVol", "myPan", "otherPan", "layout", "width"];
+  const passageKeys = ["part", "div", "loop", ...presetKeys];
+  const songMixReceipts = new Map();
   const fieldName = k => passageKeys.find(key=>key.toLowerCase()===k.toLowerCase()) || k.toLowerCase();
   let addressFields = {}, pendingLink = null, lastAddress;
   const linkKey = text => String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -88,7 +90,7 @@
     address.search = params.toString();
     address.hash = "";
     if (address.href !== location.href) {
-      if (push) history.pushState(null, "", address.href);
+      if (push) history.pushState(songMixReceipts.has(selected) ? {meleteMix:songMixReceipts.get(selected)} : null, "", address.href);
       else history.replaceState(history.state, "", address.href);
     }
     lastAddress = location.href;
@@ -277,9 +279,17 @@
   function choose(index, keyboard = false, link = null) {
     const switching = index !== selected;
     if (!songs[index] || (!switching && !link)) return;
+    let fields=link;
+    if (switching && !link) {
+      if (history.state?.meleteMix) songMixReceipts.set(selected,history.state.meleteMix);
+      // A choir view/mix is portable across songs. A passage and a named
+      // division aren't: prompt once per song instead of guessing its roles.
+      if (["pitchbar","score"].includes(addressFields.view?.toLowerCase()))
+        fields=Object.fromEntries(presetKeys.filter(k=>addressFields[k]!==undefined).map(k=>[k,addressFields[k]]));
+    }
     if (switching) deactivate();
     selected = index;
-    addressFields = Object.fromEntries(passageKeys.filter(key => link?.[key] !== undefined).map(key => [key, link[key]]));
+    addressFields = Object.fromEntries(passageKeys.filter(key => fields?.[key] !== undefined).map(key => [key, fields[key]]));
     pendingLink = Object.keys(addressFields).length ? {...addressFields} : null;
     writeAddress(!link);
     if (!switching) { deliverLink(players.get(index)); return; }
