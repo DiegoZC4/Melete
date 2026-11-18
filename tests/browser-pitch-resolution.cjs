@@ -8,6 +8,7 @@ const pitchTraceProbe = `pitchResolution: {
   divisiTargets(tick,cents) { return {line:pitchTraceLaneAt(tick,cents),error:expectedPitchErrorCents(tick,cents),
     pitches:expectedPitchAt(tick).map(n=>n[3]),part:practicePartIndex,chosen:practiceDivisi[practicePartIndex]}; },
   clearPitchTrace, loadPitchTrace, disablePitchCapture, setScoreView,
+  showLowestPartBars() { setPracticePart(mixerParts.length-1); setScoreView('bars'); },
   traceState() {
     const review=takeReview;
     const frame=review?.frames.find(f=>Number.isFinite(f.cents));
@@ -160,6 +161,7 @@ const pitchTraceProbe = `pitchResolution: {
         hop:Math.max(pitchCaptureIntervalMs,pitchCaptureCadenceMs)});
       return owner.originalReplace(frames);
     };
+    return {tick:note[1],pitch:note[3]};
   },
   input(gain=.15) {
     pitchCaptureSource.disconnect(pitchCaptureAnalyser);
@@ -267,9 +269,15 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
   if (await frame.locator('#settingsToggle').getAttribute('aria-expanded') !== 'true')
     await frame.locator('#settingsToggle').click();
   if(process.env.QA_FINAL_PHRASE_ONLY)return {finalPhrase:await checkFinalPhrase(frame,page,probe,output,label)};
-  await frame.evaluate(name => window[name].pitchResolution.prepare(), probe);
-  await frame.evaluate(name => window[name].pitchResolution.setScoreView('standard'), probe);
-  await frame.waitForFunction(name => !window[name].pitchResolution.snapshot().busy, probe);
+  // Leave the last part's Pitchbar cached, then start a different part in Score.
+  await frame.evaluate(name => window[name].pitchResolution.showLowestPartBars(), probe);
+  await frame.waitForFunction(name=>!window[name].busy&&document.querySelector('#barScore .bar-note'),probe);
+  const target = await frame.evaluate(name => {
+    const pitch = window[name].pitchResolution;
+    pitch.setScoreView('standard');
+    return pitch.prepare();
+  }, probe);
+  await frame.waitForFunction(name=>!window[name].busy,probe);
   if(await frame.locator('#pitchCapture').getAttribute('aria-pressed')!=='true')await frame.locator('#pitchCapture').click();
   await frame.locator('#playPause').click();
   await frame.waitForFunction(name => window[name].pitchResolution.snapshot().state === 'recording', probe);
@@ -282,6 +290,10 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     assert.ok(activeTake, 'Score view starts a real microphone recording');
     await frame.locator('#score [data-from-bin]').first().waitFor({state:'attached'});
     await frame.locator('#scoreViewToggle').click();
+    await frame.waitForFunction(name=>!window[name].busy,probe);
+    const range=await frame.evaluate(({name,tick})=>window[name].pitchResolution.reviewRange(tick),{name:probe,tick:target.tick});
+    assert.ok(range&&target.pitch>=range.min&&target.pitch<=range.max,
+      `switching to Pitchbar while singing must show the current part's note ${target.pitch}; got ${JSON.stringify(range)}`);
     await frame.locator('#barScore [data-from-bin]').first().waitFor({state:'attached'});
     await frame.locator('#scoreViewToggle').click();
     await page.waitForTimeout(3000);

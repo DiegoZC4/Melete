@@ -10519,8 +10519,10 @@
       showToast("Choose a passage of 5 minutes or less to record.", "error"); renderTakePanel(); return;
     }
     if (!pitchCaptureSupported()) { showToast("Microphone recording is unavailable here", "error"); return; }
-    // Pitchbar keeps the selected comp's untouched phrases during overdub.
-    recordingBarRanges = new Map(barSystems.map(({startTick,endTick,minPitch,maxPitch,referencePitch}) =>
+    // Freeze the visible scale during overdub. Hidden or pending bars may still
+    // belong to the previous part; let their first render choose the range.
+    const currentBars = scoreView === "bars" && !barRenderFrame ? barSystems : [];
+    recordingBarRanges = new Map(currentBars.map(({startTick,endTick,minPitch,maxPitch,referencePitch}) =>
       [startTick + ":" + endTick, {minPitch,maxPitch,referencePitch}]));
     const targetKey = compPanel?.recordingKey();
     engine.setOverdubTarget(targetKey,compPanel?.stationPerson()?.id);

@@ -56,14 +56,13 @@ not require changing drivers, recordings, singer directories or audio settings.
 
 ## Release procedure
 
-### Verified deployment and remaining test issue
+### November 18 deployment and follow-up
 
 The 18 November artifact is deployed at `https://diegozc.com/autumn-seed/`
 through the existing DZC/Hostinger hook and installed on the regular laptop
 station. Both match SHA-256
 `256f8c5d91b8af3510121aa9ff915b683b834caabdef7e0b453e0f34773c732d`
-(11,667,216 bytes), built from player source `d421020`. Later commits update
-regression fixtures and these notes only.
+(11,667,216 bytes), built from player source `d421020`.
 
 Validation passed: 598 JavaScript tests; 151 Python tests with three optional
 checks skipped; source CI on Windows, macOS and Linux; focused desktop/mobile
@@ -72,12 +71,14 @@ cursor and timing checks; and both songs' take ordering, inline Undo, fullscreen
 and Bark vowel-view checks. Original recording blobs, roster and native audio
 configuration were verified unchanged after installation.
 
-The full Linux browser gate is still not green: run
-`44378830688` timed out at `tests/browser-pitch-resolution.cjs:285` waiting for a
-pitchbar contour after switching views during capture. The same focused
-`QA_PITCH_ONLY=1` suite passed locally on desktop and mobile. The combined-run
-failure remains unexplained; do not describe the entire browser gate as passed.
-The hardware, vowel-estimation and live-cloud limitations above remain open.
+At deployment the full Linux browser gate was failing: [run 44378830688](https://github.com/DiegoZC4/Melete/actions/runs/44378830688)
+timed out waiting for a live Pitchbar contour. Starting a recording in Score
+could freeze the last part's Pitchbar range, clipping the current singer's
+contour on a view switch even though pitch detection continued. The follow-up
+source fix freezes only a current, visible scale. The desktop and mobile
+regression now practices a low part first and checks that the higher part's
+note and live contour appear without interrupting the take. This follow-up
+does not change the deployed artifact or the hardware and cloud limitations above.
 
 ### Future releases
 
