@@ -1939,8 +1939,8 @@
     }
   }
 
-  function createLeftEdgeCursorHandler(alpha, player) {
-    const systems = new WeakMap();
+  function createLeftEdgeCursorHandler(alpha, player, score = null) {
+    let systems = new WeakMap();
     let beatTarget = null, barTarget = null, clockDriven = false;
     const restNames = {1: "RestWhole", 2: "RestHalf", 4: "RestQuarter", 8: "Rest8th",
       16: "Rest16th", 32: "Rest32nd", 64: "Rest64th", 128: "Rest128th", 256: "Rest256th"};
@@ -1948,6 +1948,7 @@
       const system = bounds.barBounds.masterBarBounds.staffSystemBounds;
       if (systems.has(system)) return systems.get(system);
       const groups = new Map();
+      let complete = true;
       for (const master of system.bars) for (const bar of master.bars) for (const beat of bar.beats) {
         const center = beat.onNotesX;
         if (!Number.isFinite(center)) continue;
@@ -1959,6 +1960,14 @@
           const width = player.settings.display.resources.engravingSettings.glyphWidths.get(symbol);
           if (Number.isFinite(width)) left = (full ? beat.realBounds.x + beat.realBounds.w / 2 : beat.onNotesX)
             - width * player.settings.display.scale / 2;
+          // Browser font metrics can differ from the engraving width table.
+          // Anchor to the rendered rest whenever its SVG has been attached.
+          if (score) {
+            const glyph = [...score.querySelectorAll(`.b${beat.beat.id} text`)]
+              .find(el => /^[\uE4E1-\uE4EB]$/u.test(el.textContent));
+            if (glyph) left = glyph.getBoundingClientRect().left - score.getBoundingClientRect().left + score.scrollLeft;
+            else complete = false;
+          }
         }
         if (!Number.isFinite(left)) continue;
         const hasNotes = !!notes.length;
@@ -1970,7 +1979,7 @@
         else if (hasNotes === existing.hasNotes) existing.left = Math.min(existing.left, left);
       }
       const result = [...groups.values()].sort((a, b) => a.center - b.center);
-      systems.set(system, result);
+      if (complete) systems.set(system, result);
       return result;
     }
     function position(bounds, x) {
@@ -1991,6 +2000,7 @@
       return previous.left + (right - previous.left) * ratio;
     }
     return {
+      invalidate() { systems = new WeakMap(); },
       onAttach(cursors) { beatTarget = cursors.beatCursor; barTarget = cursors.barCursor; },
       onDetach() { beatTarget = barTarget = null; clockDriven = false; },
       release() { clockDriven = false; },
@@ -5275,6 +5285,7 @@
     });
     elements.score.dataset.fullRestGlyphCount = String(glyphCount);
     elements.score.dataset.fullRestCenteredCount = String(centeredCount);
+    api.customCursorHandler?.invalidate?.();
   }
 
   function scheduleFullMeasureRestCentering() {
@@ -12394,7 +12405,7 @@
       settings.player.enableUserInteraction = false;
 
       api = new window.alphaTab.AlphaTabApi(elements.score, settings);
-      api.customCursorHandler = createLeftEdgeCursorHandler(window.alphaTab, api);
+      api.customCursorHandler = createLeftEdgeCursorHandler(window.alphaTab, api, elements.score);
       engine = new GuideEngine(sequence);
       engine.consumeParkedPosition=()=>{
         if(!parked)return null;

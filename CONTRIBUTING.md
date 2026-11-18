@@ -36,6 +36,9 @@ existing dependency directory; it is never required.
 while a rehearsal station owns an exclusive audio device. Audio graphs, capture
 and clocks still run; this does not verify physical speakers or device latency.
 `QA_OUTPUT_DIR` isolates reports/screenshots for a separate validation run.
+`QA_CURSOR_ONLY=1` isolates note/rest cursor alignment on desktop and mobile.
+`QA_CORE_ONLY=1` runs the core score, playback and persistence checks without
+the separately selectable collection and feature suites.
 The standalone take-column and settings-cleanup browser checks use synthetic
 scores by default; set `QA_COLLECTION_PROJECT` to a restored rehearsal project
 to include the real Autumn and Seed players as well.

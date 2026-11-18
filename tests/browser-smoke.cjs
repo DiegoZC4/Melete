@@ -468,6 +468,10 @@ async function main() {
         await page.waitForFunction(() => !__qa.busy && __qa.api.settings.display.stretchForce === 4);
         await checkMeasureRests(page, 4, 3);
         const cursorEdges = await checkCursorEdges(page);
+        if (process.env.QA_CURSOR_ONLY) {
+          results.push({viewport:mobile?'mobile':'desktop',cursorEdges});
+          continue;
+        }
         const pitchbarSpacing = await checkPitchbarSpacing(page, page, {output, label: mobile ? 'mobile' : 'desktop'});
         await settled();
         await page.evaluate(() => __qa.engine.seek(0));

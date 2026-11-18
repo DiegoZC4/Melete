@@ -32,7 +32,9 @@ async function checkCursorEdges(page, qaName = '__qa') {
       }
       const cursor = score.querySelector('.at-cursor-beat').getBoundingClientRect();
       return {...entry, expected, actual: cursor.left + cursor.width / 2 - score.getBoundingClientRect().left + score.scrollLeft,
-        center: bounds.onNotesX};
+        center: bounds.onNotesX, duration:beat.duration,
+        glyphs:[...score.querySelectorAll(`.b${beat.id} text`)].map(el=>({text:el.textContent,x:el.getAttribute('x'),
+          width:el.getBoundingClientRect().width,font:getComputedStyle(el).fontFamily,size:getComputedStyle(el).fontSize}))};
     }, {name: qaName, entry});
     assert.ok(Math.abs(result.actual - result.expected) < 0.6, `cursor left edge: ${JSON.stringify(result)}`);
     results.push(result);

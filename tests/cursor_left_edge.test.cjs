@@ -7,7 +7,7 @@ const source = fs.readFileSync(path.join(__dirname, '../template/app.js'), 'utf8
 const start = source.indexOf('  function createLeftEdgeCursorHandler(');
 const create = vm.runInNewContext(source.slice(start, source.indexOf('\n  }', start) + 4) + '\ncreateLeftEdgeCursorHandler');
 
-function fixture(scale = 1) {
+function fixture(scale = 1, score = null) {
   const alpha = {model: {MusicFontSymbol: {RestQuarter: 1, RestWhole: 2}},
     midi: {MidiTickLookupFindBeatResultCursorMode: {ToNextBext: 0}}};
   const player = {settings: {display: {scale, resources: {engravingSettings: {glyphWidths: new Map([[1, 8], [2, 12]])}}}}};
@@ -22,7 +22,7 @@ function fixture(scale = 1) {
     bar.beats.push(b); return b;
   };
   const first = add(100, 0, 94), second = add(200, 480, 192);
-  const handler = create(alpha, player), calls = [];
+  const handler = create(alpha, player, score), calls = [];
   const cursor = {setBounds: (...args) => calls.push(['bounds', ...args]), transitionToX: (...args) => calls.push(['move', ...args])};
   return {handler, cursor, calls, first, second, add, bar, master};
 }
@@ -54,6 +54,18 @@ test('a simultaneous full-bar rest cannot displace a sounding onset in another p
   const f = fixture(); f.add(100, 0, null, true, true);
   f.handler.placeBeatCursor(f.cursor, f.first, 100);
   assert.equal(f.calls.at(-1)[1], 94);
+});
+
+test('rendered rest edges override platform font metrics and refresh after rest centering', () => {
+  let x=142;
+  const score={scrollLeft:3,getBoundingClientRect:()=>({left:50}),querySelectorAll:()=>[
+    {textContent:'\uE4E5',getBoundingClientRect:()=>({left:x})}]};
+  const f=fixture(1,score);f.bar.beats.length=0;
+  const rest=f.add(100,0,null,true);
+  f.handler.placeBeatCursor(f.cursor,rest,100);
+  assert.equal(f.calls.at(-1)[1],95);
+  x=143;f.handler.invalidate();f.handler.placeBeatCursor(f.cursor,rest,100);
+  assert.equal(f.calls.at(-1)[1],96);
 });
 
 test('animation retains native continuous transition and bar highlight dimensions', () => {
