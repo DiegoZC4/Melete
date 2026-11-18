@@ -71,8 +71,10 @@ const recordingProbe = `
   get countIn() { return {beat: elements.takeCountIn.dataset.beat, visible: !elements.takeCountIn.hidden,
     startTime: takeCountIn?.startTime, endTime: takeCountIn?.endTime,
     now: engine.context?.currentTime, spec: takeState !== 'off' && takeJournal ? takeJournal.spec : recordingLoopSpec(),
-    captureStartDelay: takeJournal?.buffer.current && takeCountIn ? takeJournal.buffer.current.start / pitchCaptureContext.sampleRate
-      - pitchCaptureContext.currentTime + engine.context.currentTime - takeCountIn.endTime : null,
+    // Map the first input frame to the output clock using the readings at punch-in.
+    captureStartDelay: takeJournal?.buffer.current && takeCountIn && recordingClockWatch
+      ? takeJournal.buffer.current.start / pitchCaptureContext.sampleRate
+        - recordingClockWatch.mic + recordingClockWatch.output - takeCountIn.endTime : null,
     cursor: playbackCursorBounds()}; },
   get recording() {
     if (!window.__captureGapHistory) {
@@ -208,17 +210,31 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   assert.equal(wav.readUInt16LE(22), 1);
   assert.equal(wav.readUInt32LE(24), result.sampleRate);
   assert.equal(wav.readUInt32LE(40), complete.length * 2);
-  const amplitude = frequency => {
-    let re = 0, im = 0;
-    for (let i = 0; i < complete.length; i++) {
-      const sample = wav.readInt16LE(44 + i * 2) / 32768;
-      const angle = 2 * Math.PI * frequency * i / result.sampleRate;
-      re += sample * Math.cos(angle); im += sample * Math.sin(angle);
+  // Independent Web Audio clocks can resample the fake device by a few Hz.
+  // A single Fourier bin over a whole take phase-cancels that continuous tone.
+  const windowSize = Math.round(result.sampleRate / 10);
+  function amplitudes(frequency) {
+    const windows = [];
+    for (let start = 0; start + windowSize <= complete.length; start += windowSize) {
+      let re = 0, im = 0;
+      for (let i = 0; i < windowSize; i++) {
+        const weight = .5 - .5 * Math.cos(2 * Math.PI * i / windowSize);
+        const sample = weight * wav.readInt16LE(44 + 2 * (start + i)) / 32768;
+        const angle = 2 * Math.PI * frequency * i / result.sampleRate;
+        re += sample * Math.cos(angle);
+        im += sample * Math.sin(angle);
+      }
+      windows.push(4 * Math.hypot(re, im) / windowSize);
     }
-    return 2 * Math.hypot(re, im) / complete.length;
-  };
-  const micAmplitude = amplitude(997), guideAmplitude = amplitude(523.251);
+    return windows;
+  }
+  const average = values => values.reduce((sum, value) => sum + value, 0) / values.length;
+  const micWindows = amplitudes(997);
+  const micAmplitude = average(micWindows);
+  const guideAmplitude = average(amplitudes(523.251));
   assert.ok(micAmplitude > .05, `microphone signal present (${micAmplitude})`);
+  assert.ok(micWindows.filter(value => value > .05).length >= .9 * micWindows.length,
+    'continuous microphone tone throughout the take');
   assert.ok(guideAmplitude < .005, `score output not mixed into file (${guideAmplitude})`);
   assert.ok(complete.seconds > counted.spec.seconds + counted.spec.initial.leadInSeconds - .05);
   const countFrames = Math.floor(counted.spec.initial.leadInSeconds * result.sampleRate);
@@ -361,16 +377,19 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   const beforeNearEnd = (await page.evaluate(() => __qa.recording)).takes.length;
   await toggleRecording(page);
   const stopping = await page.waitForFunction(() => {
-    const take = __qa.recording.takes.find(take => take.active), spec = __qa.countIn.spec.initial;
-    if (__qa.recording.state !== 'recording' || !take
-      || take.seconds < spec.leadInSeconds + .92 * (spec.seconds - spec.leadInSeconds)) return false;
+    const take = __qa.recording.takes.find(take => take.active);
+    const engine = __qa.engine, start = engine.loopStartSeconds, end = engine.loopEndSeconds;
+    const position = engine.currentSeconds();
+    // A singer stops at the audible playhead. Later passes omit the first pass's count-in.
+    if (__qa.recording.state !== 'recording' || !take?.seconds
+      || position < start + .92 * (end - start) || position >= end) return false;
     // Stop within this frame; a protocol round trip can cross the loop boundary.
     document.dispatchEvent(new KeyboardEvent('keydown', {key: ' ', code: 'Space', bubbles: true, cancelable: true}));
-    return {id: take.id, seconds: take.seconds, end: spec.seconds};
+    return {id: take.id, position, end};
   });
   const stoppedAt = await stopping.jsonValue();
   await stopping.dispose();
-  assert.ok(stoppedAt.seconds < stoppedAt.end, `test must stop before a full pass: ${JSON.stringify(stoppedAt)}`);
+  assert.ok(stoppedAt.position < stoppedAt.end, `test must stop before a full pass: ${JSON.stringify(stoppedAt)}`);
   await page.waitForFunction(() => __qa.recording.state === 'off');
   const nearEnd = (await page.evaluate(() => __qa.recording)).takes;
   const punched=nearEnd.find(take=>take.id===stoppedAt.id);

@@ -89,9 +89,29 @@ The corrected two-song player has SHA-256
 The regular desktop shortcut served these bytes for both songs, with the
 station's usual native configuration supplied at request time. Both songs
 retained their previous score inputs, playback data and song configuration.
-The tests used synthetic inputs and isolated browser storage. Physical USB
-reliability, measured headphone latency and live cloud login/upload are
-outside those checks.
+The player was built from `1e31175` and published through `DiegoZC4/DZC@8b86512`.
+A fresh download of the [website player](https://diegozc.com/autumn-seed/)
+and its release manifest matched the installed 11,668,811-byte file.
+
+All 604 JavaScript source tests and 151 Python tests passed locally. Three
+optional Python checks were skipped. The source jobs passed on Windows,
+macOS and Linux, and the full Linux Chromium browser suite passed in the
+[release workflow](https://github.com/DiegoZC4/Melete/actions/runs/44393422737).
+Isolated desktop and phone-sized Chrome checks covered held arrow notes,
+rest-aligned cursors, scores, column layout and the low-to-high part switch.
+Both layouts saved a punch-out near the end of a later loop pass.
+Both Autumn and The Seed passed new-take placement, inline Undo and fullscreen
+Escape checks. Those checks used generated audio and disposable storage.
+
+Windows Chrome's simulated acoustic calibration intermittently missed one
+of four chirps or measured inconsistent intervals in both the previous and
+corrected players. In those runs Melete rejected the estimate and retained
+the current calibration. The silent-output loop recorder check also remains
+intermittent on Windows. For a 3.33-second fixture, saved synthetic takes
+measured 3.28 seconds on the preceding build and 3.24 seconds on this one.
+Every 100 ms window tested contained the mic tone. The signal check also
+rejected an injected one-second gap and guide bleed. Physical USB reliability,
+headphone latency and live cloud login/upload remain unverified.
 
 ### November 18 deployment and follow-up
 
@@ -114,8 +134,8 @@ could freeze the last part's Pitchbar range, clipping the current singer's
 contour on a view switch even though pitch detection continued. The follow-up
 source fix freezes only a current, visible scale. The desktop and mobile
 regression now practices a low part first and checks that the higher part's
-note and live contour appear without interrupting the take. This follow-up
-does not change the deployed artifact or the hardware and cloud limitations above.
+note and live contour appear without interrupting the take. The corrected
+desktop and website release documented above includes this follow-up.
 
 ### Future releases
 
