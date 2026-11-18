@@ -12402,7 +12402,7 @@
       settings.player.enableUserInteraction = false;
 
       api = new window.alphaTab.AlphaTabApi(elements.score, settings);
-      api.customCursorHandler = createLeftEdgeCursorHandler(window.alphaTab, api);
+      api.customCursorHandler = createLeftEdgeCursorHandler(window.alphaTab, api, elements.score);
       engine = new GuideEngine(sequence);
       void referencePlayer?.sync();
       engine.beforeStart = () => {

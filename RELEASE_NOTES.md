@@ -85,7 +85,7 @@ behaviors to restore in the shared template.
   Pitchbar during capture with a different voice part.
 
 The corrected two-song player has SHA-256
-`03417f26ddae7465c88da21ee8d8005cd49afb3920801bf5d34c2a0da9c5caf7`.
+`b4cc11a919ae577ac57e9feabd8495c8039fc5ccd1b13949f5c461e8b89f1b73`.
 The regular desktop shortcut served these bytes for both songs, with the
 station's usual native configuration supplied at request time. Both songs
 retained their previous score inputs, playback data and song configuration.
