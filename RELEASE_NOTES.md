@@ -33,7 +33,8 @@ not require changing drivers, recordings, singer directories or audio settings.
 - Escape exits fullscreen before closing settings. Active practice requests a
   screen wake lock when the browser supports it.
 - The score cursor uses rendered rest edges so platform font metrics do not
-  shift its position away from the visible rest.
+  shift its position away from the visible rest. A delayed animation callback
+  cannot leave subsequent pitchbar animation far ahead of the audio clock.
 - The optional vowel view uses fixed Bark spacing, absolute F1/F2 in Hz, trails,
   pinned examples and timed syllable targets. Ties and melismas sustain targets;
   rests and non-vowel syllables clear them. No F0 is displayed or used to

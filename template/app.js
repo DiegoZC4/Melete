@@ -8199,7 +8199,9 @@
     }
     const now = performance.now(), seconds = engine.secondsAtTick(tick);
     const frameTime = typeof document !== "undefined" ? document.timeline?.currentTime : null;
-    const timelineTime = Number.isFinite(frameTime) ? frameTime : now;
+    // A delayed callback must not carry a whole stalled frame's phase lead
+    // into future compositor frames after JS stops updating the playhead.
+    const timelineTime = Number.isFinite(frameTime) ? Math.max(frameTime, now - 20) : now;
     const motion = barPlayheadMotion;
     if (motion && motion.systems === barSystems && motion.anchor === engine.anchorTime
       && motion.base === engine.basePosition && motion.rate === engine.rate

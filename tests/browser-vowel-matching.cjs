@@ -128,7 +128,7 @@ async function main() {
     await toggle(autumn);
     assert.equal(await calls(page),0);
     assert.equal(await autumn.locator('#vowelPin').isDisabled(),true);
-    assert.equal(await autumn.locator('#recordAudio').getAttribute('aria-pressed'),'false');
+    assert.equal(await autumn.locator('#pitchCapture').getAttribute('aria-pressed'),'false');
     assert.equal(await autumn.evaluate(()=>vowelWorkerCount),0);
     await toggle(autumn);
     assert.notEqual(await autumn.locator('#playPause').getAttribute('aria-label'),'Play score');
@@ -182,12 +182,12 @@ async function main() {
     await toggle(autumn); // Ordinary pitch/audio recording starts with the chart off.
     if (await autumn.locator('#loopToggle').getAttribute('aria-pressed')==='true') await autumn.locator('#loopToggle').click();
     await sing(page,'oo');
-    await autumn.locator('#recordAudio').click(); await autumn.locator('#playPause').click();
-    await autumn.waitForFunction(()=>document.querySelector('#recordAudio').dataset.state==='recording');
+    await autumn.locator('#playPause').click();
+    await autumn.waitForFunction(()=>document.querySelector('#pitchCapture').dataset.state==='recording');
     const before=Number(await autumn.locator('#seek').inputValue());
     await page.waitForTimeout(500); await toggle(autumn); await waitDot(autumn,true);
     await toggle(autumn);
-    assert.equal(await autumn.locator('#recordAudio').getAttribute('data-state'),'recording');
+    assert.equal(await autumn.locator('#pitchCapture').getAttribute('data-state'),'recording');
     assert.ok(Number(await autumn.locator('#seek').inputValue())>before+200);
     assert.equal(await calls(page),1);
     await autumn.locator('#pitchCapture').click();
@@ -231,10 +231,10 @@ async function main() {
       await sing(page,'ah'); await waitDot(seed,true);
     }
     if(await seed.locator('#loopToggle').getAttribute('aria-pressed')==='true') await seed.locator('#loopToggle').click();
-    await seed.locator('#recordAudio').click(); await seed.locator('#playPause').click();
-    await seed.waitForFunction(()=>document.getElementById('recordAudio').dataset.state==='recording');
+    await seed.locator('#playPause').click();
+    await seed.waitForFunction(()=>document.getElementById('pitchCapture').dataset.state==='recording');
     await toggle(seed); await toggle(seed); await waitDot(seed,true);
-    assert.equal(await seed.locator('#recordAudio').getAttribute('data-state'),'recording');
+    assert.equal(await seed.locator('#pitchCapture').getAttribute('data-state'),'recording');
     assert.equal(await calls(page),beforeSeed+1);
     report['The Seed']={chart:seedChart,octave:seedOctave,movingPathHeight:Math.round(span),quarterSecondMarkers:stampCount,independentGuide:true,
       uncertain:['silence','noise','high pitch'],recordingContinued:true};

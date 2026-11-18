@@ -51,9 +51,22 @@ test('late frame callbacks synchronize the existing compositor phase to fresh au
     assert.equal(animations.length,3,'phase correction does not recreate animations');
     assert.ok(original.every(a=>!a.canceled));
     const renderedSeconds=1+(10000+elapsed-lag-animations[0].startTime)/1000;
-    assert.ok(Math.abs(renderedSeconds-(1+elapsed/1000))<1e-9);
+    const lateBeyondFrame=Math.max(0,lag-20)/1000;
+    assert.ok(Math.abs(renderedSeconds-(1+elapsed/1000-lateBeyondFrame))<1e-9);
     assert.equal(animations[1].startTime-animations[0].startTime,3000,
       'future row remains on the same clock');
+  }
+});
+
+test('a stalled callback cannot leave the independent compositor far ahead of audio',()=>{
+  const {ctx,animations,setNow,setFrameLag}=fixture();
+  setFrameLag(75);ctx.updateBarPlayhead(1000);
+  assert.equal(animations[0].startTime,9980,'phase lead is bounded to 20 ms');
+  // No further updateBarPlayhead callbacks: compositor and audio keep moving.
+  for(const elapsed of [50,450,3100]) {
+    setNow(10000+elapsed);setFrameLag(0);
+    const rendered=1+(10000+elapsed-animations[0].startTime)/1000;
+    assert.ok(Math.abs(rendered-(1+elapsed/1000))<=.020000001);
   }
 });
 
