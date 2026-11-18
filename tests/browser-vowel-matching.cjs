@@ -2,7 +2,7 @@
 const assert=require('node:assert/strict');
 const path=require('node:path'), fs=require('node:fs/promises'), {pathToFileURL}=require('node:url');
 const {chromium}=require('playwright');
-const {choosePart}=require('./browser-sing.cjs');
+const {choosePart,enableSing}=require('./browser-sing.cjs');
 const {vowels,vowelPCM}=require('./vowel-fixture.cjs');
 const {observeFrames,checkChart}=require('./browser-vowel-chart.cjs');
 
@@ -85,6 +85,17 @@ const toggle=frame=>frame.locator('#vowelToggle').click();
 const pin=frame=>frame.locator('#vowelPin').click();
 const dot=frame=>frame.locator('#vowelDot');
 const waitDot=(frame,visible)=>frame.waitForFunction(value=>document.getElementById('vowelDot').getAttribute('visibility')===value,visible?'visible':'hidden',{timeout:6500});
+async function waitRecording(frame) {
+  try { await frame.waitForFunction(()=>document.getElementById('pitchCapture').dataset.state==='recording'); }
+  catch(error) {
+    console.error('Recording UI at timeout:',await frame.evaluate(()=>({
+      sing:document.getElementById('pitchCapture').outerHTML,
+      play:document.getElementById('playPause').outerHTML,
+      status:document.getElementById('takeStatus')?.textContent,
+    })));
+    throw error;
+  }
+}
 const mixerState=frame=>frame.locator('#mixer button').evaluateAll(buttons=>buttons.map(b=>
   [b.getAttribute('aria-pressed'),b.getAttribute('data-value')]));
 async function stable(frame) {
@@ -182,8 +193,10 @@ async function main() {
     await toggle(autumn); // Ordinary pitch/audio recording starts with the chart off.
     if (await autumn.locator('#loopToggle').getAttribute('aria-pressed')==='true') await autumn.locator('#loopToggle').click();
     await sing(page,'oo');
+    // Changing the selected part disarms the previous singer's capture.
+    await enableSing(autumn);
     await autumn.locator('#playPause').click();
-    await autumn.waitForFunction(()=>document.querySelector('#pitchCapture').dataset.state==='recording');
+    await waitRecording(autumn);
     const before=Number(await autumn.locator('#seek').inputValue());
     await page.waitForTimeout(500); await toggle(autumn); await waitDot(autumn,true);
     await toggle(autumn);
@@ -231,8 +244,9 @@ async function main() {
       await sing(page,'ah'); await waitDot(seed,true);
     }
     if(await seed.locator('#loopToggle').getAttribute('aria-pressed')==='true') await seed.locator('#loopToggle').click();
+    await enableSing(seed);
     await seed.locator('#playPause').click();
-    await seed.waitForFunction(()=>document.getElementById('pitchCapture').dataset.state==='recording');
+    await waitRecording(seed);
     await toggle(seed); await toggle(seed); await waitDot(seed,true);
     assert.equal(await seed.locator('#pitchCapture').getAttribute('data-state'),'recording');
     assert.equal(await calls(page),beforeSeed+1);

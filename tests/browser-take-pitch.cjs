@@ -148,7 +148,9 @@ async function checkTakePitch(frame, page, {mobile, output, label, reload}) {
           : Math.round(5000 * Math.sin(2 * Math.PI * 440 * 2 ** (cents / 1200) * i / sr)));
       const ref = name === 'low-bass' ? {...reference, notes: [[0, seconds, [46]]]} : reference;
       await qa.takeStore.append({id, song: qa.takeSong, sampleRate: sr, part: 'QA', label: '1-2', rate: 1,
-        createdAt: Date.now(), favorite: name === 'previously-scored', peak: cents === null ? 0 : .15,
+        // Deliberately retained silence exercises scoring; unprotected zero PCM
+        // is removed by empty-take cleanup, covered by browser-inline-undo.cjs.
+        createdAt: Date.now(), favorite: ['previously-scored', 'silent'].includes(name), peak: cents === null ? 0 : .15,
         ...(name === 'legacy' ? {} : {pitchReference: ref})}, 0, pcm,
       {finalized: true, complete: name !== 'partial'});
       if (name === 'previously-scored') await qa.takeStore.pitchScore(id, pcm.length, reference,

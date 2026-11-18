@@ -425,7 +425,7 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   const unusedId = await page.evaluate(async () => {
     const id=crypto.randomUUID();
     await __qa.takeStore.append({id,song:__qa.takeSong,createdAt:Date.now(),sampleRate:8000,
-      seconds:.01,part:'Test',label:'cleanup fixture',start:0,end:1,rate:1,peak:0},0,new Int16Array(80),
+      seconds:.01,part:'Test',label:'cleanup fixture',start:0,end:1,rate:1,peak:.01},0,Int16Array.from({length:80},(_,i)=>300*Math.sin(i/5)),
       {finalized:true,complete:false,gap:true});
     await __qa.reloadTakes();
     return id;
