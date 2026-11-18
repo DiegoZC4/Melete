@@ -8,7 +8,7 @@
   // References stay immutable. Bump only analysis when detector behavior changes.
   const VERSION = 1;
   const ANALYSIS_VERSION = 2;
-  const SCORING_VERSION = 9;
+  const SCORING_VERSION = 10;
   const REST_POLICY_VERSION = 2;
   const CONTOUR_VERSION = 1;
   const BEST_COVERAGE_WINDOW = 0.05;
@@ -190,13 +190,34 @@
         && note[2].every(pitch => Number.isInteger(pitch) && pitch >= 0 && pitch <= 127));
   }
 
-  // Integrate absolute error over tracked singing time. Untracked written
-  // singing lowers coverage, not cents error; rests affect neither metric.
-  function scoreFrames(frames, ref, duration) {
+  // A short interval between irregular voiced callbacks belongs to the same
+  // contour only when the score view would draw the connecting stroke.
+  function connects(fromSeconds, fromCents, toSeconds, toCents) {
+    return Number.isFinite(fromSeconds) && Number.isFinite(toSeconds)
+      && Number.isFinite(fromCents) && Number.isFinite(toCents)
+      && Math.abs(toSeconds - fromSeconds) <= .25 && Math.abs(toCents - fromCents) <= 400;
+  }
+
+  function contourRanges(frames, rate) {
+    const ranges = [];
+    let previous = null;
+    for (const frame of frames) {
+      if (!Number.isFinite(frame.cents)) { previous = null; continue; }
+      const connected = previous && previous.takeId === frame.takeId && previous.end < frame.start
+        && connects((previous.start + previous.end) * rate / 2, previous.cents,
+          (frame.start + frame.end) * rate / 2, frame.cents);
+      ranges.push([connected ? previous.end : frame.start, frame.end]);
+      previous = frame;
+    }
+    return mergeRanges(ranges);
+  }
+
+  // Visit measured, on-note observations. Both statistics and the histogram
+  // use these exact signed errors and durations, including at note boundaries.
+  function eachPitchError(frames, ref, duration, visit) {
     if (!validReference(ref)) throw new Error("Missing or invalid take pitch reference");
     const end = Math.min(duration, ref.seconds);
-    let expected = 0, tracked = 0, errorSum = 0, within50 = 0, frameIndex = 0;
-    const errors = [];
+    let expected = 0, frameIndex = 0;
     for (const [from, to, pitches] of ref.notes) {
       const stop = Math.min(to, end);
       if (stop <= from) continue;
@@ -206,17 +227,55 @@
         const frame = frames[index];
         const weight = Math.min(stop, frame.end) - Math.max(from, frame.start);
         if (weight <= 0 || !Number.isFinite(frame.cents)) continue;
-        const error = Math.min(...pitches.map(pitch => Math.abs(octaveError(frame.cents - pitch * 100))));
-        tracked += weight;
-        errorSum += weight * error;
-        if (error <= 50) within50 += weight;
-        errors.push({error, weight});
+        let closest = octaveError(frame.cents - 100 * pitches[0]);
+        for (let p = 1; p < pitches.length; p++) {
+          const other = octaveError(frame.cents - 100 * pitches[p]);
+          if (Math.abs(other) < Math.abs(closest)) closest = other;
+        }
+        visit(closest, weight);
       }
     }
+    return expected;
+  }
+
+  function errorDistribution(frames, ref, duration = ref.seconds) {
+    const bins = new Map();
+    let samples = 0, seconds = 0;
+    eachPitchError(frames, ref, duration, (signed, weight) => {
+      const cents = Math.round(signed) || 0;
+      if (!bins.has(cents)) bins.set(cents, {cents, samples:0, seconds:0});
+      const bin = bins.get(cents);
+      bin.samples++;
+      bin.seconds += weight;
+      samples++;
+      seconds += weight;
+    });
+    return {bins:[...bins.values()].sort((a,b) => a.cents - b.cents), samples, seconds};
+  }
+
+  function scoreFrames(frames, ref, duration) {
+    const errors = [];
+    let measured = 0, errorSum = 0, within50 = 0;
+    const expected = eachPitchError(frames, ref, duration, (signed, weight) => {
+      const error = Math.abs(signed);
+      measured += weight;
+      errorSum += weight * error;
+      if (error <= 50) within50 += weight;
+      errors.push({error, weight});
+    });
+    const ranges = contourRanges(frames, ref.rate), end = Math.min(duration, ref.seconds);
+    let tracked = 0, range = 0;
+    for (const [from, to] of ref.notes) {
+      const stop = Math.min(to, end);
+      if (from >= stop) break;
+      while (range < ranges.length && ranges[range][1] <= from) range++;
+      for (let i = range; i < ranges.length && ranges[i][0] < stop; i++)
+        tracked += Math.min(stop, ranges[i][1]) - Math.max(from, ranges[i][0]);
+    }
     let median = null;
-    if (tracked > 0) {
+    if (measured > 0) {
       errors.sort((a, b) => a.error - b.error);
-      const half = tracked / 2, tolerance = Math.max(1, tracked) * 1e-10;
+      const half = measured / 2, tolerance = Math.max(1, measured) * 1e-10;
       let cumulative = 0;
       for (let index = 0; index < errors.length; index += 1) {
         cumulative += errors[index].weight;
@@ -230,10 +289,10 @@
     }
     return {version: ANALYSIS_VERSION, scoringVersion: SCORING_VERSION,
       coverage: expected > 0 ? clamp(tracked / expected, 0, 1) : 0,
-      meanAbsCents: tracked > 0 ? errorSum / tracked : null,
+      meanAbsCents: measured > 0 ? errorSum / measured : null,
       medianAbsCents: median,
       within50CentsSeconds: within50,
-      expectedSeconds: expected, trackedSeconds: tracked, ...restStats(frames, ref, end)};
+      expectedSeconds: expected, trackedSeconds: tracked, measuredSeconds: measured, ...restStats(frames, ref, end)};
   }
 
   function validScore(pitch) {
@@ -242,7 +301,8 @@
       && Number.isFinite(pitch.expectedSeconds) && pitch.expectedSeconds >= 0
       && Number.isFinite(pitch.trackedSeconds) && pitch.trackedSeconds >= 0
       && pitch.trackedSeconds <= pitch.expectedSeconds + 1e-6
-      && (pitch.trackedSeconds > 0
+      && (pitch.measuredSeconds === undefined || (Number.isFinite(pitch.measuredSeconds) && pitch.measuredSeconds >= 0))
+      && ((pitch.measuredSeconds ?? pitch.trackedSeconds) > 0
         ? Number.isFinite(pitch.meanAbsCents) && pitch.meanAbsCents >= 0
         : pitch.meanAbsCents === null)
       && Math.abs(pitch.coverage - (pitch.expectedSeconds > 0 ? pitch.trackedSeconds / pitch.expectedSeconds : 0)) < 1e-6;
@@ -250,7 +310,7 @@
 
   // Main-playbar geometry uses nominal score seconds, not pixels or the current
   // playback speed. Merge adjacent detector frames but retain source boundaries.
-  function reviewTimeline(review, duration) {
+  function reviewTimeline(review, duration, songSingingSeconds) {
     if (!review || !validReference(review.ref) || !Number.isFinite(duration) || duration <= 0) return null;
     const {start, rate, ref} = review;
     if (!Number.isFinite(start) || !Number.isFinite(review.end) || !Number.isFinite(rate) || rate <= 0) return null;
@@ -293,13 +353,16 @@
       const [from, to] = clip([s.from, s.to]);
       return {...s, from, to};
     }).filter(s => positive([s.from, s.to])).sort((a, b) => a.from - b.from);
-    const scope = clip([start + (ref.leadInSeconds || 0) * rate, end]);
-    const allExpected = intersect(merge(ref.notes.map(n => clip([start + n[0] * rate, start + n[1] * rate]))),
+    // A comp's audio may include a pickup before song zero. Its frames are
+    // relative to the audio, while its written notes are relative to the song.
+    const referenceStart = start - (review.origin || 0) * rate;
+    const scope = clip([Math.max(start, referenceStart + (ref.leadInSeconds || 0) * rate), end]);
+    const allExpected = intersect(merge(ref.notes.map(n => clip([referenceStart + n[0] * rate, referenceStart + n[1] * rate]))),
       positive(scope) ? [scope] : []);
     const recorded = merge(segments.map(s => [s.from, s.to]));
     const expected = intersect(allExpected, recorded);
-    const tracked = intersect(merge(review.frames.filter(f => Number.isFinite(f.cents))
-      .map(f => clip([start + f.start * rate, start + f.end * rate]))), expected);
+    const tracked = intersect(contourRanges(review.frames, rate)
+      .map(([a,b]) => clip([start + a * rate, start + b * rate])), expected);
     const missing = subtract(expected, tracked);
     // The transport is a phrase-level overview, not a second detector trace.
     // Union with rests and close breath-sized holes; never change grades/frames.
@@ -308,19 +371,20 @@
     const covered = subtract(positive(scope) ? [scope] : [], gaps);
     const seams = segments.slice(1).filter((s, i) => s.takeId !== segments[i].takeId).map(s => s.from);
     const seconds = ranges => ranges.reduce((sum, [a, b]) => sum + b - a, 0);
+    const written = (songSingingSeconds ?? ref.notes.reduce((sum,[a,b]) => sum + b - a, 0)) * rate;
     return {segments, expected, tracked, missing, scope, covered, gaps, seams, gapSeconds,
-      coverage: seconds(expected) ? seconds(tracked) / seconds(expected) : null};
+      coverage: written > 0 ? clamp(seconds(tracked) / written, 0, 1) : null};
   }
 
   function hasMedian(pitch) {
-    return validScore(pitch) && (pitch.trackedSeconds > 0
+    return validScore(pitch) && ((pitch.measuredSeconds ?? pitch.trackedSeconds) > 0
       ? Number.isFinite(pitch.medianAbsCents) && pitch.medianAbsCents >= 0
       : pitch.medianAbsCents === null);
   }
 
   function hasPitchBand(pitch) {
     return validScore(pitch) && Number.isFinite(pitch.within50CentsSeconds)
-      && pitch.within50CentsSeconds >= 0 && pitch.within50CentsSeconds <= pitch.trackedSeconds;
+      && pitch.within50CentsSeconds >= 0 && pitch.within50CentsSeconds <= (pitch.measuredSeconds ?? pitch.trackedSeconds) + TIME_EPSILON;
   }
 
   function analyse(pcm, sampleRate, ref, PitchDetector, {includeFrames = false} = {}) {
@@ -550,7 +614,8 @@
     if (column === "tracked") return score.expectedSeconds > 0 ? score.coverage : null;
     if (column === "mean") return score.meanAbsCents;
     if (column === "median") return hasMedian(score) ? score.medianAbsCents : null;
-    return hasPitchBand(score) && score.trackedSeconds > 0 ? score.within50CentsSeconds / score.trackedSeconds : null;
+    const measured = score?.measuredSeconds ?? score?.trackedSeconds;
+    return hasPitchBand(score) && measured > 0 ? score.within50CentsSeconds / measured : null;
   }
 
   function compareParts(a, b) {
@@ -651,7 +716,7 @@
 
   return {VERSION, ANALYSIS_VERSION, SCORING_VERSION, REST_POLICY_VERSION, TIME_EPSILON, nonzeroNotes, mergeRanges, subtractRanges, containsTime,
     restPolicyValid, trimReference, cleanRestFrames, playbackRestReference, restStats, restLabel,
-    octaveError, currentScore, BEST_COVERAGE_WINDOW, DOMINANCE_CENTS_MARGIN, DOMINANCE_COVERAGE_MARGIN,
+    octaveError, connects, errorDistribution, currentScore, BEST_COVERAGE_WINDOW, DOMINANCE_CENTS_MARGIN, DOMINANCE_COVERAGE_MARGIN,
     reference, validReference, validScore, hasMedian, hasPitchBand, scoreFrames, reviewTimeline, analyse, packContour, packLiveContour, readContour,
     stopNoiseCut, muteStopTail,
     samePassage, sameTimeline, rebaseTake, takeBounds, measureAddress, comparisonKey, SORT_COLUMNS, takeSort, nextTakeSort, compareParts, compareTakes, dominatedBy, bestIds, source, workerSource};

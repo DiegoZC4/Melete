@@ -6,9 +6,10 @@
       : Number.isFinite(take?.updatedAt) ? take.updatedAt : Number.isFinite(take?.createdAt) ? take.createdAt : null});
   const metricLabels = {tracked: "Tracked", mean: "Mean pitch error", median: "Median pitch error", within: "Within 50 cents"};
   function metricValues(score) {
+    const measured = score?.measuredSeconds ?? score?.trackedSeconds;
     return {tracked: score?.expectedSeconds > 0 ? score.coverage * 100 : null,
       mean: score?.meanAbsCents ?? null, median: score?.medianAbsCents ?? null,
-      within: score?.trackedSeconds > 0 ? score.within50CentsSeconds / score.trackedSeconds * 100 : null};
+      within: measured > 0 ? score.within50CentsSeconds / measured * 100 : null};
   }
   function metricDeltas(before, after) {
     const previous = metricValues(before), current = metricValues(after), changes = {};
@@ -121,6 +122,7 @@
       const vars = ["number", ...displayed.filter(id => id !== "octave")].map(id => `var(--take-${id}-width)`);
       view.dataset.hiddenFields = hidden;
       view.style.setProperty("--take-value-columns", vars.join(" "));
+      view.style.setProperty("--take-mean-left", "calc(" + vars.slice(0, vars.indexOf("var(--take-mean-width)")).join(" + ") + ")");
       view.style.setProperty("--take-value-width", "calc(" + vars.join(" + ") + ")");
       view.style.setProperty("--take-octave-slot", displayed.includes("octave") ? "var(--take-octave-width)" : "0px");
       view.style.setProperty("--take-table-width", "calc(var(--take-value-width) + var(--take-octave-slot) + var(--take-hear-width) + var(--take-actions-width))");
@@ -243,7 +245,71 @@
     root.addEventListener?.("blur", clear);
     return clear;
   }
-  const api = {dates, trackDates, showDates, formatDate, compactDates, fitTable, confirmDeletes, deletionRow,
+  const signedCents = value => value > 0 ? "+" + value : String(value);
+  function distributionChart(svg, bins) {
+    const node = (tag, attributes, label) => {
+      const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+      if (label !== undefined) element.textContent = label;
+      svg.append(element);
+      return element;
+    };
+    const low = Math.min(-1, bins[0].cents), high = Math.max(1, bins.at(-1).cents);
+    const peak = Math.max(...bins.map(b => b.samples)), width = 564 / (high - low + 1);
+    const x = cents => 44 + (cents - low + .5) * width;
+    const y = samples => 132 - 108 * samples / peak;
+    svg.replaceChildren();
+    node("line", {class:"axis", x1:44, x2:608, y1:132, y2:132});
+    node("line", {class:"axis", x1:x(0), x2:x(0), y1:22, y2:132, "stroke-dasharray":"3 3"});
+    node("text", {x:44,y:14}, peak + (peak === 1 ? " measurement" : " measurements"));
+    const count = high - low;
+    const step = [1,2,5,10,20,50,100,200,500].find(value => count / value <= 8);
+    for (let tick = Math.ceil(low / step) * step; tick <= high; tick += step)
+      node("text", {x:x(tick),y:149,"text-anchor":"middle"}, signedCents(tick));
+    node("text", {x:326,y:170,"text-anchor":"middle"}, "Flat (−)     ·     Error in cents     ·     Sharp (+)");
+    for (const {cents, samples} of bins) {
+      const bar = node("rect", {class:"bars", x:x(cents)-width/2, y:y(samples), width, height:132-y(samples)});
+      const tip = document.createElementNS(svg.namespaceURI, "title");
+      tip.textContent = signedCents(cents) + " ¢ · " + samples + (samples === 1 ? " measurement" : " measurements");
+      bar.append(tip);
+    }
+  }
+  async function openDistribution(label, load) {
+    const dialog = document.getElementById("takeDistributionDialog"), svg = dialog.querySelector("svg");
+    const details = dialog.querySelector("details"), status = dialog.querySelector(".distribution-status");
+    const token = String(Number(dialog.dataset.request || 0) + 1);
+    dialog.dataset.request = token;
+    dialog.querySelector(".distribution-take").textContent = label;
+    status.textContent = "Loading pitch measurements…";
+    svg.setAttribute("hidden", ""); details.hidden = true; details.open = false;
+    if (!dialog.open) dialog.showModal();
+    try {
+      const data = await load();
+      if (!dialog.open || dialog.dataset.request !== token) return;
+      if (!data?.frames || !data.ref) { status.textContent = "No saved pitch contour is available for this take."; return; }
+      const {bins, samples, seconds} = root.MeleteTakePitch.errorDistribution(data.frames, data.ref);
+      if (!samples) { status.textContent = "No pitch measurements overlap written notes in this take."; return; }
+      status.textContent = `${samples.toLocaleString()} on-note measurements · ${seconds.toFixed(2)} s measured · 1 cent per bucket`;
+      distributionChart(svg, bins); svg.removeAttribute("hidden");
+      const body = dialog.querySelector("tbody");
+      body.replaceChildren(...bins.map(bin => {
+        const row = document.createElement("tr");
+        for (const value of [signedCents(bin.cents), bin.samples, bin.seconds.toFixed(3)]) row.insertCell().textContent = value;
+        return row;
+      }));
+      details.hidden = false;
+    } catch (error) {
+      if (dialog.open && dialog.dataset.request === token) status.textContent = error.message || "Pitch measurements are unavailable.";
+    }
+  }
+  function distributionButton(row, label, load) {
+    const button = row.querySelector(".take-distribution");
+    button.hidden = !load;
+    button.title = "View one-cent intonation distribution for " + label;
+    button.setAttribute("aria-label", button.title);
+    button.onclick = load ? () => { void openDistribution(label, load); } : null;
+  }
+  const api = {dates, trackDates, showDates, formatDate, compactDates, fitTable, confirmDeletes, deletionRow, distributionButton,
     metricLabels, metricValues, metricDeltas, tablePreferences, visibleFields};
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.MeleteTakeControls = api;

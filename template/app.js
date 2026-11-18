@@ -9401,9 +9401,9 @@
       }});
   }
 
-  async function saveTakeAnalysis(take, result) {
+  async function saveTakeAnalysis(take, result, savedContour = null) {
     const {frames, ...metrics} = result;
-    const contour = window.MeleteTakePitch.packContour(frames, take);
+    const contour = savedContour || window.MeleteTakePitch.packContour(frames, take);
     const record = await takeStore.pitchScore(take.id, take.frames, take.pitchReference, metrics, contour,
       take.finalized ? null : take.updatedAt);
     if (record) { takeLibrary.set(record.id, record); announceTakeChange(); compPanel?.invalidate(); }
@@ -9444,7 +9444,7 @@
         });
       }
       if (job.cancelled) return;
-      await saveTakeAnalysis(take, result);
+      await saveTakeAnalysis(take, result, frames ? take.pitchContour : null);
     } catch (error) {
       if (!job.cancelled) takeScoreFailures.set(take.id, error.message);
     } finally {
@@ -9456,9 +9456,19 @@
     }
   }
 
+  const archivedTakeScores = new WeakMap();
   function wholeSongTakeScore(take) {
-    const ref = take.pitchReference, score = take.pitchScore;
+    const ref = take.pitchReference;
+    let score = take.pitchScore;
     if (!ref || !score) return score;
+    const pitch = window.MeleteTakePitch;
+    if (take.pitchContour && !pitch.currentScore(score) && (take.publication || window.MeleteStation.archived(take))) {
+      if (!archivedTakeScores.has(take)) {
+        const frames = pitch.readContour(take);
+        archivedTakeScores.set(take, frames ? pitch.scoreFrames(frames, ref, take.frames / take.sampleRate) : score);
+      }
+      score = archivedTakeScores.get(take);
+    }
     const full = compDescriptor(ref.part, ref.line ?? null)?.reference;
     if (!full) return score;
     const expected = full.notes.reduce((sum, n) => sum + n[1] - n[0], 0) * (full.rate / ref.rate);
@@ -9475,7 +9485,7 @@
       const median = window.MeleteTakePitch.hasMedian(pitch) && Number.isFinite(pitch.medianAbsCents)
         ? pitch.medianAbsCents.toFixed(1) : "\u2014";
       const within = measured && window.MeleteTakePitch.hasPitchBand(pitch)
-        ? (pitch.within50CentsSeconds / pitch.trackedSeconds * 100).toFixed(1) : "\u2014";
+        ? (pitch.within50CentsSeconds / (pitch.measuredSeconds ?? pitch.trackedSeconds) * 100).toFixed(1) : "\u2014";
       const summary = pitch.expectedSeconds === 0 ? "No sung notes" : measured
         ? `${tracked}% tracked; ${error} cents mean absolute error; ${median} cents median absolute error`
         : "0.0% tracked; no reliable pitch detected";
@@ -9938,7 +9948,9 @@
 
   function updateTakeTimeline() {
     if (takeTimelineReview === takeReview) return;
-    takeTimeline = window.MeleteTakePitch.reviewTimeline(takeReview, engine?.duration);
+    const source = takeLibrary.get(takeReview?.id);
+    takeTimeline = window.MeleteTakePitch.reviewTimeline(takeReview, engine?.duration,
+      source ? wholeSongTakeScore(source)?.expectedSeconds : undefined);
     takeTimelineReview = takeReview;
     elements.takeTimeline.replaceChildren();
     elements.takeTimeline.hidden = !takeTimeline;
@@ -10308,6 +10320,7 @@
           <span class="take-created"></span><span class="take-modified"></span>
           </button>
           <span class="take-warning" hidden>!</span>
+          <button class="take-distribution" type="button" hidden></button>
           <button class="take-octave" type="button">-</button>
           <span class="take-hear-cell"><button class="icon-button take-hear" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4V5ZM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"></path></svg></button></span>
           <span class="take-row-actions">
@@ -10354,6 +10367,9 @@
       indicator.title = warning;
       indicator.setAttribute("aria-label", warning);
       const pitch = takePitchLabel(take);
+      window.MeleteTakeControls.distributionButton(row, `Take ${take.number || "…"} · ${take.part}`,
+        take.pitchReference && (take.pitchContour || Number.isFinite(take.pitchScore?.meanAbsCents))
+          ? () => ({ref:take.pitchReference, frames:window.MeleteTakePitch.readContour(take)}) : null);
       const detail = row.querySelector(".take-detail");
       detail.querySelector(".take-tracked strong").textContent = pitch.tracked;
       detail.querySelector(".take-error strong").textContent = pitch.error;

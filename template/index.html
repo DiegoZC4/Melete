@@ -286,7 +286,7 @@
                     <div class="take-columns comp-columns" id="takeColumns">
                       <span><button type="button" data-take-sort="number">Take</button></span><span class="take-singer-heading"><button type="button" data-take-sort="singer">Singer</button></span><span><button type="button" data-take-sort="part">Part</button></span>
                       <span title="Tracked singing divided by all written singing in the song; rests excluded"><button type="button" data-take-sort="tracked">Tracked (%)</button></span>
-                      <span><button type="button" data-take-sort="mean">Mean (&cent;)</button></span>
+                      <span title="Sort by mean absolute error. Click a take’s mean to see its one-cent distribution."><button type="button" data-take-sort="mean">Mean (&cent;)</button></span>
                       <span title="Number of recorded passages used in this take"><button type="button" data-take-sort="segments">Segments</button></span>
                       <span><button type="button" data-take-sort="median">Median (&cent;)</button></span>
                       <span title="Percentage of tracked singing within 50 cents"><button type="button" data-take-sort="within">&le;50&cent; (%)</button></span>
@@ -311,6 +311,7 @@
                         <span class="take-created"></span><span class="take-modified"></span>
                       </button>
                       <button class="edit-take-singer" type="button" hidden></button>
+                      <button class="take-distribution" type="button" hidden></button>
                       <button class="take-octave" type="button">-</button>
                       <span class="take-hear-cell"><button class="icon-button take-hear" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4V5ZM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"></path></svg></button></span>
                       <span class="take-row-actions">
@@ -390,6 +391,16 @@
       <p id="vowelGuide">Sing a held vowel or word, then pin the example.</p>
     </aside>
 
+    <dialog id="takeDistributionDialog" class="comp-cloud-dialog" aria-labelledby="distributionTitle">
+      <form method="dialog"><strong id="distributionTitle">Intonation distribution</strong><button aria-label="Close intonation distribution">Close</button></form>
+      <p class="distribution-take"></p>
+      <p class="distribution-status" role="status"></p>
+      <svg class="distribution-chart" viewBox="0 0 640 175" role="img" aria-label="Pitch measurements per one-cent bucket, flat on the left and sharp on the right" hidden></svg>
+      <details hidden><summary>Exact one-cent counts</summary>
+        <p>Octave equivalents share 0 ¢. Measurements split at note changes. Unlisted buckets have zero measurements.</p>
+        <table><thead><tr><th scope="col">Error (¢)</th><th scope="col">Measurements</th><th scope="col">Measured time (s)</th></tr></thead><tbody></tbody></table>
+      </details>
+    </dialog>
     <dialog id="compCloudDialog" class="comp-cloud-dialog" aria-labelledby="compCloudTitle">
       <form method="dialog"><strong id="compCloudTitle">Google account</strong><button class="icon-button" aria-label="Close account settings"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"></path></svg></button></form>
       <div id="compGoogleButton"></div>

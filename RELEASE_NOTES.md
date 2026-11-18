@@ -137,6 +137,29 @@ regression now practices a low part first and checks that the higher part's
 note and live contour appear without interrupting the take. The corrected
 desktop and website release documented above includes this follow-up.
 
+### Take creation and intonation statistics
+
+- Clicking **+** creates a visible draft for the selected part, including when
+  a rehearsal singer is selected. It starts at the top with **0% tracked** and
+  dashes for pitch, segments and recording dates. A subsequent sung pass fills
+  the draft. The singer's recorded passages still appear in one combined comp.
+- **Tracked** measures how much written singing time is covered by the saved
+  pitch contour. The table counts the same short, continuous strokes as the
+  score view. Explicit silence, long dropouts and source changes break a stroke.
+  Rests and count-in contribute no time to the denominator.
+- Click a take's **Mean (¢)** value to see its signed one-cent histogram and an
+  exact table of measurement counts and durations. Negative values are flat.
+  Positive values are sharp. Mean, median and the 50-cent statistic use actual
+  on-note measurements. The histogram retains the scorer's octave equivalence.
+- Older local takes can be rescored from their stored contour. For an uploaded
+  take, opening its mean retrieves the pitch data and recalculates its table
+  metrics. An unopened upload can still show the summary saved at publication.
+
+The take-table browser checks cover Autumn and The Seed, named and unnamed
+drafts, and signed bucket counts. Cloud checks cover pitch-only requests and
+offline playback using a simulated authenticated server. Physical microphone
+capture and the live cloud service are outside these checks.
+
 ### Future releases
 
 Run the source and browser gates in CONTRIBUTING.md. Build the song collection

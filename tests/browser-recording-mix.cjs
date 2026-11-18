@@ -145,7 +145,6 @@ async function checkRecordingMix(page, frame, {output,label}) {
   },clone);
   const original=await seed(false);
   await frame.locator('#addTrack').click();
-  await frame.locator('#partChooserOptions button').first().click();
   await frame.waitForFunction(()=>(window.__qa||window.__probe).compState?.descriptor.slot);
   const clone=await seed(true);
   await frame.waitForFunction(()=>document.querySelectorAll('#compRows > .comp-row').length===2);

@@ -1,18 +1,13 @@
 /* Display-only reductions. Saved detector frames and scoring never change. */
 ((root, factory) => {
-  const api = factory();
+  const api = factory(typeof module === "object" && module.exports ? require("./take_pitch.js") : root.MeleteTakePitch);
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.MeleteTakeRender = api;
-})(globalThis, () => {
+})(globalThis, pitch => {
   "use strict";
+  const connects = pitch.connects;
   // Live and saved traces share one display rule. Detector window widths are
   // not silence boundaries: the browser can deliver voiced samples irregularly.
-  function connects(fromSeconds, fromCents, toSeconds, toCents) {
-    return Number.isFinite(fromSeconds) && Number.isFinite(toSeconds)
-      && Number.isFinite(fromCents) && Number.isFinite(toCents)
-      && Math.abs(toSeconds - fromSeconds) <= .25
-      && Math.abs(toCents - fromCents) <= 400;
-  }
   function frameRange(frames, from, to) {
     const lower = value => {
       let lo = 0, hi = frames.length;

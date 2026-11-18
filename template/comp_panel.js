@@ -104,16 +104,20 @@
         d={...base,slot:(base.slot || "practice")+":pass-"+n,layerNumber:n};
       }
     }
+    const slotIdentity = d => d.station ? JSON.stringify([d.slot, d.reference.part, d.reference.line, d.reference.rate]) : identity(d);
+    function selectedDescriptor(base) {
+      const slot = base && slots[slotIdentity(base)];
+      return writableDescriptor(slot ? {...base, slot} : base);
+    }
     function currentDescriptor() {
       const d = adapter.descriptor();
-      const named = d && station.descriptor(d);
-      return writableDescriptor(named || (d && slots[identity(d)] ? {...d,slot:slots[identity(d)]} : d));
+      return selectedDescriptor(d && (station.descriptor(d) || d));
     }
     function recordingPlan(spec) {
       const plan=stations.recordingPlan(spec,station.current());
       const assign=pass=>{
         if (!pass?.station) return pass;
-        const base=adapter.descriptor(), d=base && writableDescriptor(stations.descriptor(base,pass.station,pass.station.stage));
+        const base=adapter.descriptor(), d=base && selectedDescriptor(stations.descriptor(base,pass.station,pass.station.stage));
         return d ? {...pass,trackSlot:d.slot} : pass;
       };
       return plan.initial ? {...assign(plan),initial:assign(plan.initial)} : assign(plan);
@@ -224,12 +228,12 @@
       return row;
     }
     function cloudRecord(item) {
-      const review = cloud.loaded(cloud.itemId(item));
+      const id = cloud.itemId(item), review = cloud.loaded(id), score = cloud.score(id);
       const segments = review?.timelineSegments || item.segments;
       const numbers = item.segments?.map(s => s[2]).filter(Number.isFinite) || [];
       return {part:item.label, singer:item.name, number:numbers.length ? Math.min(...numbers) : null,
         ...reviewDates(item), segmentCount:segments?.length ?? null,
-        metrics:review?.pitchScore ? root.MeleteTakeControls.metricValues(review.pitchScore)
+        metrics:score ? root.MeleteTakeControls.metricValues(score)
           : {tracked:item.tracked, mean:item.mean, median:item.median, within:item.within ?? null}};
     }
     function cloudRow(item) {
@@ -261,6 +265,9 @@
         : adapter.trackLabelPaint(item.label)) || "var(--ink)");
       root.MeleteTakeControls.showDates(row,record);
       metrics(row,null,null,record.metrics);
+      if (!cloud.score(id) && Number.isFinite(record.metrics.tracked))
+        row.querySelector(".comp-tracked").parentElement.title = "Saved upload summary. Open the mean to recalculate Tracked from the contour.";
+      root.MeleteTakeControls.distributionButton(row, name, () => cloud.measurements(item));
       adapter.octaveControl(row.querySelector(".take-octave"),id,name);
       const hear = row.querySelector(".take-hear");
       hear.setAttribute("aria-pressed",String(audible));
@@ -314,12 +321,12 @@
       row.classList.toggle("is-armed", isArmed);
       row.classList.toggle("is-recording", isArmed && recording);
       review.setAttribute("aria-pressed", String(selected));
-      review.setAttribute("aria-label", `${selected ? "Deselect" : "Review"} ${name}`);
+      review.setAttribute("aria-label", empty ? `New take for ${name}, 0% tracked` : `${selected ? "Deselect" : "Review"} ${name}`);
       review.setAttribute("aria-busy", String(loading));
       review.disabled = !selected && !loading && (busy || recording || empty);
       const ids = [...new Set(state.segments.map(s => s.takeId))];
       const numbers = ids.map(takeId => sources.get(takeId)?.number).filter(Boolean).sort((a, b) => a - b);
-      row.querySelector(".take-number").textContent = preparingTake ? "New" : String(state.firstTakeNumber ?? numbers[0] ?? "\u2014");
+      row.querySelector(".take-number").textContent = empty && state.track ? "New" : String(state.firstTakeNumber ?? numbers[0] ?? "\u2014");
       const singer = row.querySelector(".take-singer");
       singer.textContent = performer?.name || "\u2014";
       singer.title = performer ? [performer.name, performer.voice].filter(Boolean).join(", ") : "";
@@ -330,17 +337,21 @@
       credit.disabled=busy || recording;
       credit.title=`${performer?.name || ""} · ${label(state)}. Double-click to change singer.`;
       credit.setAttribute("aria-label",`Change singer for ${name}`);
-      row.querySelector(".take-segments").textContent = String(statsFor(track).segmentCount);
-      root.MeleteTakeControls.showDates(row, root.MeleteTakeControls.trackDates(state, sources));
+      row.querySelector(".take-segments").textContent = empty ? "\u2014" : String(statsFor(track).segmentCount);
+      root.MeleteTakeControls.showDates(row, empty ? null : root.MeleteTakeControls.trackDates(state, sources));
       let summary = `${state.descriptor.label}: ${isArmed ? "new recordings replace the phrases they sing" : "hold this part in See to practise it"}.`;
       try {
         const s = statsFor(track);
         metrics(row, s, metricChanges.get(state.key));
+        if (empty) row.querySelector(".comp-tracked").textContent = "0%";
         review.dataset.completion = String(s.completion);
         if (!empty) {
           summary += ` ${(s.completion * 100).toFixed(1)}% of written singing filled from ${numbers.length === 1 ? `take ${numbers[0]}` : `takes ${numbers.join(", ")}`}. ${pitch.restLabel(s)}`;
         }
       } catch (e) { metrics(row, null); summary = e.message; }
+      const takeLabel = [state.firstTakeNumber ?? numbers[0], performer?.name, label(state)].filter(v => v != null).join(" · ");
+      root.MeleteTakeControls.distributionButton(row, "Take " + takeLabel,
+        empty ? null : () => ({ref:state.descriptor.reference, frames:track.frames}));
       const version=state.publication?.kind;
       const origin=version==="local-variant" ? "Local edit of a submitted recording." : version==="archived-sources" ? "Archived sources." : "Published recording.";
       review.title = `${locked(track) ? origin+" Read-only. " : ""}${summary} Click to toggle playback and contour.`;
@@ -420,11 +431,10 @@
         if (container.children[index] !== row) container.insertBefore(row, container.children[index] || null);
         if (key) fill(row, viewFor(key));
       });
-      const add = byId("addTrack"), waiting = armed && !shown.includes(armed) ? tracks.get(armed) : null;
-      add.disabled = busy || recording || Boolean(station.current());
-      add.title = waiting ? `Add a track for ${waiting.state.descriptor.label}, the part selected in See. Recording also adds the first track.`
-        : "Add a track for any part, including another layer of the same part";
-      add.setAttribute("aria-label", waiting ? `Add ${label(waiting.state)} track` : "Add a track for another part");
+      const add = byId("addTrack"), current = armed && tracks.get(armed);
+      add.disabled = busy || recording;
+      add.title = current ? `New take for ${trackName(current.state)}` : "Choose a part for a new take";
+      add.setAttribute("aria-label", add.title);
       for (const [direction, entries, shortcut] of [["undo", history.past, "Cmd/Ctrl+Z"], ["redo", history.future, "Cmd/Ctrl+Shift+Z"]]) {
         const button = byId(`${direction}Comp`), edit = entries.at(-1);
         const name = direction === "undo" ? "Undo" : "Redo";
@@ -748,51 +758,46 @@
       } catch (e) { error(e); }
       finally { busy=false; await refresh({force:true}); }
     }
-    // Adding a track marks the current part's comp as a track. When that part
-    // already has one, the singer first chooses another part to practise.
     async function addTrack() {
       if (busy || recording) return;
-      const reveal = key => {
-        revealAddedTrack = key;
-        // A newly added local take must be visible even from the Cloud filter.
+      if (!adapter.descriptor()) { adapter.choosePart([], addTrack); return; }
+      busy = true; render();
+      try {
+        await refresh();
+        const selected = adapter.descriptor(), base = station.descriptor(selected) || selected;
+        let descriptor = selectedDescriptor(base);
+        const current = tracks.get(model.key(descriptor))?.state;
+        // A named singer keeps one unfinished pass and one combined performance.
+        if (!(base.station && current?.track && !current.segments.length)) {
+          if (current?.track || current?.segments.length) {
+            const id = crypto.randomUUID();
+            const siblings = [...tracks.values()].filter(t => identity(t.state.descriptor) === identity(base));
+            descriptor = {...base, slot:base.station ? base.slot + ":" + id : id,
+              layerNumber:1 + Math.max(1, ...siblings.map(t => t.state.descriptor.layerNumber || 1))};
+          }
+          const key = model.key(descriptor);
+          const previous = tracks.get(key)?.state;
+          const stored = await adapter.store.saveComp({...(previous || model.empty(descriptor)), track:true});
+          saved = [...saved.filter(s => s.key !== key), stored];
+        }
+        slots[slotIdentity(base)] = descriptor.slot || null;
+        try { localStorage.setItem(slotKey, JSON.stringify(slots)); } catch {}
+        revealAddedTrack = model.key(descriptor);
+        autoReview = null;
         if (sourceFilter.value === "cloud") {
           sourceFilter.value = "all";
           sourceFilter.dispatchEvent(new Event("change"));
         }
-      };
-      const flag = async key => {
-        if (tracks.has(key)) { await save(key, s => ({...s, track: true})); reveal(key); }
-      };
-      busy = true; render();
-      try {
-        if (armed && !shown.includes(armed)) { await flag(armed); return; }
-        for (const key of shown) if (!tracks.get(key).state.track && !tracks.get(key).state.segments.length) await flag(key);
-        adapter.choosePart([], async () => {
-          await refresh();
-          if (!armed || busy || recording) return;
-          try {
-            if (shown.includes(armed) && tracks.get(armed).state.segments.length) {
-              const d = adapter.descriptor(), slot = crypto.randomUUID();
-              const siblings = [...tracks.values()].filter(t => identity(t.state.descriptor) === identity(d));
-              const descriptor = {...d, slot, layerNumber:1+Math.max(1,...siblings.map(t=>t.state.descriptor.layerNumber||1))};
-              const state = await adapter.store.saveComp({...model.empty(descriptor), track:true});
-              saved = [...saved, state]; slots[identity(d)] = slot;
-              reveal(state.key);
-              try { localStorage.setItem(slotKey, JSON.stringify(slots)); } catch {}
-              signature = "";
-            } else await flag(armed);
-          } catch (e) { error(e); }
-          await refresh();
-        });
+        signature = "";
       } catch (e) { error(e); }
-      finally { busy = false; await refresh(); }
+      finally { busy = false; await refresh({force:true}); }
     }
     function visualReview(track) {
       const {state, sources} = track, rate = state.descriptor.reference.rate;
       const origin = Math.min(0, state.segments[0]?.from || 0);
       return {id: layerId(state), singerId:stations.playbackSingerId(state,sources), label: `${trackName(state)} track`, ref: state.descriptor.reference,
         frames: track.frames.map(f => ({...f, start:f.start - origin, end:f.end - origin})),
-        track: state.descriptor.reference.part, rate, start: origin * rate,
+        track: state.descriptor.reference.part, rate, origin, start: origin * rate,
         end: state.descriptor.reference.seconds * rate, latency: 0,
         ranges: state.segments.map(s => [s.from * rate, s.to * rate]),
         completion: statsFor(track).completion,

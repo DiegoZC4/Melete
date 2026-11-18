@@ -7,6 +7,40 @@ const reference = overrides => ({version: 1, fingerprint: 'score-one', part: 0, 
   start: 0, end: 4, rate: 1, seconds: 4, latency: 0, notes: [[0, 4, [69]]], ...overrides});
 const frame = (start, end, cents) => ({start, end, cents});
 
+test('Tracked follows visible singing on written notes, with breaks at silence, splices, jumps and long gaps', () => {
+  const ref = reference({seconds:2, notes:[[.1,.5,[69]],[.7,1.5,[70]]]});
+  const data = [frame(0,.02,6900), frame(.18,.20,6910), frame(.30,.32,6900),
+    frame(.34,.35,null), frame(.4,.42,6920), frame(.56,.58,6910),
+    {...frame(.72,.74,7000),takeId:'next'}, {...frame(.9,.92,7600),takeId:'next'},
+    {...frame(1.26,1.28,7600),takeId:'next'}];
+  const s = pitch.scoreFrames(data,ref,2);
+  assert.ok(Math.abs(s.expectedSeconds-1.2)<1e-10);
+  assert.ok(Math.abs(s.trackedSeconds-(.22+.10+.02+.02+.02))<1e-10);
+  assert.ok(Math.abs(s.measuredSeconds-.12)<1e-10);
+  assert.equal(s.coverage,s.trackedSeconds/s.expectedSeconds);
+  assert.ok(Math.abs(pitch.errorDistribution(data,ref).seconds-s.measuredSeconds)<1e-10);
+  const pair=[frame(.1,.12,6900),frame(.29,.31,6900)];
+  assert.ok(pitch.scoreFrames(pair,ref,2).trackedSeconds>.2);
+  assert.ok(pitch.scoreFrames(pair,{...ref,rate:2},2).trackedSeconds<.05);
+});
+
+test('one-cent signed distribution counts exact note overlaps, including chords, octaves, outliers and empty takes', () => {
+  const ref = reference({notes:[[0,.5,[69,72]],[.5,.75,[70]],[1,1.5,[69]]]});
+  const data=[frame(0,.25,7198.6),frame(.25,.375,8101.6),frame(.375,.625,6900),
+    frame(.75,1,7450),frame(1,1.25,7499.1),frame(1.25,1.5,null)];
+  const d=pitch.errorDistribution(data,ref),s=pitch.scoreFrames(data,ref,4);
+  assert.deepEqual(d.bins.map(b=>[b.cents,b.samples,b.seconds]),[
+    [-100,1,.125],[-1,1,.25],[0,1,.125],[2,1,.125],[599,1,.25]]);
+  assert.equal(d.samples,5);
+  assert.equal(d.seconds,s.measuredSeconds);
+  assert.deepEqual(pitch.errorDistribution([],ref),{bins:[],samples:0,seconds:0});
+  const bridgeOnly=pitch.scoreFrames([frame(0,.01,6900),frame(.2,.21,6900)],
+    reference({notes:[[.05,.15,[69]]]}),1);
+  assert.ok(bridgeOnly.coverage>.9999);
+  assert.equal(bridgeOnly.meanAbsCents,null);
+  assert.equal(pitch.currentScore(bridgeOnly),true);
+});
+
 test('cloud display metrics sort alongside local analysis without percent/unit mismatches', () => {
   const local = {id:'local',pitchScore:pitch.scoreFrames([frame(0,2,6920),frame(2,4,null)],reference(),4)};
   const cloud = {id:'cloud',metrics:{tracked:80,mean:15,median:12,within:90}};
@@ -76,7 +110,16 @@ test('comp playbar preserves source boundaries and unfilled gaps without false t
   assert.deepEqual(result.tracked, [[0, 1], [2, 4]]);
   assert.deepEqual(result.seams, [2, 3]);
   assert.equal(result.segments.length, 3, 'adjacent different sources stay distinct');
-  assert.equal(result.coverage, 1, 'unfilled singing is completion, not tracking');
+  assert.equal(result.coverage, .75, 'written singing outside the recorded segments remains in the denominator');
+});
+
+test('a comp with audio before song zero has the same Tracked percentage in its row and transport', () => {
+  const ref=reference({notes:[[1,2,[69]]]});
+  const frames=[frame(1,1.4,6900),frame(1.47,1.48,6901),frame(1.5,1.6,null)];
+  const origin=-.4;
+  const review={ref,origin,start:origin,rate:1,end:4,timelineSegments:[{from:0,to:4,takeId:'a'}],
+    frames:frames.map(f=>({...f,start:f.start-origin,end:f.end-origin}))};
+  assert.ok(Math.abs(pitch.reviewTimeline(review,4).coverage-pitch.scoreFrames(frames,ref,4).coverage)<1e-9);
 });
 
 test('playbar clips recovery audio and song edges and leaves untracked singing explicit', () => {
@@ -120,7 +163,7 @@ test('overview includes genuinely unrecorded singing and marks only changes of s
   assert.deepEqual(result.gaps,[[2,4.5]]);
   assert.deepEqual(result.covered,[[0,2],[4.5,8]]);
   assert.deepEqual(result.seams,[4.5]);
-  assert.equal(result.coverage,1,'tracking remains separate from unfilled song territory');
+  assert.equal(result.coverage,5.5/8,'coverage includes every written note in the song');
 });
 
 test('rests neither create nor extend a missing-singing gap', () => {

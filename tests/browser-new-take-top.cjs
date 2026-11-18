@@ -16,13 +16,14 @@ const {choosePart}=require('./browser-sing.cjs');
       const origin='http://127.0.0.1:18873';
       await context.route('**/*',route=>route.request().url().startsWith(origin+'/qa')
         ?route.fulfill({contentType:'text/html',body:html}):route.abort());
+      await context.route('**/station-roster.json',route=>route.fulfill({json:{singers:[{name:'Test Singer',voice:'Alto'}]}}));
       await expandSettingsFixture(context);
       await context.addInitScript(probe=>{
         if(window.top!==window)return;
         const original=Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype,'srcdoc');
         Object.defineProperty(HTMLIFrameElement.prototype,'srcdoc',{...original,set(html){
           const marker='engine = new GuideEngine(sequence);';
-          original.set.call(this,html.replace(marker,()=>marker+'window.__qa={engine,'+probe+'};'));
+          original.set.call(this,html.replace(marker,()=>marker+'window.__qa={engine,plan:s=>compPanel.recordingPlan(s),'+probe+'};'));
         }});
       },recordingProbe);
       const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));page.setDefaultTimeout(12000);
@@ -47,50 +48,87 @@ const {choosePart}=require('./browser-sing.cjs');
         const offset=await frame.locator('.take-review').evaluate(el=>(el.scrollTop=el.scrollHeight,el.scrollTop));
         assert.ok(offset>0,'fixture must require scrolling');
       };
-      const checkNew=async()=>{
-        await frame.waitForFunction(()=>{
+      const checkNew=async(previous=null)=>{
+        await frame.waitForFunction(previous=>{
           const row=document.querySelector('#compRows > .take-row');
-          return row?.classList.contains('is-armed')&&row.classList.contains('is-new')&&row.checkVisibility();
-        });
+          return row?.classList.contains('is-armed') && row.dataset.compKey!==previous && row.classList.contains('is-new') && row.checkVisibility();
+        },previous);
         const pos=await frame.locator('#compRows > .take-row').first().evaluate(row=>{
           const table=row.closest('.take-review'),box=row.getBoundingClientRect(),pane=table.getBoundingClientRect();
           return {key:row.dataset.compKey,label:row.querySelector('.take-number').textContent,
+            values:['.comp-tracked','.comp-mean','.comp-median','.comp-within','.take-segments','.take-created','.take-modified'].map(s=>row.querySelector(s).textContent),
             scroll:table.scrollTop,visible:box.top>=pane.top&&box.bottom<=pane.bottom};
         });
         assert.equal(pos.label,'New');assert.equal(pos.scroll,0);assert.ok(pos.visible);
+        assert.deepEqual(pos.values,['0%','—','—','—','—','—','—']);
+        assert.equal(await frame.locator('#partChooser').isVisible(),false);
+        assert.ok(await frame.evaluate(async key=>(await __qa.takeStore.comps(__qa.takeSong)).some(s=>s.key===key && s.track && !s.segments.length),pos.key));
         assert.deepEqual(await frame.locator('#compRows > [data-take-id]').evaluateAll(rows=>rows.map(r=>r.dataset.takeId)),oldOrder);
         return pos.key;
       };
       await bottom();await frame.locator('#addTrack').click();const first=await checkNew();
+      await frame.locator('#addTrack').click();await checkNew(first);
       await bottom();await frame.evaluate(()=>__qa.refreshComp());
       assert.ok(await frame.locator('.take-review').evaluate(el=>el.scrollTop)>0,'ordinary refresh does not hijack scroll');
       await frame.locator('#takeFields').click();await frame.locator('#takeSourceFilter').selectOption('cloud');await frame.locator('#takeFields').click();
-      await frame.locator('#addTrack').click();await frame.locator('#partChooserOptions button').nth(1).click();
+      await choosePart(frame,1);
+      await frame.locator('#addTrack').click();
       const second=await checkNew();assert.notEqual(first,second);
       assert.equal(await frame.locator('#takeSourceFilter').inputValue(),'all','new local take is visible from Cloud');
       // Give this part a synthetic recorded passage so + follows the same-part layer path.
-      await frame.evaluate(async()=>{
+      const recordPass=()=>frame.evaluate(async()=>{
         const q=__qa,d=q.compDescriptor,ref={...d.reference,latency:0};
         const id=crypto.randomUUID(),sr=8000,n=Math.ceil(ref.seconds*sr);
         const take=await q.takeStore.append({id,song:q.takeSong,sampleRate:sr,createdAt:Date.now(),
           start:ref.start,end:ref.end,rate:ref.rate,part:d.label,replaces:true,pitchReference:ref,
-          trackSlot:q.compState.descriptor.slot,peak:.1},0,
+          ...q.plan({trackSlot:q.compState.descriptor.slot}),peak:.1},0,
           Int16Array.from({length:n},(_,i)=>2000*Math.sin(i*.2)),{finalized:true,complete:true});
         const frames=Array.from({length:Math.ceil(n/80)},(_,i)=>{
           const start=i*80/sr,end=Math.min((i+1)*80,n)/sr,note=ref.notes.find(n=>n[0]<=start&&n[1]>start);
-          return {start,end,cents:note?note[2][0]*100+15:null};
+          return {start,end,cents:note?note[2][0]*100+(i%2 ? 15 : -7):null};
         });
         await q.takeStore.pitchScore(id,n,ref,MeleteTakePitch.scoreFrames(frames,ref,ref.seconds),MeleteTakePitch.packContour(frames,take));
         await q.reloadTakes();await q.refreshComp();
       });
+      await recordPass();
       await frame.waitForFunction(()=>__qa.compState.segments.length>0);
-      await bottom();await frame.locator('#addTrack').click();await frame.locator('#partChooserOptions button').nth(1).click();
+      await frame.locator('#takeFields').click();await frame.locator('#allTakeFields').click();await frame.locator('#takeFields').click();
+      const scored=frame.locator('#compRows .comp-row').filter({has:frame.locator('.take-distribution:not([hidden])')}).first();
+      const hit=await scored.evaluate(row=>{
+        const cell=row.querySelector('.comp-mean').getBoundingClientRect(),button=row.querySelector('.take-distribution').getBoundingClientRect();
+        return {cell:[cell.left,cell.right],button:[button.left,button.right],width:cell.width};
+      });
+      assert.ok(hit.width>0 && hit.button[0]<=hit.cell[0]+1 && hit.button[1]>=hit.cell[1]-1,JSON.stringify(hit));
+      const selected=await scored.locator('.comp-review').getAttribute('aria-pressed');
+      await scored.locator('.take-distribution').click();
+      const dialog=frame.locator('#takeDistributionDialog');
+      await dialog.locator('details:not([hidden])').waitFor({state:'attached'});
+      const bins=await dialog.locator('tbody tr').evaluateAll(rows=>rows.map(r=>[...r.cells].map(c=>c.textContent)));
+      assert.ok(bins.some(([c,n])=>c==='-7' && Number(n)>0) && bins.some(([c,n])=>c==='+15' && Number(n)>0));
+      assert.equal(await dialog.locator('.distribution-chart rect').count(),bins.length);
+      await dialog.getByRole('button',{name:'Close intonation distribution'}).click();
+      assert.equal(await scored.locator('.comp-review').getAttribute('aria-pressed'),selected);
+      await bottom();await frame.locator('#addTrack').click();
       const third=await checkNew();assert.notEqual(third,second);
       assert.ok(await frame.evaluate(()=>Boolean(__qa.compState.descriptor.slot)));
       assert.ok(await frame.evaluate(async ids=>(await __qa.takeStore.list(__qa.takeSong)).filter(t=>ids.includes(t.id)).length===ids.length,existing));
+      await frame.locator('#stationSinger').fill('Test Singer');
+      await frame.locator('#stationSinger').press('Enter');
+      if(await frame.locator('#partChooser').isVisible())await frame.locator('#partChooserOptions button').first().click();
+      await frame.waitForFunction(()=>__qa.compState?.descriptor.station?.name==='Test Singer');
+      await frame.locator('#addTrack').click();const named=await checkNew();
+      await recordPass();
+      const namedRows=frame.locator('#compRows .comp-row').filter({has:frame.locator('.take-singer',{hasText:'Test Singer'})});
+      await frame.waitForFunction(()=>[...document.querySelectorAll('#compRows .comp-row')].some(r=>r.querySelector('.take-singer').textContent==='Test Singer' && r.querySelector('.comp-mean').textContent!=='—'));
+      await frame.locator('#addTrack').click();await checkNew();
+      assert.equal(await namedRows.count(),2,'a new named pass is visible beside the existing performance');
+      await recordPass();
+      await frame.waitForFunction(()=>[...document.querySelectorAll('#compRows .comp-row')].filter(r=>r.querySelector('.take-singer').textContent==='Test Singer').length===1);
+      assert.ok(named);
       assert.deepEqual(errors,[]);
       await page.screenshot({path:path.join(output,song+'-new-take.png')});
       reports.push({song,firstTrack:true,anotherPart:true,samePartLayer:true,newRowFirstAndVisible:true,
+        emptyMetrics:true,namedPassJoinsSingerComp:true,signedHistogram:true,
         scrollReturnsToTop:true,existingOrderPreserved:true,cloudFilterRevealsNewLocalTake:true,pageErrors:errors.length});
     } finally {await context.close();}
   }}finally{await browser.close();}

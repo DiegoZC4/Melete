@@ -12,14 +12,15 @@ test('saved display joins delivery jitter but never an explicit unvoiced interva
   assert.equal(result.edges,2);assert.equal(JSON.stringify(frames),before,'scores keep all exact gaps');
 });
 
-test('stopping and restoring irregular live observations preserves display continuity without filling scoring gaps',()=>{
+test('restored contour strokes count toward coverage while cents use measured windows only',()=>{
   const frames=Array.from({length:30},(_,i)=>({start:i*.06,end:i*.06+.02,cents:6000+10*Math.sin(i/3)}));
   const ref={version:1,fingerprint:'jitter',part:0,line:null,start:0,end:8,rate:1,seconds:2,latency:0,notes:[[0,2,[60]]]};
   const take={sampleRate:48000,frames:96000,pitchReference:ref};
   const restored=P.readContour({...take,pitchContour:P.packLiveContour(frames,take)});
   const before=JSON.stringify(restored),score=P.scoreFrames(restored,ref,2);
   assert.equal(R.tracePaths(restored,0,restored.length,point,()=> 'green').edges,29);
-  assert.ok(Math.abs(score.trackedSeconds-.6)<1e-8,'display connections are not extra tracked singing');
+  assert.ok(Math.abs(score.measuredSeconds-.6)<1e-8,'only the original observations contribute to cents');
+  assert.ok(Math.abs(score.trackedSeconds-1.76)<1e-8,'written time under the plotted stroke counts as tracked');
   assert.equal(JSON.stringify(restored),before);
 });
 

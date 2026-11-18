@@ -316,7 +316,8 @@
     const groups = new Map();
     for (const track of tracks.values()) {
       const singer = singerFor(track);
-      const group = singer?.id ? JSON.stringify([track.state.song, singer.id, track.state.descriptor.reference.rate]) : track.state.key;
+      const draft = track.state.track && !track.state.segments.length;
+      const group = singer?.id && !draft ? JSON.stringify([track.state.song, singer.id, track.state.descriptor.reference.rate]) : track.state.key;
       if (!groups.has(group)) groups.set(group, []);
       groups.get(group).push(track);
     }

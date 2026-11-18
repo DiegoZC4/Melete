@@ -24,7 +24,9 @@ async function checkReviewCache(browser,html,{baseline=false,delayMs=0}={}) {
       const pcm = Int16Array.from({length:Math.ceil(seconds*rate)},(_,i)=>
         Math.round(3800*Math.sin(2*Math.PI*(165+revision*30)*i/rate)));
       const audio = Buffer.from(wavBytes(pcm,rate));
-      const pitches = Buffer.from(new Float32Array([0,.1,6000,.1,.2,6100]).buffer);
+      const [first, last, targets] = ref.notes[0], step = Math.min(.1,(last-first)/3);
+      const pitches = Buffer.from(new Float32Array([first,first+step,targets[0]*100-3,
+        first+step,first+2*step,targets[0]*100+2]).buffer);
       const m = {song,part:ref.part,line:ref.line,rate:ref.rate,fingerprint:ref.fingerprint,
         origin:0,seconds:ref.seconds,seams:[[0,seconds,1]],audio:media(audio),
         pitches:{chunks:[hash(pitches)],bytes:pitches.length}};
@@ -114,6 +116,20 @@ async function checkReviewCache(browser,html,{baseline=false,delayMs=0}={}) {
   const saved=()=>page.waitForFunction(()=>document.querySelector('[data-cloud-id="submitted:reviewer:selected"] .comp-review')?.title.includes('Saved on this device'));
   try {
     await openPlayer();
+    if (!baseline) {
+      await page.locator('#takeFields').click();await page.locator('#allTakeFields').click();await page.locator('#takeFields').click();
+      const mean = page.locator('[data-cloud-id="submitted:reviewer:selected"] .take-distribution');
+      await mean.click();
+      const dialog = page.locator('#takeDistributionDialog');
+      await dialog.locator('details:not([hidden])').waitFor({state:'attached'});
+      assert.deepEqual(await dialog.locator('tbody tr td:first-child').allTextContents(),['-3','+2']);
+      assert.equal(transferred,24,'the histogram downloads only two pitch triples and no audio');
+      assert.equal(await page.evaluate(()=>Boolean(window.cacheQAResult)),false);
+      await dialog.getByRole('button',{name:'Close intonation distribution'}).click();
+      await mean.click();await dialog.locator('details:not([hidden])').waitFor({state:'attached'});
+      assert.equal(transferred,24,'reopening the chart reuses its measured contour');
+      await dialog.getByRole('button',{name:'Close intonation distribution'}).click();
+    }
     const cold=await listen();
     assert.ok(cold.requests>=7); assert.ok(cold.bytes>0);
     if (baseline) return {cold,peak};

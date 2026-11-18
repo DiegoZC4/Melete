@@ -417,7 +417,9 @@
       return columnOn;
     }
     function advance(firstSlot) {
-      if (!singer || stage !== "start" || firstSlot !== slotFor(singer.id, stage)) return false;
+      if (!singer || stage !== "start") return false;
+      const base = slotFor(singer.id, stage);
+      if (firstSlot !== base && !firstSlot?.startsWith(base + ":")) return false;
       stage = "scratchpad";
       remember(); sync();
       return true;

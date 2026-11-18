@@ -63,7 +63,7 @@
     let preferReview=false, listEpoch=0, consentOwner=null, pendingLibrary=false;
     let connection = 0;
     const uploaded = new Set();
-    const prepared = new Map(), preparing = new Map();
+    const prepared = new Map(), preparing = new Map(), contours = new Map();
     const identities = typeof BroadcastChannel === "function" ? new BroadcastChannel("melete-cloud-identity") : null;
     const itemId = item => item.rehearsalDate ? `rehearsal:${item.rehearsalDate}:${item.id}`
       : item.id ? `submitted:${item.owner}:${item.id}` : `cloud:${item.owner}:${item.key}:${item.revision}`;
@@ -82,7 +82,7 @@
     function clearReviewedAudio(){
       if(/^(submitted|cloud|rehearsal):/.test(adapter.selected?.() || ""))adapter.clear();
       for (const item of entries()) adapter.mute?.(itemId(item));
-      prepared.clear(); preparing.clear();
+      prepared.clear(); preparing.clear(); contours.clear();
       identityEpoch++; liveListing = false;
     }
     function forgetSession() {
@@ -417,7 +417,7 @@
       for (const item of entries()) if (versions.get(itemId(item)) !== itemVersion(item)) {
         const id = itemId(item);
         if (adapter.selected?.() === id) adapter.clear();
-        adapter.mute?.(id); prepared.delete(id); preparing.delete(id);
+        adapter.mute?.(id); prepared.delete(id); preparing.delete(id); contours.delete(id);
         if (liveListing || versions.has(id)) void removeCopy(item);
       }
       catalogTime = observed; listing = items; liveListing = true; renderListing();
@@ -432,11 +432,12 @@
       await request("withdraw", {method:"POST", body:{id:item.id}});
       listing = listing.filter(i => itemId(i) !== itemId(item));
       if (adapter.selected?.() === itemId(item)) adapter.clear();
-      adapter.mute?.(itemId(item)); prepared.delete(itemId(item)); preparing.delete(itemId(item));
+      adapter.mute?.(itemId(item)); prepared.delete(itemId(item)); preparing.delete(itemId(item)); contours.delete(itemId(item));
       await removeCopy(item);
       uploaded.clear(); forgetReceipt(item.id,item.owner); adapter.submitted?.(); await loadListing();
     }
-    function prepare(item, downloadOnly = false) {
+    const scoreFramesFor = review => review.frames.map(f => ({...f, start:f.start + review.origin, end:f.end + review.origin}));
+    function prepare(item, downloadOnly = false, pitchOnly = false) {
       const id = itemId(item), version = itemVersion(item), epoch = identityEpoch, observed = catalogTime;
       const current = () => epoch === identityEpoch && matches(entries(),id,version);
       const canFetch = () => current() && session?.user && liveListing && matches(listing,id,version);
@@ -445,6 +446,7 @@
       };
       check();
       if (!downloadOnly && prepared.has(id)) return Promise.resolve({...prepared.get(id)});
+      if (pitchOnly && contours.has(id)) return Promise.resolve(contours.get(id));
       if (!downloadOnly && preparing.has(id)) return preparing.get(id);
       const job = (async () => {
         try {
@@ -453,12 +455,25 @@
           check();
           if (!media && !canFetch()) throw Error("Sign in and open this recording once to save it on this device.");
           const source = {media};
-          const review = await load(item, downloadOnly, check, source);
+          const review = await load(item, downloadOnly, check, source, pitchOnly);
           check();
           if (review) {
-            const frames = review.frames.map(frame => ({...frame,
-              start:frame.start + review.origin, end:frame.end + review.origin}));
-            review.pitchScore = root.MeleteTakePitch.scoreFrames(frames, review.ref, review.ref.seconds);
+            // Published contours store source boundaries in the seam list.
+            // Restore the source before drawing or bridging successive frames.
+            const seams = review.timelineSegments || [];
+            let seam = 0;
+            for (const f of review.frames) {
+              const time = ((f.start + f.end) / 2 + review.origin) * review.ref.rate;
+              while (seam < seams.length && seams[seam].to <= time) seam++;
+              if (seams[seam]?.from <= time) f.takeId ??= seams[seam].takeId;
+            }
+            review.pitchScore = root.MeleteTakePitch.scoreFrames(scoreFramesFor(review), review.ref, review.ref.seconds);
+            if (pitchOnly) {
+              const contour = {ref:review.ref, frames:review.frames, origin:review.origin, pitchScore:review.pitchScore};
+              contours.set(id,contour);
+              return contour;
+            }
+            contours.delete(id);
             prepared.set(id, review);
             // Disk writes are optional and do not delay the first playback.
             if (!media) void cache.put(id,version,item,source.media,observed,canFetch).then(saved => {
@@ -471,11 +486,11 @@
           renderListing();
         }
       })();
-      if (!downloadOnly) preparing.set(id, job);
+      if (!downloadOnly && !pitchOnly) preparing.set(id, job);
       renderListing();
       return job;
     }
-    async function reviewRehearsal(item,downloadOnly,check,source) {
+    async function reviewRehearsal(item,downloadOnly,check,source,pitchOnly) {
         const id=itemId(item);
         const get=async action=>{
           const url=new URL('rehearsal.php',endpoint);
@@ -485,14 +500,14 @@
           return response;
         };
         const [stored,blob] = source.media ? [source.media.pitch,source.media.audio] :
-          await Promise.all([get('pitch').then(r=>r.json()),get('audio').then(r=>r.blob())]);
+          await Promise.all([get('pitch').then(r=>r.json()),pitchOnly ? null : get('audio').then(r=>r.blob())]);
         check();
         const ref=adapter.descriptor(stored.ref.part,stored.ref.line,stored.ref.rate)?.reference;
         if(!ref || !root.MeleteTakePitch.samePassage(stored.ref,ref))throw Error('Different score edition.');
-        const buffer=await adapter.context().decodeAudioData(await blob.arrayBuffer());
-        const rest=root.MeleteTakePitch.playbackRestReference(ref,item.origin,buffer.duration);
+        const buffer=pitchOnly ? null : await adapter.context().decodeAudioData(await blob.arrayBuffer());
+        const rest=root.MeleteTakePitch.playbackRestReference(ref,item.origin,buffer?.duration ?? item.end-item.origin);
         const listeningRests = root.MeleteTakeCleanup.longRests(ref, -item.origin);
-        for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+        for (let channel = 0; channel < (buffer?.numberOfChannels || 0); channel++) {
           root.MeleteTakeCleanup.apply(buffer.getChannelData(channel), buffer.sampleRate, listeningRests);
         }
         const ranges=item.segments.map(([a,b])=>[a*ref.rate,b*ref.rate]);
@@ -502,6 +517,7 @@
           track:ref.part,rate:ref.rate,start:item.origin*ref.rate,end:item.end*ref.rate,ranges,
           timelineSegments:ranges.map(([from,to],i)=>({from,to,takeId:String(item.segments[i][2]),label:'Take '+item.segments[i][2]}))};
         check();
+        if (pitchOnly) return review;
         if(downloadOnly){
           const pcm=Int16Array.from(buffer.getChannelData(0),x=>Math.round(Math.max(-1,Math.min(1,x))*32767));
           adapter.downloadBlob(new Blob([root.MeleteRecording.wavBytes(pcm,buffer.sampleRate)],{type:'audio/wav'}),`${adapter.song()}-${item.name}-${item.rehearsalDate}.wav`);
@@ -513,7 +529,7 @@
           return review;
         }
     }
-    async function reviewSubmission(item,downloadOnly,check,source) {
+    async function reviewSubmission(item,downloadOnly,check,source,pitchOnly) {
         const query={owner:item.owner,id:item.id}, m=source.media?.manifest || (await request("submission",{query})).manifest;
         check();
         const q={owner:item.owner,submission:item.id}, id=itemId(item);
@@ -527,7 +543,7 @@
         }
         else{
           const [pitches,blob]=source.media ? [source.media.pitches,source.media.audio] :
-            await Promise.all([download(m.pitches,q,check), download(m.audio,q,check)]);
+            await Promise.all([download(m.pitches,q,check), pitchOnly ? null : download(m.audio,q,check)]);
           check();
           const samples=new Float32Array(await pitches.arrayBuffer()),frames=[];
           if(samples.length%3)throw Error("Invalid pitch contour");
@@ -536,18 +552,19 @@
             if(!Number.isFinite(a)||!Number.isFinite(b)||b<a)throw Error("Invalid pitch contour");
             frames.push({start:a,end:b,cents:Number.isFinite(c)?c:null});
           }
-          const ctx=adapter.context(), buffer=await ctx.decodeAudioData(await blob.arrayBuffer());
+          const buffer=pitchOnly ? null : await adapter.context().decodeAudioData(await blob.arrayBuffer());
           const ranges=m.seams.map(([a,b])=>[a*m.rate,b*m.rate]);
           const review={id,label:item.name+": "+item.label,ref,buffer,blob,frames,origin:m.origin,latency:0,
             track:m.part,rate:m.rate,start:m.origin*m.rate,end:m.seconds*m.rate,ranges,
             timelineSegments:ranges.map(([from,to],i)=>({from,to,takeId:String(m.seams[i][2]),label:"Take "+m.seams[i][2]}))};
+          if (pitchOnly) return review;
           review.loudnessKey=JSON.stringify(["submission",id,m.audio]);
           if(root.MeleteTakeLoudness)review.loudness=await root.MeleteTakeLoudness.track(buffer,review.loudnessKey);
           source.media ??= {manifest:m,audio:blob,pitches};
           return review;
         }
     }
-    async function reviewCloud(item, downloadOnly, check, source) {
+    async function reviewCloud(item, downloadOnly, check, source, pitchOnly) {
         const query={owner:item.owner,key:item.key};
         const payload=source.media?.payload || (await request("load",{query})).profile?.payload;
         check();
@@ -559,17 +576,22 @@
         for (const [index,entry] of payload.records.entries()) {
           check();
           const [blob,pitchBlob]=source.media ? source.media.sources[index] :
-            await Promise.all([download(entry.audio,query,check),download(entry.pitches,query,check)]);
+            await Promise.all([pitchOnly ? null : download(entry.audio,query,check),download(entry.pitches,query,check)]);
           const pitches=await pitchBlob.arrayBuffer();
-          const wav=new DataView(await blob.arrayBuffer()), old=entry.record;
-          if (pitches.byteLength % 8 || wav.byteLength !== 44+old.frames*2 || wav.getUint16(22,true)!==1
-            || wav.getUint16(34,true)!==16 || wav.getUint32(24,true)!==old.sampleRate) throw new Error("Invalid cloud recording data");
+          const old=entry.record;
+          if (pitches.byteLength % 8) throw new Error("Invalid cloud contour");
+          if (!pitchOnly) {
+            const wav=new DataView(await blob.arrayBuffer());
+            if (wav.byteLength !== 44+old.frames*2 || wav.getUint16(22,true)!==1
+              || wav.getUint16(34,true)!==16 || wav.getUint32(24,true)!==old.sampleRate) throw new Error("Invalid cloud recording data");
+          }
           const record={...old,pitchContour:{...old.pitchContour,pitches:new Float64Array(pitches)}};
           if (!root.MeleteTakePitch.readContour(record)) throw new Error("Cloud contour is incompatible");
           takes.set(record.id,record); audio.set(record.id,blob);
           sources.push([blob,pitchBlob]);
         }
         model.validate(state,takes);
+        if (pitchOnly) return {ref, origin:0, frames:model.framesFor(state.segments,takes)};
         const listeningWav = async take => (await root.MeleteTakeCleanup.prepare(audio.get(take.id), take)).blob;
         const rendered=await root.MeleteCompAudio.prepare(adapter.context(),state,takes,listeningWav,AbortSignal.timeout(60000));
         check();
@@ -633,6 +655,11 @@
       else adapter.toast(e.message,"error");
     });
     return {open, uploadTrack, entries, itemId, prepare, canWithdraw, withdraw,
+      measurements:async item => {
+        const review = await prepare(item,false,true);
+        return {ref:review.ref, frames:scoreFramesFor(review)};
+      },
+      score: id => (prepared.get(id) || contours.get(id))?.pitchScore,
       cached: item => itemVersion(savedItems.get(itemId(item))) === itemVersion(item),
       loading: id => preparing.has(id), loaded: id => prepared.get(id),
       enter: () => {pendingUpload=null;
