@@ -150,7 +150,11 @@ async function main() {
     assert.equal(await calls(page),1);
     await pin(autumn); await page.waitForTimeout(1100); await pin(autumn);
     await autumn.locator('#vowelReference .vowel-region').waitFor();
-    const ooGuide=await autumn.locator('#vowelReference .vowel-region').getAttribute('x');
+    const center=region=>region.evaluate(r=>[
+      Number(r.getAttribute('x'))+Number(r.getAttribute('width'))/2,
+      Number(r.getAttribute('y'))+Number(r.getAttribute('height'))/2,
+    ]);
+    const ooGuide=await center(autumn.locator('#vowelReference .vowel-region'));
     const firstWidth=Number(await autumn.locator('#vowelReference .vowel-region').getAttribute('width'));
     const ooHz=await autumn.locator('#vowelHz').textContent();
     assert.match(await autumn.locator('#vowelGuide').textContent(),/One example/);
@@ -179,6 +183,8 @@ async function main() {
     // Force a long spatial jump across silence and inspect every live line segment.
     await sing(page,'silence'); await waitDot(autumn,false); await sing(page,'ee'); await waitDot(autumn,true);
     await autumn.waitForFunction(()=>Number(document.querySelector('#vowelDot').getAttribute('cx'))<150);
+    // One accepted frame displays a dot; a trail needs a subsequent frame.
+    await autumn.waitForFunction(()=>document.querySelectorAll('#vowelTrail path[opacity]').length>0);
     const noBridge=await autumn.locator('#vowelTrail path').evaluateAll(paths=>paths.every(path=>{
       const x=path.getAttribute('d').match(/[ML]([\d.]+)/g).map(s=>Number(s.slice(1)));
       return x.length<2 || Math.abs(x[0]-x[1])<60;
@@ -227,7 +233,9 @@ async function main() {
     await pin(seed); await sing(page,'ground'); await page.waitForTimeout(2350);
     await sing(page,'noise'); await waitDot(seed,false); await pin(seed);
     const target=seed.locator('#vowelReference .vowel-region');await target.waitFor();
-    assert.ok(Math.abs(Number(await target.getAttribute('x'))-Number(ooGuide))>20);
+    const seedGuide=await center(target);
+    assert.ok(Math.hypot(seedGuide[0]-ooGuide[0],seedGuide[1]-ooGuide[1])>20,
+      'independent vowel regions in F1/F2 space: '+JSON.stringify({ooGuide,seedGuide}));
     const stampCount=await seed.locator('#vowelReference .vowel-beat').count();
     assert.ok(stampCount>=4);
     const span=await seed.locator('#vowelReference path').evaluateAll(paths=>Math.max(...paths.map(p=>p.getBBox().height)));
