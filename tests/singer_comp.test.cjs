@@ -11,6 +11,19 @@ function track(id,singer,stage,from,to,note=60,part=0,date=1) {
   return {state,sources:new Map([[id,take]])};
 }
 const singer=t=>t.state.descriptor.station;
+
+test('a prepared next pass keeps the row armed without becoming a saved group-edit member',()=>{
+  const recorded=track('a','Singer A','start',0,4);
+  const descriptor={...recorded.state.descriptor,slot:'station:Singer A:scratchpad',station:{...recorded.state.descriptor.station,stage:'scratchpad'}};
+  const prepared={state:model.empty(descriptor),sources:new Map()};
+  const {views,owners}=model.singerTracks(new Map([recorded,prepared].map(t=>[t.state.key,t])),singer,prepared.state.key);
+  const view=views.get(prepared.state.key);
+  assert.equal(views.size,1);
+  assert.deepEqual(view.members,[recorded],'credit correction and deletion only edit durable snapshots');
+  assert.deepEqual(view.state.segments,recorded.state.segments);
+  assert.equal(owners.get(recorded.state.key),prepared.state.key);
+  assert.equal(owners.get(prepared.state.key),prepared.state.key);
+});
 test('one comp joins stages and part changes, newest overlap wins and earlier coverage survives',()=>{
   const a=track('a','Singer A','start',0,4),b=track('b','Singer A','scratchpad',1,2,64,1,2);
   const c=track('c','Singer B','scratchpad',0,4,67,1,3), input=new Map([a,b,c].map(t=>[t.state.key,t]));

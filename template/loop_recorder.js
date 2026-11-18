@@ -709,11 +709,13 @@
           takes.index("song").getAll(song).onsuccess=event=>{
             const updated=[];
             for (const take of event.target.result) {
-              const owner=members.find(s=>s.descriptor.station && take.station?.id===previousSinger
+              const owner=members.find(s=>s.descriptor.station?.id===previousSinger
                 && take.trackSlot===s.descriptor.slot && take.pitchReference?.part===s.descriptor.reference.part
                 && (take.pitchReference.line??null)===(s.descriptor.reference.line??null) && take.rate===s.descriptor.reference.rate);
               if (!owner && !ids.has(take.id))continue;
-              if (take.publication || take.active || (take.performer?.id || take.station?.id)!==previousSinger) {
+              // Older captures carry the singer in their saved track descriptor.
+              const credited=take.performer?.id || take.station?.id || owner?.descriptor.station.id;
+              if (take.publication || take.active || credited!==previousSinger) {
                 fail(new Error("This comp contains protected, active, or differently credited audio."));return;
               }
               const changed={...take,performer:{id:person.id,name:person.name}};

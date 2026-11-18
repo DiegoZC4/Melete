@@ -43,6 +43,7 @@ async function checkCollections(browser, temporary, output) {
        window.__collection = {engine, get busy(){return Boolean(renderTimer || barRenderFrame || notationRenderInFlight || notationRenderQueued);},
          get song(){return takeSongKey();}, get capture(){return pitchCaptureStream;},
          get recordState(){return takeState;}, get store(){return takeStore;},
+         get comp(){return compPanel?.state();},
          portable:currentPortableState, octave:takeOctave,
          annotate(text){annotations.set('0:0',{tick:0,partIndex:0,text});saveAnnotations();}};`));
     const offline = path.join(temporary,`collection-${count}.html`);
@@ -241,9 +242,11 @@ async function checkCollections(browser, temporary, output) {
         const singer=firstStation.locator('#stationSinger');
         await singer.fill('DemoA'); await singer.press('Enter');
         const checkSinger=async frame=>frame.waitForFunction(()=>{
-          const row=document.querySelector('#compRows .comp-row:first-child');
-          return document.querySelector('#stationSinger').value==='DemoA' && row?.querySelector('.take-part').textContent==='A'
-            && row.querySelector('.take-singer').textContent==='DemoA' && row.classList.contains('is-new');
+          const descriptor=__collection.comp?.descriptor;
+          return document.querySelector('#stationSinger').value==='DemoA'
+            && descriptor?.station?.name==='DemoA' && descriptor.reference.part===1
+            && document.querySelector('[data-visible-index="1"]').getAttribute('aria-pressed')==='true'
+            && !document.querySelector('#compRows .comp-row.is-new');
         }).catch(async error=>{
           console.error('Singer continuity errors:',errors);
           console.error('Singer continuity state:',await frame.evaluate(()=>({

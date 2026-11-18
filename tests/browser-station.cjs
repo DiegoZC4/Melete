@@ -9,7 +9,7 @@ const ROSTER = {singers: [{name: 'DemoA', voice: 'Alto'}, {name: 'DemoZ', voice:
 
 const slot = page => page.evaluate(() => __qa.compState?.descriptor.slot || null);
 const rows = page => page.locator('#compRows .comp-row').evaluateAll(list => list.map(row => ({
-  singer: row.querySelector('.take-singer').textContent, part: MeleteStation.stageLabel(String(JSON.parse(row.dataset.compKey).at(-1)).split(':')[2]) || row.querySelector('.take-part').textContent,
+  singer: row.querySelector('.take-singer').textContent, part: row.querySelector('.take-part').textContent,
   mean: row.querySelector('.comp-mean').textContent, median: row.querySelector('.comp-median').textContent, armed: row.classList.contains('is-armed'),
   upload: !row.querySelector('.take-upload').hidden})));
 const cents = value => value === '\u2014' ? value : Math.round(Number(value));
@@ -173,8 +173,12 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
 
     await page.locator('[data-take-sort="singer"]').click();
     await page.waitForFunction(() => document.querySelector('[data-take-sort="singer"]').dataset.sorted);
-    assert.deepEqual((await rows(page)).map(row => [row.singer, row.part, cents(row.mean), row.median]), [['DemoA', 'Start', 30, '30.0'],
-      ['DemoA', 'Scratchpad', 10, '10.0'], ['DemoA', 'Final', 12, '12.0'], ['DemoZ', 'Start', 40, '40.0']]);
+    assert.deepEqual((await rows(page)).map(row => [row.singer, row.part, cents(row.mean), row.median]),
+      [['DemoA', 'A', 12, '12.0'], ['DemoZ', 'A', 40, '40.0']],
+      'one comp per singer; the newest overlapping passage wins across capture stages');
+    assert.equal(await page.evaluate(async()=>
+      (await __qa.takeStore.comps(__qa.takeSong)).filter(s=>s.descriptor.station?.id==='demoa' && s.segments.length).length),3,
+      'grouping the table preserves the original capture-stage snapshots');
     assert.equal(await page.locator('#compRows .comp-row:first-child .take-part').innerText(),'A');
     assert.equal(await page.locator('[data-take-sort="stage"],.take-stage').count(),0);
 
@@ -193,8 +197,9 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     const dimensions=()=>scrollRegion.evaluate(el=>({height:el.clientHeight, width:el.clientWidth, top:el.getBoundingClientRect().top-el.closest('#takePanel').getBoundingClientRect().top}));
     const compact = await dimensions();
     await toggle.click();
-    await page.waitForFunction(h=>document.querySelector('.take-review').clientHeight>h,compact.height);
+    await page.waitForFunction(()=>document.querySelector('#expandTakes').getAttribute('aria-expanded')==='true');
     const opened=await dimensions();
+    assert.ok(opened.height>=compact.height, 'expanding never shrinks the table; two grouped rows need no extra height');
     assert.equal(opened.width,compact.width); assert.equal(opened.top,compact.top);
     assert.ok(await scrollRegion.evaluate(el=>el.clientHeight<innerHeight*.55 && !document.querySelector('dialog[open]')), 'table grows downwards in place');
     assert.equal(await slot(page), armedBefore);
@@ -307,16 +312,15 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     };
     const table = await exported();
     assert.deepEqual(table.map(row => [row.singer, row.voice_part, row.stage, Math.round(Number(row.mean_cents))]), [
-      ['DemoA', 'Alto', 'Start', 30], ['DemoA', 'Alto', 'Scratchpad', 10], ['DemoA', 'Alto', 'Final', 12],
-      ['DemoZ', 'Alto', 'Start', 40], ['', '', '', 25]]);
-    assert.equal(table[1].recordings, '2');
+      ['DemoA', 'Alto', 'Final', 12], ['DemoZ', 'Alto', 'Start', 40], ['', '', '', 25]]);
+    assert.equal(table[0].recordings, '4', 'the grouped summary accounts for all source passes');
     assert.equal(table.every(row => row.bars && Number(row.tracked_of_passage_percent) >= Number(row.tracked_percent) && row.created), true);
 
     if (!mobile) {
       await page.evaluate(() => { __qa.engine.setRate(.75); return __qa.refreshComp(); });
       assert.equal((await rows(page)).some(row => row.singer === 'DemoA'), false, 'the table shows one speed');
       await seed(page, 15);
-      assert.deepEqual((await exported()).map(row => row.speed_percent).sort(), ['100', '100', '100', '100', '100', '75'], 'the export covers every speed');
+      assert.deepEqual((await exported()).map(row => row.speed_percent).sort(), ['100', '100', '100', '75'], 'the export covers every speed');
     }
 
     await open(page, `${origin}?station`);
@@ -337,7 +341,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
         segments:state.segments,owner:take.station?.id,slot:take.trackSlot,history:(await store.compHistory(q.takeSong)).past.map(e=>e.key)};
     },{who,source});
     const before=await capture('demoz'), other=await capture('demoa');
-    const oldRow=page.locator(`#compRows [data-comp-key=${JSON.stringify(before.oldKey)}]`);
+    const oldRow=page.locator('#compRows .comp-row').filter({has:page.locator('.take-singer',{hasText:/^DemoZ$/})});
     await oldRow.locator('.edit-take-singer').dblclick();
     assert.match(await page.locator('#takeSingerPart').innerText(),/ · A$/);
     await page.locator('#takeSingerName').fill('DemoA');
@@ -358,7 +362,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     assert.equal(await stage(page), 'Scratchpad', 'Scratchpad stays put for repeated comping');
     await page.waitForFunction(()=>__qa.recording.takes.filter(t=>t.station?.id==='demon' && t.pitchScore?.trackedSeconds>0).length>=2);
     await page.evaluate(()=>__qa.refreshComp());
-    assert.deepEqual((await rows(page)).filter(row => row.singer === 'DemoN' && row.mean !== '—').map(row => row.part).sort(), ['Scratchpad','Start'],
+    assert.equal((await rows(page)).filter(row => row.singer === 'DemoN' && row.mean !== '—').length, 1,
       JSON.stringify(await page.evaluate(()=>__qa.recording.takes.filter(t=>t.station?.id==='demon').map(t=>[t.trackSlot,t.start,t.end,t.pitchScore?.trackedSeconds]))));
     await open(page, `${origin}?station&loop=1-2`);
     await pick(page, 'Loop Fixture');

@@ -598,10 +598,7 @@
         }
       }
       views=grouped.views; viewOwners=grouped.owners;
-      // Choosing a singer prepares their first pass even before a source exists.
-      // Keep that armed row visible without persisting an empty recording.
-      const display = [...views.values()].filter(t => t.state.segments.length || t.state.track
-        || t.state.key === armed && station.current());
+      const display = [...views.values()].filter(t => t.state.segments.length || t.state.track);
       compSingers=new Set([...display.map(t=>stations.trackSinger(t.state,t.sources)?.id),
         ...saved.filter(s=>s.processed?.length).map(s=>s.descriptor.station?.id)].filter(Boolean));
       shown = display.sort((a, b) => a.state.descriptor.reference.part - b.state.descriptor.reference.part
@@ -730,7 +727,7 @@
       if (!track || busy || recording || locked(track)) return;
       const state = track.state;
       lastRemoved = {key, revision:history.revision, record:sortRecord(track)};
-      if (track.members?.length > 1) { void removeSingerComp(track); return; }
+      if (track.members?.length) { void removeSingerComp(track); return; }
       if (state.segments.length) { void edit(key, model.remove); return; }
       void edit(key, s => ({...s, track: false}));
     }
@@ -983,7 +980,7 @@
       if (!state.segments.length) { creditDialog.close(); station.pick(person); return; }
       busy=true; render();
       try {
-        if (edit.members?.length>1) await adapter.store.reassignCompGroup(edit.members,edit.person,person,model.key);
+        if (edit.members?.length) await adapter.store.reassignCompGroup(edit.members,edit.person,person,model.key);
         else if (state.descriptor.station) await adapter.store.reassignStationTrack(edit.key,edit.revision,person,model.key);
         else await adapter.store.correctSourceCredit(edit.key,edit.revision,edit.person,person);
         const id=layerId(state); if (adapter.selected()===id) adapter.clear();

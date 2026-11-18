@@ -7,12 +7,13 @@ not require changing drivers, recordings, singer directories or audio settings.
 
 ## Included changes
 
-- New tracks appear at the top and scroll into view. Choosing a singer reveals
-  their prepared first pass. A Cloud-only filter switches to All when adding a
+- New tracks appear at the top and scroll into view. Choosing a singer prepares
+  their first pass without saving an empty take. A Cloud-only filter switches to All when adding a
   local track, and ordinary table refreshes retain the scroll position.
 - A singer's comp is presented once per song and playback speed, including
   passages recorded in different stages or voice parts. Source captures and
-  grouped Undo history remain protected.
+  grouped Undo history remain protected. Group edits exclude an unsaved next
+  pass, and singer corrections recognize legacy captures' saved attribution.
 - Delete/Undo stays beside the affected row. Automatic empty-take cleanup
   requires verified zero-valued audio and preserves protected sources.
 - Local excludes uploaded recordings even when cached on the device. Cached
@@ -60,3 +61,8 @@ download against the manifest. Install those identical bytes on the laptop at
 the existing origin after playback/recording stops. Verify song identities,
 recording availability and unchanged native configuration. A GitHub push alone
 does not update either deployed player.
+
+For the current deployment, `DiegoZC4/Melete` holds the shared source.
+Hostinger's active push webhook deploys `DiegoZC4/DZC` `main`; the built files
+belong at `autumn-seed/index.html` and `autumn-seed/release.json` there.
+The website repository contains the release artifact, not a second UI source.

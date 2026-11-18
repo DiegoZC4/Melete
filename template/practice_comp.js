@@ -358,7 +358,10 @@
         firstTakeNumber:Math.min(...members.map(t => t.state.firstTakeNumber).filter(Number.isFinite)),
         updatedAt:Math.max(...members.map(t => t.state.updatedAt || 0))};
       if (!Number.isFinite(state.firstTakeNumber)) state.firstTakeNumber=null;
-      const view = {state,sources,members,frames:framesFor(segments,sources),score:stats(state,sources)};
+      // A prepared next pass can own the visible row before it exists in the
+      // store. Group edits must address only saved/source-bearing snapshots.
+      const editableMembers=members.filter(t=>t.state.revision || t.state.track || t.state.segments.length || t.state.processed?.length);
+      const view = {state,sources,members:editableMembers,frames:framesFor(segments,sources),score:stats(state,sources)};
       views.set(state.key,view);
       for (const member of members) owners.set(member.state.key,state.key);
     }
