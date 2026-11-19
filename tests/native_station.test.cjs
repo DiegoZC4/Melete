@@ -125,5 +125,13 @@ test('individual Hear changes the active native assets during playback without s
   e.addTakeLayer(review(),true);await settle();assert.ok(changes.at(-1)['recording:0']);
   assert.equal(renders,1,'cached audio returns immediately without another render');
   assert.equal(changes.length,3);assert.equal(e.playing,true);assert.equal(e.basePosition,17);
+  e.referenceLayers.set('ref',{...review(),id:'ref',loudnessKey:'guide-reference'});
+  e.addTakeLayer({...review(),id:'other',loudnessKey:'second-recording'},true);
+  await settle();assert.ok(changes.at(-1)['recording:1']);
+  const reference=changes.at(-1)['reference:0'];
+  assert.ok(reference);
+  e.clearTakeLayers();await settle();
+  assert.deepEqual(changes.at(-1),{'reference:0':reference});
+  assert.equal(e.pinnedTakeIds.size,0);
   assert.equal(b.state.session,'same-session');assert.equal(b.state.playing,true);
 });

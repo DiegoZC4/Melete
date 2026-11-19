@@ -143,6 +143,10 @@ desktop and website release documented above includes this follow-up.
   a rehearsal singer is selected. It starts at the top with **0% tracked** and
   dashes for pitch, segments and recording dates. A subsequent sung pass fills
   the draft. The singer's recorded passages still appear in one combined comp.
+- **+** selects the draft and immediately mutes all earlier recordings,
+  including takes enabled with **Hear** and uploads still loading. The score
+  keeps playing. Pressing **Rec** during creation waits for the draft to save,
+  then records into it at the playhead using the current singer's recording mix.
 - **Tracked** measures how much written singing time is covered by the saved
   pitch contour. The table counts the same short, continuous strokes as the
   score view. Explicit silence, long dropouts and source changes break a stroke.

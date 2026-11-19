@@ -9253,10 +9253,10 @@
     updatePitchCaptureAppearance();
   }
 
-  function resumeStationPractice() {
+  function resumeStationPractice({reviewTrack = true} = {}) {
     if (!stationReview) return;
     const previous = stationReview;
-    engine.pauseTransport();
+    if (reviewTrack) engine.pauseTransport();
     stopTakePreview();
     rememberReviewMix();
     stationReview = null; reviewMix = null;
@@ -9266,7 +9266,7 @@
         visibleChannels:mixerParts.map((_,i)=>i===previous.channel)});
     } finally { changingReviewFocus = false; }
     updatePitchCaptureAppearance();
-    void compPanel?.resumePractice();
+    if (reviewTrack) void compPanel?.resumePractice();
   }
 
   function rememberReviewMix() {
@@ -9312,6 +9312,16 @@
     compPanel = window.MeleteCompPanel.create({store: takeStore, song: takeSongKey, descriptor: compDescriptor, trackLabel, trackPaint,
       trackLabelPaint: label => window.MeleteVoicePalette.labelPaint(label, [...mixerParts, ...parts]),
       clearSingerMix: clearTakeLayers,
+      beginNewTrack: () => {
+        clearTakeLayers();
+        if (stationReview) resumeStationPractice({reviewTrack:false});
+        else { stopTakePreview(); resumeRecordingMix(); }
+      },
+      selectDraft: id => {
+        if (takePreviewId !== id || takeReview) stopTakePreview();
+        takePreviewId = inspectedTakeId = id;
+        updateTakePreview();
+      },
       showSingerPicker:()=>{setSettingsOpen(true,{persist:false});setSettingsSection('practice',true,{persist:false});document.getElementById('stationSinger').focus();},
       practicePersonChanged:changed=>{
         if(changed && (singEnabled || takeState!=="off" || preparingCapture)){void stopTakeRecording("",true);disablePitchCapture(false);}
@@ -9385,7 +9395,7 @@
         renderPitchTrace(); updateTakePreview();
       },
       replaceAudio: review => {
-        const audible = engine.takeLayers.has(review.id), selected = takePreviewId === review.id;
+        const audible = engine.takeLayers.has(review.id), selected = takeReview?.id === review.id;
         if (!audible && !selected) return;
         const pin = engine.pinnedTakeIds.has(review.id);
         engine.removeTakeLayer(review.id);
@@ -9915,10 +9925,11 @@
       if (ready) refreshTakePitchTrace({preserveGeometry: true});
     }
     syncPlaybackButton();
-    elements.exitTakeReview.hidden = !takePreviewId;
     const selectedTake = allTakes().find(take => take.id === takePreviewId);
+    // A selected empty draft has no review to exit or audio waiting to load.
+    elements.exitTakeReview.hidden = !takeReview && !selectedTake;
     elements.exitTakeReview.querySelector("span").textContent = takeReview?.label || (selectedTake ? `Take ${selectedTake.number || "..."}` : "");
-    elements.exitTakeReview.setAttribute("aria-busy", String(Boolean(takePreviewId && !takeReview)));
+    elements.exitTakeReview.setAttribute("aria-busy", String(Boolean(selectedTake && !takeReview)));
     for (const row of elements.takeList.querySelectorAll(":scope > .take-row[data-take-id]")) {
       const selected = row.dataset.takeId === takePreviewId;
       updateTakeHear(row.querySelector(".take-hear"), row.dataset.takeId, `take ${row.dataset.takeNumber}`);
@@ -10468,11 +10479,12 @@
 
   async function startTakeRecording({joinOnly=false}={}) {
     if (stationReview || takeState !== "off" || !wantsPitchCapture() || !pitchCapturePageActive || document.hidden || (joinOnly && !engine.playing)) return;
-    if (compPanel?.prepareStation) {
+    if (compPanel?.pendingDraft || compPanel?.prepareStation) {
       if(preparingCapture) return;
       const pending=preparingCapture={}, transport=engine.transportRequest;
       try {
-        await compPanel.prepareStation();
+        if (compPanel.pendingDraft) await compPanel.pendingDraft;
+        await compPanel.prepareStation?.();
         if(preparingCapture!==pending || transport!==engine.transportRequest) return;
       } catch(error) {
         if(preparingCapture===pending) showToast(error.message || "Could not prepare this singer's recording.", "error");

@@ -137,6 +137,17 @@ test('canceling Play during station preparation cannot start an old pass after a
     finish();await started;assert.equal(c.preparingCapture,null);assert.equal(c.takeState,'off');
   }
 });
+test('a failed new draft cannot start a punch on the previous recording target',async()=>{
+  let rejectSave;
+  const notices=[],c=vm.createContext({preparingCapture:null,stationReview:null,takeState:'off',wantsPitchCapture:()=>true,
+    pitchCapturePageActive:true,document:{hidden:false},engine:{playing:true,transportRequest:1},
+    compPanel:{pendingDraft:new Promise((_,reject)=>{rejectSave=reject;})},showToast:message=>notices.push(message)});
+  vm.runInContext(source('startTakeRecording'),c);
+  const punch=c.startTakeRecording({joinOnly:true});
+  assert.ok(c.preparingCapture);assert.equal(c.takeState,'off');
+  rejectSave(new Error('Draft could not be saved'));await punch;
+  assert.deepEqual(notices,['Draft could not be saved']);assert.equal(c.preparingCapture,null);assert.equal(c.takeState,'off');
+});
 test('a hidden collection frame stays off the microphone until it is shown with a remembered grant', async () => {
   const f = fixture(), frame = {inert: true, hasAttribute: () => false}, page = {};
   f.c.navigator.permissions = {query: async () => ({state:'granted'})};

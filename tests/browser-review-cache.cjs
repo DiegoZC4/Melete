@@ -9,6 +9,7 @@ async function checkReviewCache(browser,html,{baseline=false,delayMs=0}={}) {
   const songs = new Map(), blobs = new Map(), assets = new Map(), counts = [];
   const failures = [];
   let signed = true, apiOnline = true, revision = 1, active = 0, peak = 0, transferred = 0;
+  let pendingManifest = null;
   function media(bytes) {
     const size = Math.min(1024*1024,Math.ceil(bytes.length/6)), chunks = [];
     for (let i=0;i<bytes.length;i+=size) {
@@ -73,6 +74,7 @@ async function checkReviewCache(browser,html,{baseline=false,delayMs=0}={}) {
       return route.fulfill({json:{items,next:null}});
     }
     if (action==='submission') {
+      if (u.searchParams.get('id')==='unopened' && pendingManifest) await pendingManifest;
       const ref=await route.request().frame().evaluate(()=>cacheQA.descriptor(0,null,1).reference);
       const {m}=submission(ref,songs.get(u.searchParams.get('id')));
       await delay(); return route.fulfill({json:{manifest:m}});
@@ -151,8 +153,26 @@ async function checkReviewCache(browser,html,{baseline=false,delayMs=0}={}) {
     assert.equal(await page.locator('[data-cloud-id] .take-delete').isVisible(),false);
     const {song,ref}=await page.evaluate(()=>({song:cacheQA.song(),ref:cacheQA.descriptor(0,null,1).reference}));
     const rehearsal=await require('./browser-rehearsal-cache.cjs').checkRehearsalCache(context,html,song,ref);
+    // A late cloud review or Hear request must not add the singer back after +.
+    signed=true;apiOnline=true;revision++;
+    await openPlayer();await listen();
+    const unopened=page.locator('[data-cloud-id="submitted:reviewer:unopened"]');
+    let release;
+    pendingManifest=new Promise(resolve=>{release=resolve;});
+    try {
+      await unopened.locator('.take-hear').click();
+      await unopened.locator('.comp-review').click();
+      await page.waitForFunction(()=>cacheQA.loading('submitted:reviewer:unopened'));
+      await page.locator('#addTrack').click();
+      await page.waitForFunction(()=>document.querySelector('#compRows .is-new.is-selected.is-armed'));
+    } finally {release();pendingManifest=null;}
+    await page.waitForFunction(()=>!cacheQA.loading('submitted:reviewer:unopened') &&
+      document.querySelector('[data-cloud-id="submitted:reviewer:unopened"] .comp-review').getAttribute('aria-busy')==='false');
+    const draft=await page.locator('#compRows .is-new.is-selected').getAttribute('data-comp-key');
+    assert.equal(await page.evaluate(()=>cacheQA.selected()),'comp:'+draft);
+    assert.equal(await page.locator('#compRows .take-hear[aria-pressed="true"]').count(),0);
     assert.deepEqual(failures,[]);
-    return {cold,repeat,updated,offline,peak,rehearsal};
+    return {cold,repeat,updated,offline,peak,rehearsal,newDraftMutesCloud:true};
   } finally { await context.close(); }
 }
 module.exports={checkReviewCache};

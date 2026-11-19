@@ -42,6 +42,7 @@
     let practiceIdentity = null, autoReview = null, landedStartSlot = null;
     let revealSinger = false, checkSingerRoute = false, correcting = null;
     let revealAddedTrack = null;
+    let pendingDraft = null;
     let singerRevision=0;
     let history = {past: [], future: [], revision: 0};
     let historyBudgetStamp = "", usedAudioStamp = "";
@@ -354,7 +355,7 @@
         empty ? null : () => ({ref:state.descriptor.reference, frames:track.frames}));
       const version=state.publication?.kind;
       const origin=version==="local-variant" ? "Local edit of a submitted recording." : version==="archived-sources" ? "Archived sources." : "Published recording.";
-      review.title = `${locked(track) ? origin+" Read-only. " : ""}${summary} Click to toggle playback and contour.`;
+      review.title = preparingTake ? "The next recording goes into this take." : `${locked(track) ? origin+" Read-only. " : ""}${summary} Click to toggle playback and contour.`;
       adapter.octaveControl(row.querySelector(".take-octave"), empty ? null : id, name);
       const hear = row.querySelector(".take-hear");
       hear.disabled = empty || busy && !audible;
@@ -612,8 +613,13 @@
         preparing.get(key)?.controller.abort(); prepared.delete(key);
         if (nextView?.state.segments.length) updates.push(key);
         else {
-          adapter.mute(layerId(old.state));
-          if (adapter.selected() === layerId(old.state)) adapter.clear();
+          const id = layerId(old.state);
+          adapter.mute(id);
+          if (adapter.selected() === id) {
+            // A named singer's combined review can hand its key to the new empty draft.
+            if (nextView?.state.track && key === armed) adapter.selectDraft(id);
+            else adapter.clear();
+          }
         }
       }
       views=grouped.views; viewOwners=grouped.owners;
@@ -645,8 +651,10 @@
         const {key, selection} = autoReview; autoReview = null;
         const track = viewFor(key), singer = station.current();
         const reviewAllowed = !station.needsSinger() && (!singer || track && stations.playbackSingerId(track.state,track.sources)===singer.id);
-        if (reviewAllowed && selection === adapter.selectionRevision() && track?.state.segments.length
-          && adapter.selected() !== layerId(track.state)) await play(key, "review", selection);
+        if (reviewAllowed && selection === adapter.selectionRevision() && track && adapter.selected() !== layerId(track.state)) {
+          if (track.state.segments.length) await play(key, "review", selection);
+          else if (track.state.track && key === armed) adapter.selectDraft(layerId(track.state));
+        }
       }
       // Track membership decides which takes the loose list shows.
       const membership = JSON.stringify([[...used], [...garbage],
@@ -761,36 +769,44 @@
     async function addTrack() {
       if (busy || recording) return;
       if (!adapter.descriptor()) { adapter.choosePart([], addTrack); return; }
-      busy = true; render();
+      busy = true;
       try {
-        await refresh();
-        const selected = adapter.descriptor(), base = station.descriptor(selected) || selected;
-        let descriptor = selectedDescriptor(base);
-        const current = tracks.get(model.key(descriptor))?.state;
-        // A named singer keeps one unfinished pass and one combined performance.
-        if (!(base.station && current?.track && !current.segments.length)) {
-          if (current?.track || current?.segments.length) {
-            const id = crypto.randomUUID();
-            const siblings = [...tracks.values()].filter(t => identity(t.state.descriptor) === identity(base));
-            descriptor = {...base, slot:base.station ? base.slot + ":" + id : id,
-              layerNumber:1 + Math.max(1, ...siblings.map(t => t.state.descriptor.layerNumber || 1))};
-          }
-          const key = model.key(descriptor);
-          const previous = tracks.get(key)?.state;
-          const stored = await adapter.store.saveComp({...(previous || model.empty(descriptor)), track:true});
-          saved = [...saved.filter(s => s.key !== key), stored];
-        }
-        slots[slotIdentity(base)] = descriptor.slot || null;
-        try { localStorage.setItem(slotKey, JSON.stringify(slots)); } catch {}
-        revealAddedTrack = model.key(descriptor);
-        autoReview = null;
-        if (sourceFilter.value === "cloud") {
-          sourceFilter.value = "all";
-          sourceFilter.dispatchEvent(new Event("change"));
-        }
-        signature = "";
+        noteExplicitSelection();
+        adapter.beginNewTrack();
+        render();
+        pendingDraft = createDraft();
+        await pendingDraft;
       } catch (e) { error(e); }
-      finally { busy = false; await refresh({force:true}); }
+      finally { pendingDraft = null; busy = false; await refresh({force:true}); }
+    }
+    async function createDraft() {
+      await refresh();
+      const selected = adapter.descriptor(), base = station.descriptor(selected) || selected;
+      let descriptor = selectedDescriptor(base);
+      let draft = tracks.get(model.key(descriptor))?.state;
+      // A named singer keeps one unfinished pass and one combined performance.
+      if (!(base.station && draft?.track && !draft.segments.length)) {
+        if (draft?.track || draft?.segments.length) {
+          const id = crypto.randomUUID();
+          const siblings = [...tracks.values()].filter(t => identity(t.state.descriptor) === identity(base));
+          descriptor = {...base, slot:base.station ? base.slot + ":" + id : id,
+            layerNumber:1 + Math.max(1, ...siblings.map(t => t.state.descriptor.layerNumber || 1))};
+        }
+        const key = model.key(descriptor);
+        const previous = tracks.get(key)?.state;
+        draft = await adapter.store.saveComp({...(previous || model.empty(descriptor)), track:true});
+        saved = [...saved.filter(s => s.key !== key), draft];
+      }
+      slots[slotIdentity(base)] = descriptor.slot || null;
+      try { localStorage.setItem(slotKey, JSON.stringify(slots)); } catch {}
+      revealAddedTrack = draft.key;
+      noteExplicitSelection();
+      adapter.selectDraft(layerId(draft));
+      if (sourceFilter.value === "cloud") {
+        sourceFilter.value = "all";
+        sourceFilter.dispatchEvent(new Event("change"));
+      }
+      signature = "";
     }
     function visualReview(track) {
       const {state, sources} = track, rate = state.descriptor.reference.rate;
@@ -830,11 +846,12 @@
         try {
           const audio = await root.MeleteCompAudio.prepare(context, state, takes, adapter.wav, controller.signal);
           controller.signal.throwIfAborted();
-          const latest=viewFor(state.key);
-          if (!latest || audioKey(latest.state,latest.sources) !== audioKey(state,sources)) throw new DOMException("Cancelled", "AbortError");
           const review = {...visualReview(track), ...audio,
             loudnessKey:JSON.stringify(["comp", state.key, cacheKey, root.MeleteTakeCleanup?.VERSION])};
           if (root.MeleteTakeLoudness) review.loudness = await root.MeleteTakeLoudness.track(audio.buffer, review.loudnessKey);
+          controller.signal.throwIfAborted();
+          const latest=viewFor(state.key);
+          if (!latest || audioKey(latest.state,latest.sources) !== audioKey(state,sources)) throw new DOMException("Cancelled", "AbortError");
           prepared.set(state.key, {cacheKey, review});
           return review;
         } finally { if (preparing.get(state.key) === job) preparing.delete(state.key); }
@@ -1073,7 +1090,7 @@
         saved=await adapter.store.comps(adapter.song());
         if (station.verifyStage()) await refresh({force:true});
       } : null,
-      recordingPlan, recordingKey,
+      recordingPlan, recordingKey, get pendingDraft() { return pendingDraft; },
       advanceStart: slot => station.advance(slot) ? recordingKey() : null,
       settleStation: station.settle, playbackChanged: station.playbackChanged, refreshStationMix: station.refreshMix,
       layers: () => shown.filter(key => viewFor(key).state.segments.length)
