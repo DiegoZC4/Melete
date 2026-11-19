@@ -29,6 +29,8 @@
     if (Array.isArray(saved)) pins = saved.filter(p => valid(p.middle) && typeof p.label === 'string' && Array.isArray(p.runs) && p.runs.every(run => Array.isArray(run) && run.every(valid)));
   } catch {}
 
+  const preview = VowelSynth.attach(canvas, plotBounds, draw, $('audition-hint'));
+
   function status(text, state = '') {
     if ($('status').textContent !== text) $('status').textContent = text;
     $('status').dataset.state = state;
@@ -130,6 +132,7 @@
         pending = false;
         if (data.epoch !== analysisEpoch || inputMuted) return;
         if (data.state === 'error') { stop(statuses.error); return; }
+        preview.heard($('clip-audio').paused ? data.pitchHz : null, data.timeMs);
         showSnr(data.snr);
         current = data.result;
         limited = data.state==='limited';
@@ -184,9 +187,12 @@
     } finally { if (session === generation) connecting = false; }
   }
 
+  function plotBounds() {
+    return {x:66, y:24, width:Math.max(1,width-106), height:Math.max(1,height-78)};
+  }
   function plotPoint(formants) {
-    const p = chartPoint(formants);
-    return {x: 66 + p.x * Math.max(1, width - 106), y: 24 + p.y * Math.max(1, height - 78)};
+    const p = chartPoint(formants), box = plotBounds();
+    return {x:box.x+p.x*box.width, y:box.y+p.y*box.height};
   }
   function line(a, b) { context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke(); }
   function trace(runs, color, lineWidth) {
@@ -245,6 +251,17 @@
       ctx.beginPath(); ctx.arc(p.x,p.y,8,0,2*Math.PI); ctx.fillStyle='#8be9d2'; if(!limited)ctx.fill();
       ctx.strokeStyle='#d9fff4'; ctx.lineWidth=2; ctx.stroke();
     }
+    if (preview.marker) {
+      const {f1, f2} = preview.marker, p = plotPoint(preview.marker);
+      ctx.strokeStyle='#ffd08a'; ctx.lineWidth=2; ctx.beginPath();
+      ctx.moveTo(p.x,p.y-9); ctx.lineTo(p.x+9,p.y); ctx.lineTo(p.x,p.y+9);
+      ctx.lineTo(p.x-9,p.y); ctx.closePath(); ctx.stroke();
+      ctx.font='12px "Segoe UI", sans-serif'; ctx.fillStyle='#ffd08a';
+      const left=p.x>(topLeft.x+bottomRight.x)/2;
+      ctx.textAlign=left?'right':'left';
+      const label=Math.round(f1)+' / '+Math.round(f2)+' Hz';
+      ctx.fillText(label,p.x+(left?-14:14),Math.max(topLeft.y+15,Math.min(bottomRight.y-5,p.y+4)));
+    }
     ctx.restore();
   }
 
@@ -276,7 +293,6 @@
     void document.exitFullscreen();
   }, {capture:true});
   $('landmarks').addEventListener('change', () => {
-    $('landmark-note').textContent = $('landmarks').value === 'none' ? 'Fixed Bark spacing · absolute Hz' : 'Approximate speech landmarks';
     draw();
   });
   $('pin-form').addEventListener('submit', event => {

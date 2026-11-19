@@ -7,6 +7,9 @@ not require changing drivers, recordings, singer directories or audio settings.
 
 ## Included changes
 
+- Vowel Lab plays the vowel under the cursor at the last reliable sung pitch.
+  Holds and drags sound a continuous vowel transition on the fixed Bark axes.
+
 - The take number, sort order and review label follow the most recent capture used in the singer's comp.
   Hover over the number for the saved pass times and the captures used in the mix.
 - A successful acoustic calibration realigns earlier local recordings from the same observed audio chain

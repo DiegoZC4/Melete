@@ -47,9 +47,10 @@ test('absolute formants follow a changing vowel at three sung pitches and clear 
 test('noise and clipping clear the dot and high notes carry a resolution flag',()=>{
   const high=track(vowel(440,[750,1200,2700,3500]));
   assert.ok(high.slice(-10).some(f=>f.state==='limited'));
+  assert.ok(high.slice(-10).some(f=>Math.abs(f.pitchHz-440)<5));
   assert.ok(high.every(f=>!f.result || !('f0' in f.result)));
-  const loud=track(new Float32Array(4800).fill(1));assert.ok(loud.every(f=>f.state==='clipping' && !f.result));
+  const loud=track(new Float32Array(4800).fill(1));assert.ok(loud.every(f=>f.state==='clipping' && !f.result && !f.pitchHz));
   let seed=77;
   const noise=Float32Array.from({length:16000},()=>{seed=(Math.imul(1664525,seed)+1013904223)>>>0;return (seed/2**32-.5)*.03;});
-  assert.ok(track(noise).every(r=>r.snr.db<r.snr.thresholdDb && !r.result));
+  assert.ok(track(noise).every(r=>r.snr.db<r.snr.thresholdDb && !r.result && !r.pitchHz));
 });
