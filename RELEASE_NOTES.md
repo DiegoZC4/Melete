@@ -7,6 +7,13 @@ not require changing drivers, recordings, singer directories or audio settings.
 
 ## Included changes
 
+- The take number, sort order and review label follow the most recent capture used in the singer's comp.
+  Hover over the number for the saved pass times and the captures used in the mix.
+- A successful acoustic calibration realigns earlier local recordings from the same observed audio chain
+  across songs. Audio playback, the saved contour and intonation statistics use the new delay.
+  Original PCM, capture timing and published versions are preserved. Older recordings need a matching
+  previous acoustic measurement to establish their route.
+
 - New tracks appear at the top and scroll into view. Choosing a singer prepares
   their first pass without saving an empty take. A Cloud-only filter switches to All when adding a
   local track, and ordinary table refreshes retain the scroll position.

@@ -466,6 +466,7 @@
         const result=check.fitChirps(readings);
         if(!result) throw new Error("Could not verify four consistent chirps. Existing calibration is unchanged.");
         await this.control("calibration",{result});
+        this.config.calibration = {...result};
         return result;
       } finally { this.listeners.delete(listener); this.releaseWhenIdle(); }
     }

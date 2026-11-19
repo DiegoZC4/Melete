@@ -14,6 +14,13 @@
 !/practice_routes.py
 !/vowel_targets.py
 !/vowel_syllables.mjs
+!/vowel-lab/
+/vowel-lab/*
+!/vowel-lab/*.js
+!/vowel-lab/index.html
+!/vowel-lab/styles.css
+!/vowel-lab/README.md
+!/vowel-lab/THIRD-PARTY-NOTICES.txt
 !/extract_score.mjs
 !/package.json
 !/package-lock.json

@@ -440,6 +440,52 @@
       });
     }
 
+    // Store endpoint identities on this device. A take carries just the opaque interval ID.
+    timingChain(route, previousMeasurement = null, backend = "browser", profile = null, sameProfile = () => true) {
+      const key = "active-timing-chain-v1";
+      return this.transaction(["counters"], "readwrite", (tx, done) => {
+        const counters = tx.objectStore("counters");
+        counters.get(key).onsuccess = e => {
+          const last = e.target.result;
+          if (last?.route === route && (!profile || sameProfile(last.profile, profile))) { done(last); return; }
+          const chain = {id:crypto.randomUUID(), route, backend, profile, since:Date.now(),
+            legacy:!last && previousMeasurement?.measuredAt ? previousMeasurement : null};
+          counters.put(chain, key);
+          done(chain);
+        };
+      });
+    }
+
+    applyTimingMeasurement(chain, measurement, archived = () => false) {
+      return this.transaction(["takes", "counters"], "readwrite", (tx, done, fail) => {
+        const takes = tx.objectStore("takes"), counters = tx.objectStore("counters");
+        counters.get("active-timing-chain-v1").onsuccess = event => {
+          if (!chain?.route || event.target.result?.id !== chain.id) { fail(new Error("The audio route changed during calibration.")); return; }
+          const receipt = ["timing-measurement",chain.id];
+          counters.get(receipt).onsuccess = e => {
+            if (e.target.result?.measuredAt >= measurement.measuredAt) { done([]); return; }
+            counters.put(measurement, receipt);
+            takes.getAll().onsuccess = e => {
+              const records = e.target.result, changed = [];
+              const legacyMatches = t => chain.legacy && !t.captureChain && t.pitchReference?.timing?.source === "acoustic" &&
+                t.pitchReference.timing.measuredAt === chain.legacy.measuredAt && t.pitchReference.latency === chain.legacy.seconds &&
+                (t.captureProfile?.backend || "browser") === chain.backend;
+              // Pre-upgrade captures carry the previous measurement ID but no interval ID.
+              // Stop at the most recent conflicting capture even if an old route was reselected.
+              const boundary = records.reduce((time,t) => t.createdAt < chain.since && !t.publication && !legacyMatches(t)
+                ? Math.max(time,t.createdAt) : time, chain.legacy?.measuredAt ?? Infinity);
+              for (const t of records) {
+                if (archived(t) || !(t.captureChain === chain.id || t.createdAt > boundary && t.createdAt <= chain.since && legacyMatches(t))) continue;
+                const next = getPitch().recalibrateTake(t, chain.id, measurement);
+                if (next) { takes.put(next); changed.push({id:t.id, song:t.song}); }
+              }
+              done(changed);
+            };
+          };
+        };
+      });
+    }
+
     backfillRecordingTime() {
       return this.transaction(["takes", "counters"], "readwrite", tx => {
         const counters = tx.objectStore("counters"), key = ["recording-time-migration", 1];
@@ -863,8 +909,12 @@
             addRecordingDays(tx, recordingDays(next));
             next.practiceTimeFrames = next.frames;
             if (pcm.length) tx.objectStore("chunks").add({takeId: record.id, offset, pcm});
-            takes.put(next);
-            done(next);
+            const save = value => { takes.put(value); done(value); };
+            if (next.finalized && next.captureChain) {
+              tx.objectStore("counters").get(["timing-measurement",next.captureChain]).onsuccess = e => {
+                save(getPitch().recalibrateTake(next,next.captureChain,e.target.result) || next);
+              };
+            } else save(next);
           };
           if (previous) write(previous.number);
           else {

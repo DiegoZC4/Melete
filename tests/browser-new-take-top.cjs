@@ -181,6 +181,13 @@ const {choosePart}=require('./browser-sing.cjs');
       if(await frame.evaluate(()=>__qa.engine.playing))await frame.locator('#playPause').click();
       await recordPass();
       await frame.waitForFunction(()=>[...document.querySelectorAll('#compRows .comp-row')].filter(r=>r.querySelector('.take-singer').textContent==='Test Singer').length===1);
+      const latest=await frame.evaluate(async()=>{
+        const takes=await __qa.takeStore.list(__qa.takeSong);
+        return Math.max(...takes.filter(t=>t.station?.name==='Test Singer' && t.complete && t.frames).map(t=>t.number));
+      });
+      await frame.waitForFunction(n=>[...document.querySelectorAll('#compRows .comp-row')].some(r=>
+        r.querySelector('.take-singer').textContent==='Test Singer' && r.querySelector('.take-number').textContent===String(n)),latest);
+      assert.match(await namedRows.locator('.take-number').getAttribute('title'),new RegExp('Take '+latest+'.*in comp'));
       assert.ok(named);
       assert.deepEqual(errors,[]);
       await page.screenshot({path:path.join(output,song+'-new-take.png')});

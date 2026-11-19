@@ -34,6 +34,7 @@ function fixture() {
     window: {AudioContext: function() { return audio; }},
     savePreferences() { stored.set('sing', c.singEnabled); }, updatePitchCaptureAppearance() {},
     showToast(message) { notices.push(message); }, stopPitchSampling() {}, noteAudioEvent(){},
+    breakRecordingChain(){ c.chainInterrupted=true; },
     ensurePitchWorker(){},startPitchSampling(){},beginPitchCapturePass(){},
     startTakeRecording() { stops.push('start'); c.takeState = 'requesting'; return Promise.resolve(); },
     stopTakeRecording(message) { stops.push(message); c.takeState = 'off'; return Promise.resolve(); },
@@ -187,6 +188,7 @@ test('device disconnection names the input, stops capture and preserves opt-in',
   const f = fixture(); f.c.singEnabled = true; f.c.takeState = 'requesting';
   const pending = f.c.ensureMicrophoneInput(); await tick(); f.permit(); await pending;
   f.c.takeState = 'recording'; f.c.pitchCaptureState = 'recording'; f.listeners.get('ended')();
+  assert.equal(f.c.chainInterrupted,true);
   assert.match(f.notices.at(-1), /Test USB mic/);
   assert.equal(f.c.pitchCaptureStream, null); assert.equal(f.c.takeState, 'off');
   assert.equal(f.stored.get('sing'), true);

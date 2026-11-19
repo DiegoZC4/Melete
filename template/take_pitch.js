@@ -472,9 +472,12 @@
     if (saved.version === 2) {
       if (saved.pitches.length % 3) return null;
       const frames = [];
+      // Irregular observations keep their original capture clock across recalibrations.
+      const shift = (saved.captureLatency ?? ref.latency) - ref.latency;
+      if (!Number.isFinite(shift)) return null;
       let end = -ref.latency;
       for (let i = 0; i < saved.pitches.length; i += 3) {
-        const [start, stop, cents] = saved.pitches.subarray(i, i + 3);
+        const start = saved.pitches[i] + shift, stop = saved.pitches[i+1] + shift, cents = saved.pitches[i+2];
         if (!Number.isFinite(start) || !Number.isFinite(stop) || start < end - 1e-8 || stop <= start
           || stop > take.frames / sampleRate - ref.latency + 1e-8 || !Number.isFinite(cents) && !Number.isNaN(cents)) return null;
         frames.push({start, end: stop, cents: Number.isNaN(cents) ? null : cents, live: true}); end = stop;
@@ -492,6 +495,26 @@
         cents: Number.isNaN(cents) ? null : cents});
     }
     return vocal.cleanPitchFrames(cleanRestFrames(frames, ref));
+  }
+
+  function recalibrateTake(take, chainId, measurement) {
+    const ref = take.pitchReference;
+    if (!chainId || !take.finalized || take.active || take.unsaved || take.publication || take.deleteAfter ||
+      !validReference(ref) || !Number.isFinite(measurement?.seconds) || measurement.seconds < 0 || measurement.seconds > .55 ||
+      !Number.isFinite(measurement.measuredAt) || take.createdAt > measurement.measuredAt ||
+      (ref.timing?.measuredAt ?? 0) >= measurement.measuredAt) return null;
+    const {seconds, measuredAt, spreadMs, residualMs} = measurement;
+    const reference = {...ref, latency:seconds, timing:{source:"acoustic", seconds, measuredAt, spreadMs, residualMs}};
+    const next = {...take, captureChain:chainId, pitchReference:reference,
+      captureTiming:take.captureTiming || ref.timing || {source:"estimated", seconds:ref.latency}};
+    if (take.pitchContour?.reference === JSON.stringify(ref)) {
+      next.pitchContour = {...take.pitchContour, reference:JSON.stringify(reference)};
+      if (next.pitchContour.version === 2) next.pitchContour.captureLatency ??= ref.latency;
+    }
+    const frames = readContour(next);
+    if (frames) next.pitchScore = scoreFrames(frames, reference, take.frames / take.sampleRate);
+    else { delete next.pitchScore; delete next.pitchContour; } // Normal scoring can replay the saved PCM.
+    return next;
   }
 
   function samePassage(saved, current) {
@@ -719,5 +742,5 @@
     octaveError, connects, errorDistribution, currentScore, BEST_COVERAGE_WINDOW, DOMINANCE_CENTS_MARGIN, DOMINANCE_COVERAGE_MARGIN,
     reference, validReference, validScore, hasMedian, hasPitchBand, scoreFrames, reviewTimeline, analyse, packContour, packLiveContour, readContour,
     stopNoiseCut, muteStopTail,
-    samePassage, sameTimeline, rebaseTake, takeBounds, measureAddress, comparisonKey, SORT_COLUMNS, takeSort, nextTakeSort, compareParts, compareTakes, dominatedBy, bestIds, source, workerSource};
+    samePassage, sameTimeline, rebaseTake, recalibrateTake, takeBounds, measureAddress, comparisonKey, SORT_COLUMNS, takeSort, nextTakeSort, compareParts, compareTakes, dominatedBy, bestIds, source, workerSource};
 });

@@ -233,6 +233,7 @@
   let microphoneCheck = null;
   let timingDevices=[], timingOutputDevice = "", timingCache = {key:null, result:null}, recordingPassClock = null;
   let sessionTiming=null, timingRouteEpoch=0;
+  let anonymousRouteSession;
   function invalidateSessionTiming(){sessionTiming=null;timingRouteEpoch++;}
   let recordingClockWatch=null;
   const warnedTimingRoutes=new Set();
@@ -6767,6 +6768,7 @@
     }
 
     nativeFailed(error) {
+      breakRecordingChain();
       if (this.native) this.native.failure = error;
       console.error(error);
       this.pauseTransport();
@@ -8827,6 +8829,33 @@
   function timingProfile(){
     return window.MeleteMicrophoneCheck.timingProfile(pitchCaptureStream?.getAudioTracks()[0]?.getSettings?.(),pitchCaptureContext,engine?.context);
   }
+  function recordingChain() {
+    const state = engine?.native?.state;
+    if (state?.input && state.output) {
+      const route = JSON.stringify(["WASAPI exclusive",state.input,state.output,state.sampleRate,state.outputLatency,
+        state.windowsInputEnhancementsVerifiedOff]);
+      return takeStore.timingChain(route,currentCalibration(),"WASAPI exclusive");
+    }
+    let route = timingKey();
+    if (!route) return null;
+    if (route.startsWith("session:")) route += ":" + (anonymousRouteSession ??= crypto.randomUUID());
+    return takeStore.timingChain(route,currentCalibration(),"browser",timingProfile(),window.MeleteMicrophoneCheck.sameProfile);
+  }
+  function breakRecordingChain() {
+    void takeStore.timingChain(null).catch(error => console.warn("Could not mark the audio route change", error));
+  }
+  async function applyMeasuredTiming(chain, result) {
+    if (!chain) return " Earlier takes have no identifiable audio route.";
+    const changed = await takeStore.applyTimingMeasurement(chain,result,window.MeleteStation.archived);
+    if (changed.length) {
+      cancelTakeScoring();
+      await takeLibraryRequest;
+      await loadTakeLibrary();
+      for (const song of new Set(changed.map(t => t.song))) announceTakeChange(song);
+    }
+    return changed.length ? ` Updated timing for ${changed.length} previous take${changed.length === 1 ? "" : "s"}.`
+      : " Earlier takes on this setup are up to date.";
+  }
   function currentCalibration(){
     if (engine?.native) {
       const state=engine.native.state;
@@ -8873,12 +8902,15 @@
       message.textContent="Measuring three chirps and checking a fourth…";
       if (engine?.native) {
         engine.ensureAudio();
+        await engine.native.open();
+        const chain = await recordingChain();
         const result=await engine.native.calibrate();
-        message.textContent="Native WASAPI: "+Math.round(result.seconds*1000)+" ms; check chirp "+result.residualMs+" ms after correction. Saved for this station.";
+        message.textContent="Native WASAPI: "+Math.round(result.seconds*1000)+" ms; check chirp "+result.residualMs+" ms after correction. Saved for this station."+await applyMeasuredTiming(chain,result);
         return;
       }
       await engine.prepareAudio();await ensureMicrophoneInput();await refreshMicrophoneChoices();
       const key=timingKey(), epoch=timingRouteEpoch, ctx=engine.context, mic=pitchCaptureContext, track=pitchCaptureStream.getAudioTracks()[0];
+      const chain = await recordingChain();
       if(!key)throw Error("Cannot identify the audio route. Select the microphone and output by name, then measure again.");
       const blocks=[];let failure=null;
       capture=await window.MeleteRecording.PcmCapture.create(mic,pitchCaptureSource,(frame,samples)=>blocks.push([frame,samples]),e=>{failure=e;});
@@ -8915,7 +8947,7 @@
       }
       noteAudioEvent("calibration",{delayMs:Math.round(result.seconds*1000),spreadMs:result.spreadMs,checkMs:result.residualMs,estimateMs,chirpsMs:values});
       message.textContent="Measured "+Math.round(1000*result.seconds)+" ms (unverified estimate "+estimateMs+" ms). Check chirp: "+result.residualMs+" ms after correction. "+
-        (sessionOnly?"This tab only. Keep the same headset connected; measure again after switching devices.":"Saved for this audio setup.");
+        (sessionOnly?"This tab only. Keep the same headset connected; measure again after switching devices.":"Saved for this audio setup.")+await applyMeasuredTiming(chain,result);
     }catch(e){message.textContent=e?.message || "No timing setting was changed.";}
     finally {for(const n of nodes){try{n.stop();n.disconnect();}catch{}}try{await capture?.stop();}catch{}microphoneCheck.calibrating=false;syncMicrophoneActivity();refreshTimingRouteHelp();button.disabled=close.disabled=false;}
   }
@@ -9058,6 +9090,7 @@
         stream.getAudioTracks()[0]?.addEventListener("ended", () => {
           if (pitchCaptureStream !== stream) return;
           noteAudioEvent("input-disconnected");
+          breakRecordingChain();
           const active = pitchCaptureState !== "off" || takeState !== "off" || microphoneCheck?.active;
           if(!active){releaseMicrophoneInput();void refreshMicrophoneChoices();return;}
           const message = `Microphone disconnected: ${stream.getAudioTracks()[0].label || "input"}. Choose another input or reconnect it.`;
@@ -9394,16 +9427,7 @@
         }
         renderPitchTrace(); updateTakePreview();
       },
-      replaceAudio: review => {
-        const audible = engine.takeLayers.has(review.id), selected = takeReview?.id === review.id;
-        if (!audible && !selected) return;
-        const pin = engine.pinnedTakeIds.has(review.id);
-        engine.removeTakeLayer(review.id);
-        engine.addTakeLayer(review, pin);
-        if (selected) { takeReview = review; engine.takeReview = engine.takeLayers.get(review.id); }
-        takeVisualReviews.delete(review.id);
-        updateTakePreview();
-      },
+      replaceAudio: replaceReviewAudio,
       review: (review, explicit) => {
         stopTakePreview(); takePreviewId = review.id; takeReview = review;
         if (explicit) inspectedTakeId = review.id;
@@ -9616,7 +9640,7 @@
         const name = String(record.part || "").split(" \u00b7 ")[0];
         if (name && ![parts[ref.part].short, parts[ref.part].name].includes(name)) continue;
         const current = {...takePitchReference({...ref, start: ref.captureStart ?? ref.start, entry: ref.start}, ref.part, ref.line),
-          latency: ref.latency};
+          latency: ref.latency, timing:ref.timing};
         if (!pitch.sameTimeline(ref, current)) continue;
         const updated = await takeStore.rebaseReference(record, current);
         if (updated) { records[i] = updated; revised = true; }
@@ -9638,7 +9662,17 @@
         compPanel?.invalidate();
       }
       takeOtherBytes = window.MeleteRecording.takeBytes(library.filter(record => record.song !== takeSongKey()));
+      const previousLibrary = takeLibrary;
       takeLibrary = new Map(records.map(record => [record.id, record]));
+      for (const record of records) {
+        const prior = previousLibrary.get(record.id);
+        if (prior && prior.pitchReference?.latency !== record.pitchReference?.latency &&
+          (engine?.takeLayers.has(record.id) || takePreviewId === record.id)) {
+          void prepareLooseTake(record).then(review => {
+            if (takeLibrary.get(record.id)?.pitchReference?.latency === record.pitchReference.latency) replaceReviewAudio(review);
+          }).catch(error => console.warn("Could not refresh the calibrated recording", error));
+        }
+      }
       for (const id of new Set([...takeLayerLoads.keys(), ...(engine?.takeLayers.keys() || [])])) {
         if (!["comp:","cloud:","submitted:","rehearsal:"].some(prefix=>id.startsWith(prefix)) && (!takeLibrary.has(id) || takeLibrary.get(id).deleteAfter)) {
           takeLayerLoads.delete(id); engine?.removeTakeLayer(id);
@@ -9728,7 +9762,7 @@
 
   const takeCleanAudio = new Map();
   async function takeBlob(take) {
-    const key = JSON.stringify([take.id,take.frames,take.updatedAt,take.pitchContour?.analysisVersion,window.MeleteTakeCleanup.VERSION]);
+    const key = JSON.stringify([take.id,take.frames,take.updatedAt,take.pitchReference?.latency,take.pitchContour?.analysisVersion,window.MeleteTakeCleanup.VERSION]);
     if (takeCleanAudio.has(key)) return takeCleanAudio.get(key).promise;
     const entry = {bytes: Math.max(0,take.frames||0)*2, promise:null};
     entry.promise = (async()=>{
@@ -9776,12 +9810,22 @@
     const blob = await takeBlob(take);
     const buffer = await engine.context.decodeAudioData(await blob.arrayBuffer());
     return {id: take.id, singerId:window.MeleteStation.sourceSinger(take)?.id, label: `Take ${take.number || "..."}`, ref, buffer, blob,
-      loudnessKey:JSON.stringify(["take",take.id,take.frames,take.updatedAt,take.pitchContour?.analysisVersion,window.MeleteTakeCleanup.VERSION]),
+      loudnessKey:JSON.stringify(["take",take.id,take.frames,take.updatedAt,ref.latency,take.pitchContour?.analysisVersion,window.MeleteTakeCleanup.VERSION]),
       frames: shiftedReviewFrames(window.MeleteTakePitch.readContour(take) || [],take),
       track: ref.part, rate: ref.rate, start: engine.secondsAtTick(captureStart),
       end: engine.secondsAtTick(ref.end), latency:ref.latency+window.MeleteStation.advanceMs(take)/1000};
   }
 
+  function replaceReviewAudio(review) {
+    const audible = engine.takeLayers.has(review.id), selected = takeReview?.id === review.id;
+    if (!audible && !selected) return;
+    const pin = engine.pinnedTakeIds.has(review.id);
+    engine.removeTakeLayer(review.id);
+    engine.addTakeLayer(review, pin);
+    if (selected) { takeReview = review; engine.takeReview = engine.takeLayers.get(review.id); }
+    takeVisualReviews.delete(review.id);
+    refreshTakePitchTrace(); updateTakePreview();
+  }
   function shiftedReviewFrames(frames,take) {
     const advance=window.MeleteStation.advanceMs(take)/1000;
     return advance ? frames.map(f=>({...f,start:f.start-advance,end:f.end-advance})) : frames;
@@ -10562,6 +10606,9 @@
         if (spec.mode === "segment") Object.assign(spec, {start, seconds: spec.initial.seconds});
       }
       if (compPanel) spec = compPanel.recordingPlan(spec);
+      const chain = await recordingChain();
+      if (chain) spec.captureChain = chain.id;
+      if (generation !== takeRequestGeneration) return;
       spec.captureProfile = window.MeleteMicrophoneCheck.verifyRawInput(pitchCaptureStream);
       if (engine.native) spec.captureProfile.backend = "WASAPI exclusive";
       spec.pitchReference = takePitchReference(spec);
@@ -11727,7 +11774,7 @@
     busy: () => pitchCaptureState !== "off" || takeState !== "off" || Boolean(microphoneCheck?.calibrating || engine?.native),
     failureMessage: microphoneFailureMessage,
     choose: deviceId => {
-      if(microphoneDeviceId!==deviceId)invalidateSessionTiming();
+      if(microphoneDeviceId!==deviceId){invalidateSessionTiming();breakRecordingChain();}
       microphoneDeviceId = deviceId;
       try { localStorage.setItem("choir-practice:microphone:v1", deviceId); } catch {}
       elements.takeMicrophone.value = deviceId;
@@ -11743,8 +11790,18 @@
   });
   window.MeleteMicrophoneCheck.mediaDevicesFor(window)?.addEventListener?.("devicechange", async () => {
     const before=timingKey(),previousOutput=timingOutputDevice;
+    const endpoint=window.MeleteMicrophoneCheck.physicalEndpoint;
+    const previousInput=endpoint(timingDevices,"audioinput",microphoneDeviceId);
+    const native=engine?.native?.state;
+    const hasDevice=(list,kind,label)=>list?.some(d=>d.kind===kind && d.label===label);
+    const priorDevices=timingDevices;
     invalidateSessionTiming();
     const devices=await refreshMicrophoneChoices();
+    if (devices && (native ? [["audioinput",native.input],["audiooutput",native.output]].some(([kind,name]) =>
+      hasDevice(priorDevices,kind,name) && !hasDevice(devices,kind,name)) :
+      previousInput && previousInput!==endpoint(devices,"audioinput",microphoneDeviceId) ||
+      previousOutput && !savedOutput() && previousOutput!==timingOutputDevice ||
+      before && before!==timingKey())) breakRecordingChain();
     if(!pitchCapturePageActive || document.hidden)return;
     noteAudioEvent("devices-changed");
     const preferred=savedOutput(), outputs=devices?.filter(d=>d.kind==="audiooutput" && d.deviceId);
@@ -11807,7 +11864,7 @@
     try {
       if(engine.playing || takeState!=="off" || microphoneCheck.calibrating)throw Error("Pause playback before changing output.");
       engine.ensureAudio();await engine.routeOutput(device);localStorage.setItem("melete:playback-output:v1",device);
-      invalidateSessionTiming();noteAudioEvent("output-selected");outputStatus.textContent="Output selected.";
+      invalidateSessionTiming();breakRecordingChain();noteAudioEvent("output-selected");outputStatus.textContent="Output selected.";
       document.getElementById("timingCheckStatus").textContent="Output changed. Measure this input and output together before judging entrances.";
     } catch(e){playbackDevice.value=savedOutput();outputStatus.textContent=e.message;}
   });

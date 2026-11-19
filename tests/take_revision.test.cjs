@@ -13,6 +13,29 @@ function fixture() {
   take.pitchContour=P.packContour(frames,take); take.pitchScore=P.scoreFrames(frames,ref,4);
   return take;
 }
+test('successive calibration changes reuse the original clock, raw pitches and PCM timeline',()=>{
+  for (const live of [false,true]) {
+    const take=fixture();
+    take.pitchReference={...take.pitchReference,notes:[[0,1,[43]],[1,3,[50]]]};
+    const frames=Array.from({length:400},(_,i)=>({start:i/100,end:(i+1)/100,cents:i<120?4300:5000}));
+    take.pitchContour=live ? P.packLiveContour(frames,take) : P.packContour(frames,take);
+    take.pitchScore=P.scoreFrames(frames,take.pitchReference,4);
+    const original=structuredClone(take),measure=(seconds,measuredAt)=>({seconds,measuredAt,residualMs:0,spreadMs:1});
+    const first=P.recalibrateTake(take,'same',measure(.08,10));
+    const next=P.recalibrateTake(first,'same',measure(.20,20));
+    const direct=P.recalibrateTake(take,'same',measure(.20,20));
+    assert.deepEqual(next,direct);
+    assert.deepEqual(take,original);
+    assert.deepEqual(next.pitchContour.pitches,take.pitchContour.pitches);
+    assert.equal(next.frames,take.frames);
+    assert.deepEqual(next.captureTiming,{source:'estimated',seconds:0});
+    assert.ok(Math.abs(P.readContour(next)[120].start-1)<1e-9);
+    assert.ok(next.pitchScore.meanAbsCents<take.pitchScore.meanAbsCents);
+    assert.equal(P.recalibrateTake(next,'same',measure(.20,20)),null);
+    assert.equal(P.recalibrateTake(next,'same',measure(.04,9)),null);
+    assert.equal(P.recalibrateTake({...take,publication:{}},'same',measure(.2,20)),null);
+  }
+});
 test('score corrections regrade old observations while preserving raw pitch, gaps, audio metadata and original reference',()=>{
   const take=fixture(), before=structuredClone(take), current={...ref,fingerprint:'corrected',notes:[[0,4,[43]]]};
   const revised=P.rebaseTake(take,current,10);

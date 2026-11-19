@@ -375,5 +375,5 @@
   }
   return {Level, Check, rehearsalWakeLock, mediaDevicesFor, microphoneNavigator, rawAudioConstraints,captureProfile,verifyRawInput,
     timingChirp, measuredLatency, calibration,chirpReadings,fitChirps,timingRouteKey,timingHint,isQc35II,
-    physicalEndpoint,timingProfile,freshCalibration,watchClocks,clockDivergence,passClock,sampleScoreTime,deviceEvents,deviceEvent};
+    physicalEndpoint,timingProfile,sameProfile,freshCalibration,watchClocks,clockDivergence,passClock,sampleScoreTime,deviceEvents,deviceEvent};
 });

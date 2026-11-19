@@ -32,7 +32,10 @@
     const layerId = state => `comp:${state.key}`;
     // Audio depends only on the passages; Undo bookkeeping never mutes a layer.
     const audioKey = (state,sources) => JSON.stringify([state.segments,
-      [...new Set((state.segments || []).map(s=>s.takeId))].map(id=>sources?.get(id)?.playbackAdvance || 0)]);
+      [...new Set((state.segments || []).map(s=>s.takeId))].map(id=>{
+        const t=sources?.get(id);
+        return (t?.pitchReference?.latency || 0) + (t?.playbackAdvance || 0);
+      })]);
     // Every reconciled target by comp key, the displayed keys in score order,
     // and the current practice part's key, which receives new recordings.
     let tracks = new Map(), shown = [], armed = null, saved = [], used = new Set(), garbage = new Set();
@@ -129,8 +132,17 @@
     }
     const error = e => { console.error("Melete recording panel", e); adapter.toast(e.message || String(e), "error"); };
     const label = state => adapter.trackLabel(state.descriptor.reference.part, state.descriptor.reference.line ?? null);
-    const trackName = state => [state.descriptor.station?.name, label(state),
-      state.descriptor.station && state.firstTakeNumber ? `Take ${state.firstTakeNumber}` : ""].filter(Boolean).join(" \u00b7 ");
+    function displayNumber(state, sources) {
+      let latest;
+      for (const segment of state.segments) {
+        const take = sources?.get(segment.takeId);
+        if (take?.number && (!latest || take.createdAt > latest.createdAt ||
+          take.createdAt === latest.createdAt && take.number > latest.number)) latest = take;
+      }
+      return latest?.number ?? state.firstTakeNumber;
+    }
+    const trackName = (state, sources) => [state.descriptor.station?.name, label(state),
+      state.descriptor.station && displayNumber(state,sources) ? `Take ${displayNumber(state,sources)}` : ""].filter(Boolean).join(" \u00b7 ");
     const cloudSinger = item => ({key:`cloud:${item.owner}`,name:item.name,date:item.rehearsalDate || null});
     function reviewCandidates() {
       const local = shown.flatMap(key => {
@@ -309,7 +321,7 @@
       finally {if(reviewIntent===intent)reviewIntent=null;render();}
     }
     function fill(row, track) {
-      const {state, sources} = track, id = layerId(state), name = `${trackName(state)} track`, named = state.descriptor.station;
+      const {state, sources} = track, id = layerId(state), name = `${trackName(state,sources)} track`, named = state.descriptor.station;
       // Publication identity survives an offline/cached copy of the audio.
       row.dataset.recordingSource = locked(track) ? "cloud" : "local";
       const performer=stations.trackSinger(state,sources);
@@ -327,7 +339,11 @@
       review.disabled = !selected && !loading && (busy || recording || empty);
       const ids = [...new Set(state.segments.map(s => s.takeId))];
       const numbers = ids.map(takeId => sources.get(takeId)?.number).filter(Boolean).sort((a, b) => a - b);
-      row.querySelector(".take-number").textContent = empty && state.track ? "New" : String(state.firstTakeNumber ?? numbers[0] ?? "\u2014");
+      const number = displayNumber(state,sources), cell = row.querySelector(".take-number");
+      cell.textContent = empty && state.track ? "New" : String(number ?? "\u2014");
+      const passes = [...new Set([...(state.processed || []), ...ids])].map(id => sources.get(id))
+        .filter(t => t?.number && t.frames > 0).sort((a,b) => b.createdAt-a.createdAt || b.number-a.number);
+      cell.title = passes.map(t => `Take ${t.number} · ${new Date(t.createdAt).toLocaleString()}${ids.includes(t.id) ? " · in comp" : ""}`).join("\n");
       const singer = row.querySelector(".take-singer");
       singer.textContent = performer?.name || "\u2014";
       singer.title = performer ? [performer.name, performer.voice].filter(Boolean).join(", ") : "";
@@ -350,7 +366,7 @@
           summary += ` ${(s.completion * 100).toFixed(1)}% of written singing filled from ${numbers.length === 1 ? `take ${numbers[0]}` : `takes ${numbers.join(", ")}`}. ${pitch.restLabel(s)}`;
         }
       } catch (e) { metrics(row, null); summary = e.message; }
-      const takeLabel = [state.firstTakeNumber ?? numbers[0], performer?.name, label(state)].filter(v => v != null).join(" · ");
+      const takeLabel = [number, performer?.name, label(state)].filter(v => v != null).join(" · ");
       root.MeleteTakeControls.distributionButton(row, "Take " + takeLabel,
         empty ? null : () => ({ref:state.descriptor.reference, frames:track.frames}));
       const version=state.publication?.kind;
@@ -434,7 +450,7 @@
       });
       const add = byId("addTrack"), current = armed && tracks.get(armed);
       add.disabled = busy || recording;
-      add.title = current ? `New take for ${trackName(current.state)}` : "Choose a part for a new take";
+      add.title = current ? `New take for ${trackName(current.state,current.sources)}` : "Choose a part for a new take";
       add.setAttribute("aria-label", add.title);
       for (const [direction, entries, shortcut] of [["undo", history.past, "Cmd/Ctrl+Z"], ["redo", history.future, "Cmd/Ctrl+Shift+Z"]]) {
         const button = byId(`${direction}Comp`), edit = entries.at(-1);
@@ -476,9 +492,8 @@
       if (followRequest) queueMicrotask(followReadySinger);
     }
     function sortRecord(track) {
-      const {state, sources} = track, ids = [...new Set(state.segments.map(s => s.takeId))];
-      const numbers = ids.map(id => sources.get(id)?.number).filter(Number.isFinite);
-      return {...root.MeleteTakeControls.trackDates(state, sources), number: state.firstTakeNumber ?? (numbers.length ? Math.min(...numbers) : null),
+      const {state, sources} = track;
+      return {...root.MeleteTakeControls.trackDates(state, sources), number: displayNumber(state,sources) ?? null,
         part: label(state), singer: stations.trackSinger(state,sources)?.name || null,
         segmentCount: statsFor(track).segmentCount,
         pitchScore: statsFor(track)};
@@ -535,7 +550,7 @@
       const stamp = JSON.stringify([[...targets(current, takes).keys()], saved.map(s => [s.key, s.revision]),
         practiceIdentity, current && model.key(current), recording,
         takes.map(t => [t.id, t.frames, t.finalized, t.deleteAfter, t.restAudioVersion, t.updatedAt,
-          t.pitchContour?.analysisVersion, t.pitchScore?.meanAbsCents,t.performer?.id,t.playbackAdvance])]);
+          t.pitchContour?.analysisVersion, t.pitchScore?.meanAbsCents,t.performer?.id,t.playbackAdvance,t.pitchReference?.latency])]);
       if (signature === stamp && !checkSingerRoute) { render(); return; }
       if (checkSingerRoute && !recording && !busy) {
         checkSingerRoute=false;
@@ -663,7 +678,7 @@
       if (replaced.length || silent.length) adapter.changed();
       if (last && !recording) {
         const track = tracks.get(last.key), passage = model.segment(last.take), rate = track.state.descriptor.reference.rate;
-        adapter.toast(`${trackName(track.state)} track: take ${last.take.number} replaced ${adapter.address(adapter.tick(passage.from * rate))}\u2013${adapter.address(adapter.tick(passage.to * rate))}`,
+        adapter.toast(`${trackName(track.state,track.sources)} track: take ${last.take.number} replaced ${adapter.address(adapter.tick(passage.from * rate))}\u2013${adapter.address(adapter.tick(passage.to * rate))}`,
           "", () => stepHistory("undo"));
       } else if (silent.length && !recording) {
         adapter.captureSettled?.();
@@ -811,7 +826,7 @@
     function visualReview(track) {
       const {state, sources} = track, rate = state.descriptor.reference.rate;
       const origin = Math.min(0, state.segments[0]?.from || 0);
-      return {id: layerId(state), singerId:stations.playbackSingerId(state,sources), label: `${trackName(state)} track`, ref: state.descriptor.reference,
+      return {id: layerId(state), singerId:stations.playbackSingerId(state,sources), label: `${trackName(state,sources)} track`, ref: state.descriptor.reference,
         frames: track.frames.map(f => ({...f, start:f.start - origin, end:f.end - origin})),
         track: state.descriptor.reference.part, rate, origin, start: origin * rate,
         end: state.descriptor.reference.seconds * rate, latency: 0,
@@ -908,7 +923,7 @@
         const ready = await prepare(track);
         if (mode!=='download' && ownerRevision!==singerRevision) return;
         if (expectedSelection !== null && expectedSelection !== adapter.selectionRevision()) return;
-        if (mode === "download") adapter.downloadBlob(ready.blob, `${state.song}-${trackName(state)}-track.wav`);
+        if (mode === "download") adapter.downloadBlob(ready.blob, `${state.song}-${trackName(state,track.sources)}-track.wav`);
         else if (["hear", "enable"].includes(mode)) adapter.hearReview(ready);
         else adapter.review(ready, expectedSelection === null);
       } catch (e) { if (e.name !== "AbortError") error(e); }
@@ -992,7 +1007,7 @@
         void openSingerLog(new Set(state.segments.map(s=>s.takeId)));return;
       }
       correcting={key,revision:state.revision,person:singer?.id ?? null,members:track.members?.map(t=>t.state)};
-      byId("takeSingerPart").textContent=`${state.segments.length ? "Take "+state.firstTakeNumber : "New take"} · ${label(state)}`;
+      byId("takeSingerPart").textContent=`${state.segments.length ? "Take "+displayNumber(state,track.sources) : "New take"} · ${label(state)}`;
       byId("takeSingerOptions").replaceChildren(...station.choices().map(person=>{
         const option=document.createElement("option"); option.value=person.name; option.label=stations.partCode(person.voice); return option;
       }));
