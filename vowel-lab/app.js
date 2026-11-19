@@ -125,7 +125,7 @@
       stream = acquired; audioContext = opened;
       analyser = audioContext.createAnalyser(); analyser.fftSize = 8192; analyser.smoothingTimeConstant = 0;
       source = audioContext.createMediaStreamSource(stream); source.connect(analyser);
-      worker = new Worker('worker.js');
+      worker = new Worker('worker.js?v=2');
       worker.onerror = () => stop('Analysis failed. Resume the microphone to retry.');
       worker.onmessage = ({data}) => {
         if (session !== generation || data.id !== session) return;

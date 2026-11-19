@@ -11,7 +11,8 @@ async function main() {
   if (!url) {
     const root=path.join(__dirname,'../vowel-lab');
     server=http.createServer((req,res)=>{
-      const file=path.join(root,path.basename(req.url==='/'?'index.html':req.url));
+      const pathname=new URL(req.url,'http://localhost').pathname;
+      const file=path.join(root,path.basename(pathname==='/'?'index.html':pathname));
       if (req.method!=='GET' || !fs.existsSync(file)) {res.writeHead(404).end();return;}
       res.writeHead(200,{'Content-Type':{'.html':'text/html','.css':'text/css','.js':'text/javascript'}[path.extname(file)] || 'text/plain'});
       fs.createReadStream(file).pipe(res);
