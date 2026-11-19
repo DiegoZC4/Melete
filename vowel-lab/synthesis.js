@@ -68,11 +68,11 @@
     };
   }
 
-  function attach(canvas, bounds, redraw, hint) {
+  function attach(canvas, bounds, redraw, hint, trailDuration) {
     const defaultHint = hint.textContent;
     let pitch = null, pitches = [], lastSample = -Infinity, ignoreUntil = -Infinity;
     let output, voice, held = null, marker = null, cursor = {x: .5, y: .5};
-    let clearTimer, idleTimer, saveTimer;
+    let clearTimer, idleTimer, saveTimer, trailTimer, trail = [];
     try { const saved = Number(localStorage.getItem(pitchKey)); if (validPitch(saved)) pitch = saved; } catch {}
     function save() {
       clearTimeout(saveTimer); saveTimer = null;
@@ -97,9 +97,20 @@
       if (!clamp && (x < 0 || x > 1 || y < 0 || y > 1)) return null;
       return {x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y))};
     }
+    function addTrailPoint() {
+      const t = performance.now();
+      trail = trail.filter(p => t - p.t < 3000);
+      trail.push({...marker, t});
+      clearTimeout(trailTimer);
+      function expire() {
+        redraw();
+        if (trail.length && performance.now()-trail.at(-1).t < trailDuration()) trailTimer=setTimeout(expire, 50);
+      }
+      if (trailDuration()) trailTimer=setTimeout(expire, 50);
+    }
     function move(position) {
       cursor = position; marker = VowelLab.chartFormants(cursor);
-      if (held !== null) voice?.move(marker);
+      if (held !== null) { voice?.move(marker); addTrailPoint(); }
       redraw();
     }
     function release(key, immediate = false) {
@@ -121,6 +132,7 @@
         const resumed = output.resume();
         const next = createVoice(output, pitch ?? 220, marker);
         voice = next; held = key; pitches = [];
+        trail = []; addTrailPoint();
         hint.textContent = defaultHint; redraw();
         void resumed.catch(() => {
           if (voice !== next) return;
@@ -169,11 +181,11 @@
     window.addEventListener('blur', cancel);
     document.addEventListener('visibilitychange', () => { if (document.hidden) cancel(); });
     window.addEventListener('pagehide', () => {
-      cancel(); save(); clearTimeout(clearTimer); clearTimeout(idleTimer);
+      cancel(); save(); clearTimeout(clearTimer); clearTimeout(idleTimer); clearTimeout(trailTimer);
       if (output) void output.close().catch(() => {});
       output = null; voice = null;
     });
-    return {heard, get marker() { return marker; }};
+    return {heard, get marker() { return marker; }, get trail() { return trail; }};
   }
   return {harmonicLevels, createVoice, attach};
 });

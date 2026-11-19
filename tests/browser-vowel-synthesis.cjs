@@ -118,12 +118,21 @@ async function main() {
     assert.ok(Math.abs(held[0]-140)<2);
     await page.evaluate(()=>previewTest.sing(196));
     await page.mouse.move(back.x,back.y,{steps:12});
+    const trailMidpoint = {x:(front.x+back.x)/2,y:(front.y+back.y)/2};
+    const hasPreviewInk = p => {
+      const c=document.querySelector('#chart'), rect=c.getBoundingClientRect(), scale=c.width/rect.width;
+      const rgba=c.getContext('2d').getImageData((p.x-rect.x)*scale-3,(p.y-rect.y)*scale-3,7,7).data;
+      for(let i=0;i<rgba.length;i+=4)if(rgba[i]>135 && rgba[i]>rgba[i+1]+12 && rgba[i+1]>rgba[i+2]+20)return true;
+      return false;
+    };
+    assert.ok(await page.evaluate(hasPreviewInk,trailMidpoint),'the drag should draw an amber trail at the cursor');
     await page.waitForFunction(()=>previewTest.read().bright<.15);
     const last=await page.evaluate(()=>previewTest.read());
     assert.ok(last.rms>.009 && first.bright/last.bright>20);
     assert.deepEqual(await pitches(),held);
     // Keep singing a different pitch into the mic during the gesture. It must not latch.
     await page.waitForTimeout(1200);
+    assert.equal(await page.evaluate(hasPreviewInk,trailMidpoint),false,'the trail should expire at its selected duration');
     assert.ok(Math.abs(await page.evaluate(saved)-140)<2);
     await page.mouse.up();await audio(false);
     await page.waitForFunction(()=>Math.abs(Number(localStorage.getItem('vowel-lab-last-sung-pitch-v1'))-196)<2);

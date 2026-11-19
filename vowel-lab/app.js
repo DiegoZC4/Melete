@@ -29,7 +29,7 @@
     if (Array.isArray(saved)) pins = saved.filter(p => valid(p.middle) && typeof p.label === 'string' && Array.isArray(p.runs) && p.runs.every(run => Array.isArray(run) && run.every(valid)));
   } catch {}
 
-  const preview = VowelSynth.attach(canvas, plotBounds, draw, $('audition-hint'));
+  const preview = VowelSynth.attach(canvas, plotBounds, draw, $('audition-hint'), () => trailMs);
 
   function status(text, state = '') {
     if ($('status').textContent !== text) $('status').textContent = text;
@@ -245,6 +245,7 @@
     });
     const since=performance.now()-trailMs;
     if(trailMs)trace(strokes(frames.filter(p=>p.t>=since)), '#8be9d270', 3);
+    if(trailMs)trace(strokes(preview.trail.filter(p=>p.t>=since)), '#ffd08aab', 2);
     if (current) {
       const p = plotPoint(current);
       ctx.beginPath(); ctx.arc(p.x,p.y,17,0,2*Math.PI); ctx.fillStyle='#8be9d21a'; ctx.fill();

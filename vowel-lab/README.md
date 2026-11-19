@@ -6,6 +6,7 @@ chart uses fixed Bark spacing with absolute F1 and F2 readings in Hz. Chart
 settings save the trail duration on each device. The default is 0.5 seconds.
 
 Click or touch the chart to hear a vowel. Hold and drag for a continuous glide.
+The amber trail follows the same duration setting as the microphone trail.
 The last reliable sung pitch is saved in this browser. A3 is the starting pitch
 on a new device. An audible output context plays a harmonic source through
 the two cursor-selected resonances, with two fixed higher resonances. The
