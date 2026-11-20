@@ -246,6 +246,12 @@
     return clear;
   }
   const signedCents = value => value > 0 ? "+" + value : String(value);
+  function bucketLabel(cents) {
+    const limit = root.MeleteTakePitch.DISTRIBUTION_LIMIT;
+    if (cents < -limit) return "< −" + limit;
+    if (cents > limit) return "> +" + limit;
+    return signedCents(cents);
+  }
   function distributionChart(svg, bins) {
     const node = (tag, attributes, label) => {
       const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -254,23 +260,36 @@
       svg.append(element);
       return element;
     };
-    const low = Math.min(-1, bins[0].cents), high = Math.max(1, bins.at(-1).cents);
-    const peak = Math.max(...bins.map(b => b.samples)), width = 564 / (high - low + 1);
-    const x = cents => 44 + (cents - low + .5) * width;
+    const limit = root.MeleteTakePitch.DISTRIBUTION_LIMIT;
+    const first = bins[0].cents, last = bins.at(-1).cents;
+    const low = Math.max(-limit, Math.min(-1, first)), high = Math.min(limit, Math.max(1, last));
+    // Separate the categorical tails from the linear, one-cent axis.
+    const left = first < -limit ? 63 : 44, right = last > limit ? 577 : 608;
+    const peak = Math.max(...bins.map(b => b.samples)), width = (right-left) / (high-low+1);
+    function x(cents) {
+      if (cents < -limit) return 22;
+      if (cents > limit) return 618;
+      return left + (cents - low + .5) * width;
+    }
     const y = samples => 132 - 108 * samples / peak;
     svg.replaceChildren();
-    node("line", {class:"axis", x1:44, x2:608, y1:132, y2:132});
+    node("line", {class:"axis", x1:left, x2:right, y1:132, y2:132});
     node("line", {class:"axis", x1:x(0), x2:x(0), y1:22, y2:132, "stroke-dasharray":"3 3"});
     node("text", {x:44,y:14}, peak + (peak === 1 ? " measurement" : " measurements"));
     const count = high - low;
-    const step = [1,2,5,10,20,50,100,200,500].find(value => count / value <= 8);
+    const step = [1,2,5,10,20,25,50].find(value => count / value <= 8);
     for (let tick = Math.ceil(low / step) * step; tick <= high; tick += step)
       node("text", {x:x(tick),y:149,"text-anchor":"middle"}, signedCents(tick));
     node("text", {x:326,y:170,"text-anchor":"middle"}, "Flat (−)     ·     Error in cents     ·     Sharp (+)");
     for (const {cents, samples} of bins) {
+      const label = bucketLabel(cents);
+      if (Math.abs(cents) > limit) {
+        node("line", {class:"axis", x1:x(cents)-8, x2:x(cents)+8, y1:132, y2:132});
+        node("text", {x:x(cents),y:149,"text-anchor":"middle"}, label);
+      }
       const bar = node("rect", {class:"bars", x:x(cents)-width/2, y:y(samples), width, height:132-y(samples)});
       const tip = document.createElementNS(svg.namespaceURI, "title");
-      tip.textContent = signedCents(cents) + " ¢ · " + samples + (samples === 1 ? " measurement" : " measurements");
+      tip.textContent = label + " ¢ · " + samples + (samples === 1 ? " measurement" : " measurements");
       bar.append(tip);
     }
   }
@@ -289,12 +308,12 @@
       if (!data?.frames || !data.ref) { status.textContent = "No saved pitch contour is available for this take."; return; }
       const {bins, samples, seconds} = root.MeleteTakePitch.errorDistribution(data.frames, data.ref);
       if (!samples) { status.textContent = "No pitch measurements overlap written notes in this take."; return; }
-      status.textContent = `${samples.toLocaleString()} on-note measurements · ${seconds.toFixed(2)} s measured · 1 cent per bucket`;
+      status.textContent = `${samples.toLocaleString()} on-note measurements · ${seconds.toFixed(2)} s measured`;
       distributionChart(svg, bins); svg.removeAttribute("hidden");
       const body = dialog.querySelector("tbody");
       body.replaceChildren(...bins.map(bin => {
         const row = document.createElement("tr");
-        for (const value of [signedCents(bin.cents), bin.samples, bin.seconds.toFixed(3)]) row.insertCell().textContent = value;
+        for (const value of [bucketLabel(bin.cents), bin.samples, bin.seconds.toFixed(3)]) row.insertCell().textContent = value;
         return row;
       }));
       details.hidden = false;

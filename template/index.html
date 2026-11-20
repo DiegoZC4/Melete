@@ -395,9 +395,9 @@
       <form method="dialog"><strong id="distributionTitle">Intonation distribution</strong><button aria-label="Close intonation distribution">Close</button></form>
       <p class="distribution-take"></p>
       <p class="distribution-status" role="status"></p>
-      <svg class="distribution-chart" viewBox="0 0 640 175" role="img" aria-label="Pitch measurements per one-cent bucket, flat on the left and sharp on the right" hidden></svg>
-      <details hidden><summary>Exact one-cent counts</summary>
-        <p>Octave equivalents share 0 ¢. Measurements split at note changes. Unlisted buckets have zero measurements.</p>
+      <svg class="distribution-chart" viewBox="0 0 640 175" role="img" aria-label="Pitch errors in one-cent buckets from minus 100 to plus 100 cents, with one overflow bucket on each side. Flat on the left and sharp on the right." hidden></svg>
+      <details hidden><summary>Exact bucket counts</summary>
+        <p>Each bucket spans one cent through ±100 ¢. Larger errors share one bucket per side. Octave equivalents share 0 ¢. Measurements split at note changes. Unlisted buckets have zero measurements.</p>
         <table><thead><tr><th scope="col">Error (¢)</th><th scope="col">Measurements</th><th scope="col">Measured time (s)</th></tr></thead><tbody></tbody></table>
       </details>
     </dialog>

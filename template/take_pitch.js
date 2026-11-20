@@ -12,6 +12,7 @@
   const REST_POLICY_VERSION = 2;
   const CONTOUR_VERSION = 1;
   const BEST_COVERAGE_WINDOW = 0.05;
+  const DISTRIBUTION_LIMIT = 100;
   const DOMINANCE_CENTS_MARGIN = 2;
   const DOMINANCE_COVERAGE_MARGIN = 0.02;
   const TIME_EPSILON = 1e-6;
@@ -242,7 +243,11 @@
     const bins = new Map();
     let samples = 0, seconds = 0;
     eachPitchError(frames, ref, duration, (signed, weight) => {
-      const cents = Math.round(signed) || 0;
+      // The adjacent outer slots represent open-ended tails. Test the measured
+      // error first so e.g. +100.2 does not round into the exact +100 bucket.
+      const cents = Math.abs(signed) > DISTRIBUTION_LIMIT
+        ? Math.sign(signed) * (DISTRIBUTION_LIMIT + 1)
+        : Math.round(signed) || 0;
       if (!bins.has(cents)) bins.set(cents, {cents, samples:0, seconds:0});
       const bin = bins.get(cents);
       bin.samples++;
@@ -739,7 +744,7 @@
 
   return {VERSION, ANALYSIS_VERSION, SCORING_VERSION, REST_POLICY_VERSION, TIME_EPSILON, nonzeroNotes, mergeRanges, subtractRanges, containsTime,
     restPolicyValid, trimReference, cleanRestFrames, playbackRestReference, restStats, restLabel,
-    octaveError, connects, errorDistribution, currentScore, BEST_COVERAGE_WINDOW, DOMINANCE_CENTS_MARGIN, DOMINANCE_COVERAGE_MARGIN,
+    octaveError, connects, errorDistribution, DISTRIBUTION_LIMIT, currentScore, BEST_COVERAGE_WINDOW, DOMINANCE_CENTS_MARGIN, DOMINANCE_COVERAGE_MARGIN,
     reference, validReference, validScore, hasMedian, hasPitchBand, scoreFrames, reviewTimeline, analyse, packContour, packLiveContour, readContour,
     stopNoiseCut, muteStopTail,
     samePassage, sameTimeline, rebaseTake, recalibrateTake, takeBounds, measureAddress, comparisonKey, SORT_COLUMNS, takeSort, nextTakeSort, compareParts, compareTakes, dominatedBy, bestIds, source, workerSource};

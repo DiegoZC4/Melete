@@ -30,7 +30,7 @@ test('one-cent signed distribution counts exact note overlaps, including chords,
     frame(.75,1,7450),frame(1,1.25,7499.1),frame(1.25,1.5,null)];
   const d=pitch.errorDistribution(data,ref),s=pitch.scoreFrames(data,ref,4);
   assert.deepEqual(d.bins.map(b=>[b.cents,b.samples,b.seconds]),[
-    [-100,1,.125],[-1,1,.25],[0,1,.125],[2,1,.125],[599,1,.25]]);
+    [-100,1,.125],[-1,1,.25],[0,1,.125],[2,1,.125],[101,1,.25]]);
   assert.equal(d.samples,5);
   assert.equal(d.seconds,s.measuredSeconds);
   assert.deepEqual(pitch.errorDistribution([],ref),{bins:[],samples:0,seconds:0});
@@ -39,6 +39,20 @@ test('one-cent signed distribution counts exact note overlaps, including chords,
   assert.ok(bridgeOnly.coverage>.9999);
   assert.equal(bridgeOnly.meanAbsCents,null);
   assert.equal(pitch.currentScore(bridgeOnly),true);
+});
+
+test('the histogram pools each tail before rounding and keeps both 100-cent boundaries', () => {
+  const errors = [-599,-101,-100.01,-100,-99.7,-1,0,1,99.7,100,100.01,101,599];
+  const ref = reference({seconds:errors.length,notes:[[0,errors.length,[69]]]});
+  const frames = errors.map((error,i)=>frame(i,i+1,6900+error));
+  const distribution = pitch.errorDistribution(frames,ref);
+  assert.deepEqual(distribution.bins.map(b=>[b.cents,b.samples,b.seconds]),[
+    [-101,3,3],[-100,2,2],[-1,1,1],[0,1,1],[1,1,1],[100,2,2],[101,3,3]]);
+  assert.equal(distribution.samples,errors.length);
+  assert.equal(distribution.seconds,errors.length);
+  const score = pitch.scoreFrames(frames,ref,ref.seconds);
+  const rawMean = errors.reduce((sum,e)=>sum+Math.abs(e),0)/errors.length;
+  assert.ok(Math.abs(score.meanAbsCents-rawMean)<1e-9);
 });
 
 test('cloud display metrics sort alongside local analysis without percent/unit mismatches', () => {

@@ -7,6 +7,10 @@ not require changing drivers, recordings, singer directories or audio settings.
 
 ## Included changes
 
+- The intonation histogram keeps one-cent detail through ±100 cents. Errors
+  beyond that range share one flat or one sharp overflow bucket. Each tail
+  shows its total measurement count and duration in the detailed table.
+
 - Vowel Lab maps score-aligned choir reference regions for Autumn and The Seed.
   Song colors link IPA keys to each part’s written lyric syllables. Select a
   syllable to hear the best available excerpts and read their F1/F2 in Hz.

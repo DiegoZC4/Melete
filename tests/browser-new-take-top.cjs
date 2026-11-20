@@ -98,9 +98,10 @@ const {choosePart}=require('./browser-sing.cjs');
           start:ref.start,end:ref.end,rate:ref.rate,part:d.label,replaces:true,pitchReference:ref,
           ...q.plan({trackSlot:q.compState.descriptor.slot}),peak:.1},0,
           Int16Array.from({length:n},(_,i)=>2000*Math.sin(i*.2)),{finalized:true,complete:true});
+        const errors=[-430,-101,-100,-7,0,15,100,101,430];
         const frames=Array.from({length:Math.ceil(n/80)},(_,i)=>{
           const start=i*80/sr,end=Math.min((i+1)*80,n)/sr,note=ref.notes.find(n=>n[0]<=start&&n[1]>start);
-          return {start,end,cents:note?note[2][0]*100+(i%2 ? 15 : -7):null};
+          return {start,end,cents:note?note[2][0]*100+errors[i%errors.length]:null};
         });
         await q.takeStore.pitchScore(id,n,ref,MeleteTakePitch.scoreFrames(frames,ref,ref.seconds),MeleteTakePitch.packContour(frames,take));
         await q.reloadTakes();await q.refreshComp();
@@ -121,7 +122,13 @@ const {choosePart}=require('./browser-sing.cjs');
       await dialog.locator('details:not([hidden])').waitFor({state:'attached'});
       const bins=await dialog.locator('tbody tr').evaluateAll(rows=>rows.map(r=>[...r.cells].map(c=>c.textContent)));
       assert.ok(bins.some(([c,n])=>c==='-7' && Number(n)>0) && bins.some(([c,n])=>c==='+15' && Number(n)>0));
-      assert.equal(await dialog.locator('.distribution-chart rect').count(),bins.length);
+      assert.equal(bins[0][0],'< −100');assert.equal(bins.at(-1)[0],'> +100');
+      assert.ok(['-100','+100'].every(label=>bins.some(([c])=>c===label)));
+      const chart=dialog.locator('.distribution-chart'), bars=chart.locator('rect');
+      assert.equal(await bars.count(),bins.length);
+      assert.deepEqual(await bars.locator('title').allTextContents(),bins.map(([c,n])=>c+' ¢ · '+n+(n==='1'?' measurement':' measurements')));
+      assert.ok(Number(await bars.first().getAttribute('width'))>2,'both tails leave room for individual one-cent bars');
+      for(const label of ['< −100','-100','0','+100','> +100'])assert.ok((await chart.locator('text').allTextContents()).includes(label));
       await dialog.getByRole('button',{name:'Close intonation distribution'}).click();
       assert.equal(await scored.locator('.comp-review').getAttribute('aria-pressed'),selected);
       // Review one recording, pin a different part with Hear, then add during playback.
