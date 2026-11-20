@@ -365,7 +365,7 @@ def build(project, slug, trace_path, output):
               "audio": audio_name, "referenceSha256": sha256(reference.read_bytes()).hexdigest(),
               "scoreSha256": sha256(xml.read_bytes()).hexdigest()}
     (output/f"{slug}-vowel-map.json").write_text(
-        json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False)+"\n", encoding="utf-8")
+        json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False)+"\n", encoding="utf-8", newline="\n")
     print(f"{slug}: {len(parts)} parts, {sum(bool(v['examples']) for v in vowels.values())}/{len(vowels)} "
           f"vowels with some acoustic evidence, {sum(len(v['examples']) for v in vowels.values())} selected excerpts")
 
