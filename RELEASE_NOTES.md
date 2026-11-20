@@ -7,6 +7,12 @@ not require changing drivers, recordings, singer directories or audio settings.
 
 ## Included changes
 
+- Vowel Lab maps score-aligned choir reference regions for Autumn and The Seed.
+  Song colors link IPA keys to each part’s written lyric syllables. Select a
+  syllable to hear the best available excerpts and read their F1/F2 in Hz.
+  Missing measurements and partial glides remain visible in the key. Optional
+  borrowed examples and speech landmarks identify their source.
+
 - Vowel Lab plays the vowel under the cursor at the last reliable sung pitch.
   Holds and drags sound a continuous vowel transition on the fixed Bark axes.
 
