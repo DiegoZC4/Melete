@@ -10,11 +10,16 @@ async function main() {
   let url=process.env.VOWEL_QA_URL, server;
   if (!url) {
     const root=path.join(__dirname,'../vowel-lab');
+    const upstream=process.env.VOICESU_ROOT;
+    const files=new Set(['js/analysis.js','js/framer.js','js/dsp.js','js/mfcc.js','js/engines/registry.js','js/engines/lpc.js','js/engines/readout.js','models/mfcc_readout.json']);
     server=http.createServer((req,res)=>{
       const pathname=new URL(req.url,'http://localhost').pathname;
-      const file=path.join(root,path.basename(pathname==='/'?'index.html':pathname));
+      const name=pathname.slice('/voicesu/'.length);
+      const file=upstream && pathname.startsWith('/voicesu/') && files.has(name)
+        ? path.join(upstream,name) : path.join(root,path.basename(pathname==='/'?'index.html':pathname));
       if (req.method!=='GET' || !fs.existsSync(file)) {res.writeHead(404).end();return;}
-      res.writeHead(200,{'Content-Type':{'.html':'text/html','.css':'text/css','.js':'text/javascript'}[path.extname(file)] || 'text/plain'});
+      res.writeHead(200,{'Content-Type':{'.html':'text/html','.css':'text/css','.js':'text/javascript','.json':'application/json'}[path.extname(file)] || 'text/plain'});
+      if (upstream && pathname==='/') {res.end(fs.readFileSync(file,'utf8').replace('<html ', '<html data-voicesu="local" '));return;}
       fs.createReadStream(file).pipe(res);
     });
     await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));

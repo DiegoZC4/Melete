@@ -14,12 +14,22 @@ microphone uses its own silent analysis context. The preview pitch stays fixed
 through a gesture. With the chart focused, arrow keys position the cursor and
 Space plays it.
 
-The tracker analyzes 50 ms of audio, fits a 12th-order linear predictor at
-10 kHz and identifies peaks in its spectral envelope. It takes a trailing
-120 ms median and smooths the resulting frequencies with an 80 ms time
-constant. It gates the dot at 15 dB estimated SNR. Wide harmonic spacing
-limits accuracy on high notes. The chart marks those estimates with a hollow
-dot. Speech landmarks are approximate.
+VoiceSu's MFCC Gaussian-mixture readout drives the green circle. Its LPC pole
+tracker drives the violet square. Both use fixed 512-sample frames at 11,025 Hz
+and advance 60 times per second on the audio clock. Each uses a trailing median
+and exponential smoothing. The SNR threshold is 15 dB. High notes can still
+make formants ambiguous. Chart coordinates and trace exports are absolute Hz.
+Pins use the MFCC trace. Speech landmarks are approximate.
+
+The adapter pins upstream revision `cc54abd3887eca90a3c096e0bfc8ca446c0d4e1e`.
+The website downloads its modules and weights from jsDelivr. For offline use,
+serve that revision of [VoiceSu](https://github.com/brentenjackson/voicesu) at
+`./voicesu/` and set the document's `data-voicesu` attribute to `local`.
+The laptop's station supplies that path automatically. Both estimators run in
+the browser. Replaying a clip computes both tracks from its WAV on this device.
+Run `node tests/check-voicesu.cjs PATH_TO_VOICESU` from the Melete root to check
+both engines against synthetic vowels, silence and different input rates. The
+browser synthesis test also accepts a local checkout through `VOICESU_ROOT`.
 
 On the website, Record clip saves the original float WAV and matching trace
 together in the current browser. The offline rehearsal installation can use

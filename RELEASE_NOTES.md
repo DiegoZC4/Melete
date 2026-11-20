@@ -7,6 +7,13 @@ not require changing drivers, recordings, singer directories or audio settings.
 
 ## Included changes
 
+- The standalone Vowel Lab now runs VoiceSu’s trained MFCC tracker (green circle)
+  and its LPC tracker (violet square) on a shared audio clock. A saved clip can
+  be replayed and scrubbed with both traces even when the microphone is paused.
+  The laptop keeps the model offline. The website fetches its weights and
+  computes the readings on the device. Smoothness tests cover one diagnostic
+  clip and synthetic vowel changes. Accuracy across singers remains unverified.
+
 - The intonation histogram keeps one-cent detail through ±100 cents. Errors
   beyond that range share one flat or one sharp overflow bucket. Each tail
   shows its total measurement count and duration in the detailed table.
