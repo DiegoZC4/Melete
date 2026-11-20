@@ -37,10 +37,14 @@ not require changing drivers, recordings, singer directories or audio settings.
 - New tracks appear at the top and scroll into view. Choosing a singer prepares
   their first pass without saving an empty take. A Cloud-only filter switches to All when adding a
   local track, and ordinary table refreshes retain the scroll position.
-- A singer's comp is presented once per song and playback speed, including
-  passages recorded in different stages or voice parts. Source captures and
-  grouped Undo history remain protected. Group edits exclude an unsaved next
-  pass, and singer corrections recognize legacy captures' saved attribution.
+- Holding a different voicepart in See keeps Sing armed and selects that
+  singer’s track for the chosen part. A new part shows a selected empty row
+  until its first pass. Switching during a recording saves the previous part
+  and arms the new part for the next Play.
+- A singer’s pickups combine across recording stages within the same song,
+  voicepart, divisi line and playback speed. The table uses the original score
+  references to separate previously recorded parts. Grouped Undo history and
+  singer corrections continue to use the original source captures.
 - Delete/Undo stays beside the affected row. Automatic empty-take cleanup
   requires verified zero-valued audio and preserves protected sources.
 - Local excludes uploaded recordings even when cached on the device. Cached

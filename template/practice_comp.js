@@ -310,14 +310,16 @@
     normalize(state.segments);
     return true;
   }
-  // A singer's song is one reviewable performance. Retain the underlying
-  // captures and comp snapshots, and assemble their chosen passages for review.
+  // A singer can overdub several voices in the same song. Only pickups of
+  // the same scored part and divisi line belong in one reviewable performance.
   function singerTracks(tracks, singerFor, preferredKey = null) {
     const groups = new Map();
     for (const track of tracks.values()) {
       const singer = singerFor(track);
       const draft = track.state.track && !track.state.segments.length;
-      const group = singer?.id && !draft ? JSON.stringify([track.state.song, singer.id, track.state.descriptor.reference.rate]) : track.state.key;
+      const ref = track.state.descriptor.reference;
+      const group = singer?.id && !draft
+        ? JSON.stringify([track.state.song, singer.id, ref.part, ref.line ?? null, ref.rate]) : track.state.key;
       if (!groups.has(group)) groups.set(group, []);
       groups.get(group).push(track);
     }
@@ -342,8 +344,7 @@
       // and member snapshots intact, but omit those orphans from the review mix.
       selected = selected.filter(s => clipNotes(s.reference.notes, [s]).length);
       const segments = selected.map(({reference, ...s}) => s);
-      // Preserve each selected passage's scoring target when the singer changed
-      // divisi parts. Unrecorded passages retain the latest part's target.
+      // Keep the scoring notes saved with each passage across score revisions.
       let notes = latest.state.descriptor.reference.notes.map(n => [...n]);
       for (const s of selected) {
         notes = notes.flatMap(([from,to,pitches]) => [

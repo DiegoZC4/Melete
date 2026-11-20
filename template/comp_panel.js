@@ -39,10 +39,12 @@
     // Every reconciled target by comp key, the displayed keys in score order,
     // and the current practice part's key, which receives new recordings.
     let tracks = new Map(), shown = [], armed = null, saved = [], used = new Set(), garbage = new Set();
-    let views = new Map(), viewOwners = new Map(), compSingers = new Set();
+    let views = new Map(), viewOwners = new Map(), compVoices = new Set();
+    const singerVoice = (person, ref) => person?.id && ref
+      ? JSON.stringify([person.id, ref.part, ref.line ?? null, ref.rate]) : null;
     const viewFor = key => views.get(viewOwners.get(key) || key) || tracks.get(key);
     let signature = "", pending = null, dirty = false, recording = false, busy = false, cloud = null, ready = false, listed = "", cloudKey = null;
-    let practiceIdentity = null, autoReview = null, landedStartSlot = null;
+    let practiceIdentity = null, requestedPractice = null, autoReview = null, landedStartSlot = null;
     let revealSinger = false, checkSingerRoute = false, correcting = null;
     let revealAddedTrack = null;
     let pendingDraft = null;
@@ -117,11 +119,13 @@
       const d = adapter.descriptor();
       return selectedDescriptor(d && (station.descriptor(d) || d));
     }
-    function recordingPlan(spec) {
-      const plan=stations.recordingPlan(spec,station.current());
+    const practiceTarget = d => d && JSON.stringify([d.reference.part, d.reference.line ?? null,
+      d.reference.rate, station.current()?.id ?? null]);
+    function recordingPlan(spec, base = adapter.descriptor(), singer = station.current()) {
+      const plan=stations.recordingPlan(spec,singer);
       const assign=pass=>{
         if (!pass?.station) return pass;
-        const base=adapter.descriptor(), d=base && selectedDescriptor(stations.descriptor(base,pass.station,pass.station.stage));
+        const d=base && selectedDescriptor(stations.descriptor(base,pass.station,pass.station.stage));
         return d ? {...pass,trackSlot:d.slot} : pass;
       };
       return plan.initial ? {...assign(plan),initial:assign(plan.initial)} : assign(plan);
@@ -340,7 +344,7 @@
       const ids = [...new Set(state.segments.map(s => s.takeId))];
       const numbers = ids.map(takeId => sources.get(takeId)?.number).filter(Boolean).sort((a, b) => a - b);
       const number = displayNumber(state,sources), cell = row.querySelector(".take-number");
-      cell.textContent = empty && state.track ? "New" : String(number ?? "\u2014");
+      cell.textContent = empty && (state.track || preparingTake) ? "New" : String(number ?? "\u2014");
       const passes = [...new Set([...(state.processed || []), ...ids])].map(id => sources.get(id))
         .filter(t => t?.number && t.frames > 0).sort((a,b) => b.createdAt-a.createdAt || b.number-a.number);
       cell.title = passes.map(t => `Take ${t.number} · ${new Date(t.createdAt).toLocaleString()}${ids.includes(t.id) ? " · in comp" : ""}`).join("\n");
@@ -540,10 +544,10 @@
         if (request !== autoReview) { dirty = true; return; }
         request.initial = false;
         const base = adapter.descriptor();
-        const newest = base && saved.filter(s => !s.descriptor.station && identity(s.descriptor) === identity(base)
+        const newest = base && !station.current() && saved.filter(s => !s.descriptor.station && identity(s.descriptor) === identity(base)
           && s.descriptor.reference.rate === base.reference.rate && (s.track || s.segments.length))
           .sort((a, b) => (b.editedAt || b.updatedAt || b.createdAt || 0) - (a.editedAt || a.updatedAt || a.createdAt || 0))[0];
-        if (base) slots[identity(base)] = newest?.descriptor.slot || null;
+        if (base && !station.current()) slots[identity(base)] = newest?.descriptor.slot || null;
         request.key = newest?.publication ? newest.key : base ? model.key(currentDescriptor()) : null;
       }
       const current = currentDescriptor(), takes = adapter.takes();
@@ -638,9 +642,10 @@
         }
       }
       views=grouped.views; viewOwners=grouped.owners;
-      const display = [...views.values()].filter(t => t.state.segments.length || t.state.track);
-      compSingers=new Set([...display.map(t=>stations.trackSinger(t.state,t.sources)?.id),
-        ...saved.filter(s=>s.processed?.length).map(s=>s.descriptor.station?.id)].filter(Boolean));
+      const preparingPart = current && requestedPractice === practiceTarget(current);
+      const display = [...views.values()].filter(t => t.state.segments.length || t.state.track || (preparingPart && t.state.key === armed));
+      compVoices=new Set([...display.filter(t=>t.state.segments.length).map(t=>singerVoice(stations.trackSinger(t.state,t.sources),t.state.descriptor.reference)),
+        ...saved.filter(s=>s.processed?.length).map(s=>singerVoice(s.descriptor.station,s.descriptor.reference))].filter(Boolean));
       shown = display.sort((a, b) => a.state.descriptor.reference.part - b.state.descriptor.reference.part
         || (a.state.descriptor.reference.line ?? -1) - (b.state.descriptor.reference.line ?? -1)).map(t => t.state.key);
       const historyIds = root.MeleteRecording.historySources(history);
@@ -668,12 +673,15 @@
         const reviewAllowed = !station.needsSinger() && (!singer || track && stations.playbackSingerId(track.state,track.sources)===singer.id);
         if (reviewAllowed && selection === adapter.selectionRevision() && track && adapter.selected() !== layerId(track.state)) {
           if (track.state.segments.length) await play(key, "review", selection);
-          else if (track.state.track && key === armed) adapter.selectDraft(layerId(track.state));
+          else if ((track.state.track || preparingPart) && key === armed) {
+            revealAddedTrack = key;
+            adapter.selectDraft(layerId(track.state));
+          }
         }
       }
       // Track membership decides which takes the loose list shows.
       const membership = JSON.stringify([[...used], [...garbage],
-        [...tracks.values()].map(t => [t.state.key, t.state.processed, t.state.freshAt]),[...compSingers]]);
+        [...tracks.values()].map(t => [t.state.key, t.state.processed, t.state.freshAt]),[...compVoices]]);
       if (membership !== listed) { listed = membership; adapter.relist(); }
       if (replaced.length || silent.length) adapter.changed();
       if (last && !recording) {
@@ -789,14 +797,16 @@
         noteExplicitSelection();
         adapter.beginNewTrack();
         render();
-        pendingDraft = createDraft();
+        const selected = adapter.descriptor();
+        pendingDraft = createDraft(station.descriptor(selected) || selected);
         await pendingDraft;
       } catch (e) { error(e); }
       finally { pendingDraft = null; busy = false; await refresh({force:true}); }
     }
-    async function createDraft() {
+    async function createDraft(base) {
+      const target = practiceTarget(base);
       await refresh();
-      const selected = adapter.descriptor(), base = station.descriptor(selected) || selected;
+      if (!base || target !== practiceTarget(adapter.descriptor())) return;
       let descriptor = selectedDescriptor(base);
       let draft = tracks.get(model.key(descriptor))?.state;
       // A named singer keeps one unfinished pass and one combined performance.
@@ -812,6 +822,7 @@
         draft = await adapter.store.saveComp({...(previous || model.empty(descriptor)), track:true});
         saved = [...saved.filter(s => s.key !== key), draft];
       }
+      if (target !== practiceTarget(adapter.descriptor())) return;
       slots[slotIdentity(base)] = descriptor.slot || null;
       try { localStorage.setItem(slotKey, JSON.stringify(slots)); } catch {}
       revealAddedTrack = draft.key;
@@ -879,6 +890,21 @@
       practiceIdentity = base && JSON.stringify([identity(base), base.reference.rate]);
       autoReview = null;
     }
+    function practicePartChosen() {
+      const base = adapter.descriptor();
+      if (!base || station.needsSinger() || adapter.audition?.()) return;
+      noteExplicitSelection();
+      requestedPractice = practiceTarget(base);
+      adapter.clearSingerMix();
+      adapter.clear();
+      if (sourceFilter.value === "cloud") {
+        sourceFilter.value = "all";
+        sourceFilter.dispatchEvent(new Event("change"));
+      }
+      checkSingerRoute = Boolean(station.current());
+      autoReview = {initial:true, key:null, selection:adapter.selectionRevision()};
+      void refresh({active:recording, force:true});
+    }
     async function play(key, mode, expectedSelection = null) {
       adapter.cancelHearBatch();
       if (mode === "review" && expectedSelection === null) {autoReview = null;cancelFollow();reviewIntent=null;}
@@ -919,9 +945,10 @@
         revision:adapter.selectionRevision()} : null;
       if(intent)reviewIntent=intent;
       try {
-        const ownerRevision=singerRevision;
+        const ownerRevision=singerRevision, selection=adapter.selectionRevision();
         const ready = await prepare(track);
         if (mode!=='download' && ownerRevision!==singerRevision) return;
+        if (mode==='review' && selection!==adapter.selectionRevision()) return;
         if (expectedSelection !== null && expectedSelection !== adapter.selectionRevision()) return;
         if (mode === "download") adapter.downloadBlob(ready.blob, `${state.song}-${trackName(state,track.sources)}-track.wav`);
         else if (["hear", "enable"].includes(mode)) adapter.hearReview(ready);
@@ -939,7 +966,7 @@
       return landing || saved.some(s => s.key === key && s.segments.length) ? "scratchpad" : "start";
     }
     function stationChanged(personChanged) {
-      if(personChanged){singerRevision++;adapter.clearSingerMix?.();}
+      if(personChanged){singerRevision++;requestedPractice=null;adapter.clearSingerMix?.();}
       revealSinger = Boolean(station.current());
       checkSingerRoute = revealSinger;
       adapter.clear();
@@ -1085,10 +1112,10 @@
     }
     function standalone(take) {
       return ready && !take.active && take.frames > 0 && !used.has(take.id) && !garbage.has(take.id)
-        && !compSingers.has(stations.sourceSinger(take)?.id);
+        && !compVoices.has(singerVoice(stations.sourceSinger(take),take.pitchReference));
     }
     render();
-    return {refresh, standalone, sourceRows:items=>{sourceRows=items;}, stepHistory, noteExplicitSelection, slot: () => currentDescriptor()?.slot || null, selected: render,
+    return {refresh, standalone, sourceRows:items=>{sourceRows=items;}, stepHistory, noteExplicitSelection, practicePartChosen, slot: () => currentDescriptor()?.slot || null, selected: render,
       resumePractice:async () => {
         noteExplicitSelection();
         await refresh({force:true});

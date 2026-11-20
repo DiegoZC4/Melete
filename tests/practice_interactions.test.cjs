@@ -31,7 +31,7 @@ test('restoring a collection position bypasses chapter magnets and validates the
 
 function mixFixture() {
   const c = vm.createContext({
-    stationReview:null,reviewMix:null,lastGuideChannel:0,relativeMix:null,changingReviewFocus:false,
+    stationReview:null,reviewMix:null,compPanel:null,lastGuideChannel:0,relativeMix:null,changingReviewFocus:false,
     parts: ['S', 'A', 'T', 'B'].map(name => ({name})), practicePartIndex: 0,
     visibleChannels:new Set([0]), visibleTracks:new Set([0]),
     pitchCaptureWorker: null, vowelView: null,
@@ -46,7 +46,7 @@ function mixFixture() {
   });
   for (const name of ['practiceMixMatches', 'normalizePracticeMixUndo', 'cancelPracticeMixSession',
     'snapshotPracticeMix', 'restorePracticeMix', 'currentPracticeMix', 'applyPracticeMix', 'nextPartVolumeMix', 'cyclePartVolumeMix',
-    'roleTraceKey', 'assignPracticePart', 'syncPracticeFromSee','followVisibleGuide', 'setPracticePart', 'setTrackAudible']) vm.runInContext(source(name), c);
+    'roleTraceKey', 'assignPracticePart', 'syncPracticeFromSee','followVisibleGuide', 'leaveReviewForPartChoice', 'setPracticePart', 'setTrackAudible']) vm.runInContext(source(name), c);
   const roles=require('../template/practice_mix.js');let memory=null;
   c.recordingScope=()=>'practice';c.captureSettingsState=()=>({...c.snapshotPracticeMix(),pans:[...c.trackPans]});
   c.followRole=(_,state,old,i)=>(memory=roles.follow(c.mixerParts,state,old,i,memory)).settings;
@@ -333,12 +333,12 @@ test('pitchbar hyphens respect italic ink bearings and leave a readable gap', ()
 });
 
 test('See alone selects practice; the practice part is never forced visible', () => {
-  const c = vm.createContext({scoreView: 'bars', stationReview:null,reviewMix:null,lastGuideChannel:null,practiceMixerIndex:()=>c.practicePartIndex,
+  const c = vm.createContext({scoreView: 'bars', stationReview:null,reviewMix:null,compPanel:null,lastGuideChannel:null,practiceMixerIndex:()=>c.practicePartIndex,
     followVisibleGuide(){}, practicePartIndex: 1, parts: [{}, {}, {}, {}],
     mixerParts:[0,1,2,3].map(source=>({source,line:null})),visibleChannels:new Set([0]),practiceDivisi:[],
     visibleTracks: new Set([0]), updateMixerAppearance() {}, updateNoteActionLabel() {},
     assignPracticePart(i){c.practicePartIndex=i;},renderTakePanel(){},savePreferences() {}, scheduleRender() {}, showToast() {}});
-  for (const name of ['syncPracticeFromSee','finishSeeChange','setTrackVisibility', 'aloneOnItsRow', 'turnOnEveryPart', 'soloRow','pressRow']) {
+  for (const name of ['syncPracticeFromSee','finishSeeChange','setTrackVisibility', 'aloneOnItsRow', 'turnOnEveryPart', 'leaveReviewForPartChoice','soloRow','pressRow']) {
     vm.runInContext(source(name), c);
   }
   c.syncPracticeFromSee();

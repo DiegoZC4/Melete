@@ -26,7 +26,7 @@ function fixture({names = SEED, practicePart = null, divisi = {}, view = 'standa
   const element = (extra = {}) => ({hidden: true, textContent: '', contains: () => false,
     classList: {contains: () => false}, focus() {}, ...extra});
   const c = vm.createContext({
-    URL, stationReview:null, vowelView:null,
+    URL, stationReview:null, reviewMix:null, compPanel:null, vowelView:null,
     sequence: {}, pitchTraceBaseKey: '', pitchTraceKey: '',pendingMixReceipt:null,lastGuideChannel:null,
     parts: names.map((name, index) => ({index, id: `P${index + 1}`, name,
       short: name.split(' ').map((word, i) => i ? word : word[0]).join(''), color: '#123456'})),
@@ -56,7 +56,7 @@ function fixture({names = SEED, practicePart = null, divisi = {}, view = 'standa
   });
   c.mixerParts = require('../template/divisi_mixer.js').channels(c.parts,c.partDivisi);
   c.practiceMixerIndex = () => c.mixerParts.findIndex(p => p.source === c.practicePartIndex && p.line === (c.practiceDivisi[c.practicePartIndex] ?? null));
-  vm.runInContext(source('practiceDivisiOptions') + source('syncPracticeFromSee') + chooserSource, c);
+  vm.runInContext(source('practiceDivisiOptions') + source('syncPracticeFromSee') + source('leaveReviewForPartChoice') + chooserSource, c);
   const mix = () => plain({volumes: c.trackVolumes, pans: c.trackPans, audible: [...c.audibleTracks]});
   return {c, toasts, stored, replaced, calls, mix,
     options: () => options.map(option => c.parts[Number(option.dataset.partIndex)].name),

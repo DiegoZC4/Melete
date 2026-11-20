@@ -32,8 +32,8 @@ test('a prepared next pass keeps the row armed without becoming a saved group-ed
   assert.equal(owners.get(recorded.state.key),prepared.state.key);
   assert.equal(owners.get(prepared.state.key),prepared.state.key);
 });
-test('one comp joins stages and part changes, newest overlap wins and earlier coverage survives',()=>{
-  const a=track('a','Singer A','start',0,4),b=track('b','Singer A','scratchpad',1,2,64,1,2);
+test('same-part pickups join stages while other singers and voices keep their own rows',()=>{
+  const a=track('a','Singer A','start',0,4),b=track('b','Singer A','scratchpad',1,2,64,0,2);
   const c=track('c','Singer B','scratchpad',0,4,67,1,3), input=new Map([a,b,c].map(t=>[t.state.key,t]));
   const before=JSON.stringify([...input]);
   const {views,owners}=model.singerTracks(input,singer,b.state.key);
@@ -44,7 +44,7 @@ test('one comp joins stages and part changes, newest overlap wins and earlier co
   assert.equal(combined.score.meanAbsCents,0);assert.equal(combined.score.completion,1);
   assert.equal(JSON.stringify([...input]),before,'published snapshots and sources stay byte-for-byte equivalent');
 });
-test('new pickups update the same singer comp and retain other singers and songs',()=>{
+test('another part by the same singer keeps independent overlapping audio in both songs',()=>{
   const a=track('a','Singer A','start',0,4),b=track('b','Singer A','scratchpad',1,2,64,1,2);
   const seed=track('seed','Singer A','start',0,4);seed.state.song=seed.state.descriptor.song='seed';seed.state.key=model.key(seed.state.descriptor);
   const tracks=new Map([a,b,seed].map(t=>[t.state.key,t]));
@@ -52,8 +52,20 @@ test('new pickups update the same singer comp and retain other singers and songs
   const next={...b,state:{...b.state,segments:[...b.state.segments,{takeId:'c',from:3,to:4}]},sources:new Map(b.sources)};
   next.sources.set('c',{...b.sources.get('b'),id:'c',createdAt:3});tracks.set(b.state.key,next);
   const second=model.singerTracks(tracks,singer,b.state.key);
-  assert.equal(second.views.size,2);assert.equal(first.owners.get(a.state.key),second.owners.get(a.state.key));
-  assert.deepEqual(second.views.get(b.state.key).state.segments.map(s=>s.takeId),['a','b','a','c']);
+  assert.equal(second.views.size,3);assert.equal(first.owners.get(a.state.key),second.owners.get(a.state.key));
+  assert.deepEqual(second.views.get(a.state.key).state.segments,[{takeId:'a',from:0,to:4}]);
+  assert.deepEqual(second.views.get(b.state.key).state.segments.map(s=>s.takeId),['b','c']);
+});
+test('parallel divisi lines stay independent even on the same staff and recording slot',()=>{
+  const voices=[null,0,1].map((line,i)=>{
+    const t=track('source'+i,'Same singer','start',0,4);
+    t.state.descriptor.reference.line=line;
+    t.state.key=model.key(t.state.descriptor);
+    return t;
+  });
+  const {views}=model.singerTracks(new Map(voices.map(t=>[t.state.key,t])),singer,voices[1].state.key);
+  assert.equal(views.size,3);
+  for(const t of voices)assert.deepEqual(views.get(t.state.key).state.segments,t.state.segments);
 });
 test('grouped Undo protects overwritten source audio as well as the visible composition',()=>{
   const empty={segments:[],track:false,firstTakeNumber:null};

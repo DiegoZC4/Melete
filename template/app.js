@@ -2483,7 +2483,7 @@
       if (singer) {
         const previous = personal?.guideVersion >= 1 ? personal.visibleChannels?.flatMap((on,i)=>on ? [i] : []) : [];
         const prior = previous?.length === 1 ? previous[0] : -1;
-        const index = linked ? practiceMixerIndex() : window.MeleteStation.guideChannel(singer, mixerParts, prior);
+        const index = linked ? practiceMixerIndex() : prior >= 0 && !resetPreset ? prior : window.MeleteStation.guideChannel(singer, mixerParts, prior);
         const preset = window.MeletePracticeMix.stationDefault(), roles=sequence.practiceRoles;
         if (index < 0) { next.visibleChannels=mixerParts.map(()=>false); ask=true; }
         else if (index !== prior || window.MeleteStation.untouchedFirstPreset(personal,mixerParts,index)) Object.assign(next, window.MeleteStation.guideMix(mixerParts,index,preset,roles),
@@ -3321,7 +3321,7 @@
   }
 
   function setPracticePart(selected) {
-    if(reviewMix && !stationReview)resumeRecordingMix();
+    leaveReviewForPartChoice();
     const previous=practiceMixerIndex() ?? lastGuideChannel;
     pitchCaptureWorker?.invalidate();
     pitchOctaveHistory = [];
@@ -3331,6 +3331,7 @@
     visibleChannels.clear();
     if (channel) visibleChannels.add(selected);
     syncPracticeFromSee();
+    if(channel) compPanel?.practicePartChosen();
     selectedScorePartIndex = null;
     if (mode && practicePartIndex !== null) {
       followVisibleGuide(previous);
@@ -3351,6 +3352,7 @@
   // Hear, Volume and Pan untouched, including an existing hold preset.
   function choosePracticePart(index, divisi) {
     if (!Number.isInteger(index) || index < 0 || index >= parts.length) return null;
+    leaveReviewForPartChoice();
     explicitPracticeChoice = true;
     const revealed = scoreView === "bars" && !visibleTracks.has(index);
     selectedScorePartIndex = null;
@@ -3360,6 +3362,7 @@
     if (channel >= 0) visibleChannels.add(channel);
     else mixerParts.forEach((p, i) => { if (p.source === index) visibleChannels.add(i); });
     syncPracticeFromSee();
+    compPanel?.practicePartChosen();
     practicePartPager?.setValue(practiceMixerIndex());
     updateMixerAppearance();
     updateNoteActionLabel();
@@ -3395,8 +3398,13 @@
       pitchTraceCount = 0;
       pitchTraceDirty.clear();
       if (ready && !stationReview && !changingReviewFocus && (singEnabled || takeState !== "off" || preparingCapture)) {
-        void stopTakeRecording("", true);
-        disablePitchCapture(false);
+        // Finalize the old journal with its original score reference. A valid
+        // new target keeps the same microphone armed for the next Play.
+        ++singArmGeneration;
+        queuedTakeReplay=null;
+        void stopTakeRecording("", true, {discardShortTail:false});
+        if (!Number.isInteger(index)) disablePitchCapture(false);
+        else if (singEnabled && takeState === "off") void armMicrophone();
       }
     }
   }
@@ -3802,6 +3810,7 @@
   }
   function finishSeeChange(previous){
     syncPracticeFromSee();
+    if (!stationReview && practiceMixerIndex() !== null && previous !== practiceMixerIndex()) compPanel?.practicePartChosen();
     followVisibleGuide(previous);
     updateMixerAppearance();
     updateNoteActionLabel();
@@ -3829,11 +3838,14 @@
 
   function soloRow(row, partCount) {
     if(row.name==="see"){
-      if(reviewMix && !stationReview)resumeRecordingMix();
-      const previous=practiceMixerIndex() ?? lastGuideChannel, all=aloneOnItsRow(row,partCount);
+      const reviewing=Boolean(stationReview || reviewMix);
+      const all=!reviewing && aloneOnItsRow(row,partCount);
+      leaveReviewForPartChoice();
+      const previous=practiceMixerIndex();
       visibleChannels.clear();
       if(all)mixerParts.forEach((_,i)=>visibleChannels.add(i));else visibleChannels.add(row.index);
       finishSeeChange(previous);
+      if(reviewing && previous===row.index)compPanel?.practicePartChosen();
       return;
     }
     if (aloneOnItsRow(row, partCount)) return turnOnEveryPart(row, partCount);
@@ -9275,7 +9287,7 @@
     const channel = mixerParts.findIndex(p => p.source === ref.part && p.line === (ref.line ?? null));
     if (channel < 0) return;
     if (singer && !stationReview) {
-      const channel = window.MeleteStation.guideChannel(singer, mixerParts, practiceMixerIndex() ?? lastGuideChannel ?? -1);
+      const channel = practiceMixerIndex() ?? window.MeleteStation.guideChannel(singer, mixerParts, lastGuideChannel ?? -1);
       if (channel < 0) return;
       const part = mixerParts[channel];
       stationReview = {singer, channel, reference:{part:part.source, line:part.line}, mix:singerPlayback.capture()};
@@ -9300,6 +9312,11 @@
     } finally { changingReviewFocus = false; }
     updatePitchCaptureAppearance();
     if (reviewTrack) void compPanel?.resumePractice();
+  }
+
+  function leaveReviewForPartChoice() {
+    if (stationReview) resumeStationPractice({reviewTrack:false});
+    else if (reviewMix) resumeRecordingMix();
   }
 
   function rememberReviewMix() {
@@ -10553,8 +10570,10 @@
     const currentBars = scoreView === "bars" && !barRenderFrame ? barSystems : [];
     recordingBarRanges = new Map(currentBars.map(({startTick,endTick,minPitch,maxPitch,referencePitch}) =>
       [startTick + ":" + endTick, {minPitch,maxPitch,referencePitch}]));
+    const part = practicePartIndex, line = practiceDivisi[part] ?? null;
+    const captureTarget = compDescriptor(part,line), captureSinger = compPanel?.stationPerson(), captureSlot = spec.trackSlot;
     const targetKey = compPanel?.recordingKey();
-    engine.setOverdubTarget(targetKey,compPanel?.stationPerson()?.id);
+    engine.setOverdubTarget(targetKey,captureSinger?.id);
     pendingCaptureTrace = {key: targetKey, from:engine.secondsAtTick(spec.initial.start), to:null};
     const joining = engine.playing;
     if (!joining) {
@@ -10605,14 +10624,16 @@
           label: `${scoreLocationAtTick(start)}-${spec.label.split("-").at(-1)}`};
         if (spec.mode === "segment") Object.assign(spec, {start, seconds: spec.initial.seconds});
       }
-      if (compPanel) spec = compPanel.recordingPlan(spec);
+      spec.part = trackLabel(part,line);
+      spec.trackSlot = captureSlot;
+      if (compPanel) spec = compPanel.recordingPlan(spec,captureTarget,captureSinger);
       const chain = await recordingChain();
       if (chain) spec.captureChain = chain.id;
       if (generation !== takeRequestGeneration) return;
       spec.captureProfile = window.MeleteMicrophoneCheck.verifyRawInput(pitchCaptureStream);
       if (engine.native) spec.captureProfile.backend = "WASAPI exclusive";
-      spec.pitchReference = takePitchReference(spec);
-      if (spec.initial) spec.initial.pitchReference = takePitchReference({...spec, ...spec.initial});
+      spec.pitchReference = takePitchReference(spec,part,line);
+      if (spec.initial) spec.initial.pitchReference = takePitchReference({...spec, ...spec.initial},part,line);
       journal = new window.MeleteRecording.TakeJournal(takeStore, takeSongKey(), spec, pitchCaptureContext.sampleRate, {
         onSaved: record => {
           takeLibrary.set(record.id, record);
@@ -11715,9 +11736,7 @@
   });
   elements.playbackReturn.addEventListener("click", () => scrollToPlayback(playbackDirection(), "smooth", false));
   elements.practicePart.addEventListener("input", () => {
-    if (stationReview) { resumeStationPractice(); return; }
     const selected = practicePartPager?.value();
-    void stopTakeRecording("Stopped: practice part changed", true);
     setPracticePart(selected);
     updateNoteActionLabel();
     if (scoreView === "bars") scheduleBarRender();
