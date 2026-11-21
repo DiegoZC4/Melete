@@ -278,7 +278,7 @@
   let takeNotice = "";
   let takeScoring = null;
   const takeScoreFailures = new Map();
-  let singEnabled = false, singArmGeneration=0;
+  let singEnabled = false, singArmGeneration=0, songRecordingHandoff=null;
   function wantsPitchCapture() {
     return !rehearsalReview && !conductorMode && singEnabled;
   }
@@ -9128,6 +9128,7 @@
 
   async function togglePitchCapture() {
     if(!ready || conductorMode || rehearsalReview)return;
+    songRecordingHandoff=null;
     if (wantsPitchCapture() && !nativeInputNeedsRetry()) {
       disablePitchCapture();
       return;
@@ -11983,23 +11984,51 @@
   attachHoldReset(elements.loopToggle, toggleLoop, clearLoop, "loop");
   elements.playPause.addEventListener("click", togglePracticePlayback);
   document.addEventListener("melete:restore-position", event => restorePlaybackPosition(event.detail?.milliseconds));
-  document.addEventListener("melete:activate", () => {
+  function restoreSongRecording(session, linkedPart) {
+    if (!session || conductorMode || rehearsalReview) { void restorePitchCapture(); return; }
+    const handoff = songRecordingHandoff = {session};
+    singEnabled = session.sing;
+    updatePitchCaptureAppearance();
+    handoff.ready = (async () => {
+      await compPanel?.stationHandoff();
+      if (songRecordingHandoff !== handoff || !pitchCapturePageActive) return;
+      // The destination's saved singer and mix have now finished loading.
+      // An unavailable singer must never route this pass to somebody else.
+      singEnabled = session.sing && (!session.singer || compPanel?.stationPerson()?.id === session.singer);
+      if (singEnabled && session.practicing) {
+        leaveReviewForPartChoice();
+        const part = !linkedPart && mixerParts.find(p => p.short === session.part);
+        if (part) {
+          choosePracticePart(part.source,part.line);
+          hidePartChooser();
+        } else if (Number.isInteger(practicePartIndex)) compPanel?.practicePartChosen();
+      }
+      savePreferences();
+      void restorePitchCapture();
+    })().finally(() => { if (songRecordingHandoff === handoff) songRecordingHandoff=null; });
+  }
+  document.addEventListener("melete:activate", event => {
     referencePlayer?.activate(true);
     pitchCapturePageActive = true;
     readSettingsSections();
     syncSettingsSections();
-    restorePitchCapture();
+    restoreSongRecording(event.detail?.recordingSession, event.detail?.linkedPart);
     if (ready) { initializeMediaSession(); void refreshMicrophoneChoices(); }
     if (takeLibraryReady) void loadTakeLibrary().catch(() => {});
     requestAnimationFrame(revealPendingLoopStart);
   });
-  document.addEventListener("melete:deactivate", () => {
+  document.addEventListener("melete:deactivate", event => {
+    if (ready && event.detail) event.detail.recording = songRecordingHandoff?.session || {
+      sing:wantsPitchCapture(), practicing:!stationReview && !reviewMix,
+      part:mixerParts[practiceMixerIndex()]?.short, singer:compPanel?.stationPerson()?.id || null
+    };
+    songRecordingHandoff=null;
     linkedPracticeState = null;
     relativeMix=null;relativeGuide=null;pendingMixReceipt=null;
     referencePlayer?.activate(false);
     pitchCapturePageActive = false;
     microphoneCheck?.close();
-    const stopped = stopTakeRecording("Stopped: song changed", true);
+    const stopped = stopTakeRecording("Stopped", true, {discardShortTail:false});
     disablePitchCapture(false, { preservePreference: true });
     stopTakePreview();
     clearTakeLayers();
@@ -12512,6 +12541,13 @@
       engine.beforeStart = () => {
         keyboardAudition?.();
         keyboardStepAnchor = null;
+        if (songRecordingHandoff) {
+          const request = engine.transportRequest;
+          void songRecordingHandoff.ready.then(() => {
+            if (request === engine.transportRequest && pitchCapturePageActive && !document.hidden) void engine.startTransport();
+          });
+          return true;
+        }
         if (conductorMode || stationReview || !wantsPitchCapture()) return false;
         if (takeState === "stopping") {
           const request = engine.transportRequest;

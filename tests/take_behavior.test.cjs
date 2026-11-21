@@ -7,7 +7,7 @@ const ref=()=>({version:1,fingerprint:'score',part:0,line:null,rate:1,start:0,en
 
 test('a later pass starting inside the initial rest leaves one sung segment, preserving source captures',()=>{
   const make=(id,stage,from,to,date)=>{
-    const descriptor={song:'seed',slot:stage,station:{id:'singer-a',name:'Singer A',stage},reference:ref()};
+    const descriptor={song:'seed',slot:'station:singer-a:'+stage,station:{id:'singer-a',name:'Singer A',stage},reference:ref()};
     const take={id,createdAt:date,origin:0,analysisFrames:[{start:14,end:16,cents:6000},{start:20,end:30,cents:6200}]};
     return {state:{...model.empty(descriptor),firstTakeNumber:date,segments:[{takeId:id,from,to}]},sources:new Map([[id,take]])};
   };

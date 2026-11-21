@@ -64,7 +64,9 @@
       if (contour && !contourVersions.has(contour)) contourVersions.set(contour, ++contourVersion);
       return [take.id, take.frames, take.updatedAt, contourVersions.get(contour), take.pitchScore?.scoringVersion,take.performer?.id,take.playbackAdvance];
     }
-    const slotKey = `melete:track-slots:${adapter.song()}`;
+    const slotKey = `melete:recording-targets:v2:${adapter.song()}`;
+    const dayOf = root.MeleteRecording.recordingDay;
+    let rehearsalDay = dayOf(), recentPerformances = new Map(), datedSources = new Map();
     const sourceControl = byId("takeSourceControl"), sourceFilter = byId("takeSourceFilter");
     const reviewTable = byId("takeReviewTable");
     const sourceKey = "melete:take-source:v1";
@@ -110,10 +112,15 @@
         d={...base,slot:(base.slot || "practice")+":pass-"+n,layerNumber:n};
       }
     }
-    const slotIdentity = d => d.station ? JSON.stringify([d.slot, d.reference.part, d.reference.line, d.reference.rate]) : identity(d);
     function selectedDescriptor(base) {
-      const slot = base && slots[slotIdentity(base)];
-      return writableDescriptor(slot ? {...base, slot} : base);
+      if (!base) return null;
+      const scope = model.performanceScope(base), choice = slots[scope];
+      const id = choice?.day === rehearsalDay ? choice.id : recentPerformances.get(scope)?.id ?? "take@" + rehearsalDay;
+      return writableDescriptor(model.performanceDescriptor(base, id));
+    }
+    function selectPerformance(d) {
+      slots[model.performanceScope(d)] = {day:rehearsalDay, id:model.performanceId(d)};
+      try { localStorage.setItem(slotKey, JSON.stringify(slots)); } catch {}
     }
     function currentDescriptor() {
       const d = adapter.descriptor();
@@ -123,10 +130,13 @@
       d.reference.rate, station.current()?.id ?? null]);
     function recordingPlan(spec, base = adapter.descriptor(), singer = station.current()) {
       const plan=stations.recordingPlan(spec,singer);
+      if (!base || !singer) return plan;
+      const selected=selectedDescriptor(stations.descriptor(base,singer,singer.stage));
+      const id=model.performanceId({...selected, slot:spec.trackSlot ?? selected.slot});
       const assign=pass=>{
         if (!pass?.station) return pass;
-        const d=base && selectedDescriptor(stations.descriptor(base,pass.station,pass.station.stage));
-        return d ? {...pass,trackSlot:d.slot} : pass;
+        const d=model.performanceDescriptor(stations.descriptor(base,pass.station,pass.station.stage),id);
+        return {...pass,trackSlot:d.slot};
       };
       return plan.initial ? {...assign(plan),initial:assign(plan.initial)} : assign(plan);
     }
@@ -520,18 +530,20 @@
       const seen = new Set();
       for (const take of takes) {
         const named = take.station, r = take.pitchReference;
-        if (!named || !r || !take.complete || !take.finalized || stations.stageLabel(named.stage) === "") continue;
+        if (!r || !take.complete || !take.finalized) continue;
+        if (named ? !stations.stageLabel(named.stage) : !take.trackSlot?.startsWith("take@")) continue;
         const source = JSON.stringify([take.trackSlot, r.part, r.line, r.rate]);
         if (seen.has(source)) continue;
         const base = adapter.descriptor(r.part, r.line ?? null);
         if (!base || base.reference.rate !== r.rate) continue;
-        const d = stations.descriptor(base, named, named.stage);
-        if (d.slot !== take.trackSlot) {
+        const d = named ? stations.descriptor(base, named, named.stage) : {...base, slot:take.trackSlot};
+        if (named && d.slot !== take.trackSlot) {
           if (!take.trackSlot?.startsWith(d.slot+":")) continue;
           d.slot=take.trackSlot;
         }
         seen.add(source);
-        result.set(model.key(d), d);
+        const key = model.key(d);
+        if (!result.has(key)) result.set(key, d);
       }
       return result;
     }
@@ -539,18 +551,17 @@
       await publicationsReady;
       saved = await adapter.store.comps(adapter.song());
       history = await adapter.store.compHistory(adapter.song());
+      const takes = adapter.takes();
+      datedSources = new Map(takes.map(t => [t.id,t]));
+      recentPerformances = model.currentPerformances(saved, datedSources, rehearsalDay, dayOf);
       const request = autoReview;
       if (request?.initial) {
         if (request !== autoReview) { dirty = true; return; }
         request.initial = false;
-        const base = adapter.descriptor();
-        const newest = base && !station.current() && saved.filter(s => !s.descriptor.station && identity(s.descriptor) === identity(base)
-          && s.descriptor.reference.rate === base.reference.rate && (s.track || s.segments.length))
-          .sort((a, b) => (b.editedAt || b.updatedAt || b.createdAt || 0) - (a.editedAt || a.updatedAt || a.createdAt || 0))[0];
-        if (base && !station.current()) slots[identity(base)] = newest?.descriptor.slot || null;
-        request.key = newest?.publication ? newest.key : base ? model.key(currentDescriptor()) : null;
+        const chosen = currentDescriptor();
+        request.key = chosen ? model.key(chosen) : null;
       }
-      const current = currentDescriptor(), takes = adapter.takes();
+      const current = currentDescriptor();
       const stamp = JSON.stringify([[...targets(current, takes).keys()], saved.map(s => [s.key, s.revision]),
         practiceIdentity, current && model.key(current), recording,
         takes.map(t => [t.id, t.frames, t.finalized, t.deleteAfter, t.restAudioVersion, t.updatedAt,
@@ -625,7 +636,7 @@
       }
       tracks = next;
       armed = current ? model.key(current) : null;
-      const grouped = model.singerTracks(tracks, t => stations.trackSinger(t.state,t.sources), armed);
+      const grouped = model.singerTracks(tracks, t => stations.trackSinger(t.state,t.sources), armed, dayOf);
       for (const [key, old] of views) {
         const nextView=grouped.views.get(key);
         if (nextView && audioKey(nextView.state,nextView.sources) === audioKey(old.state,old.sources)) continue;
@@ -642,7 +653,8 @@
         }
       }
       views=grouped.views; viewOwners=grouped.owners;
-      const preparingPart = current && requestedPractice === practiceTarget(current);
+      const preparingPart = current && (requestedPractice === practiceTarget(current) || [...views.values()].some(t =>
+        t.state.segments.length && model.performanceScope(t.state.descriptor) === model.performanceScope(current)));
       const display = [...views.values()].filter(t => t.state.segments.length || t.state.track || (preparingPart && t.state.key === armed));
       compVoices=new Set([...display.filter(t=>t.state.segments.length).map(t=>singerVoice(stations.trackSinger(t.state,t.sources),t.state.descriptor.reference)),
         ...saved.filter(s=>s.processed?.length).map(s=>singerVoice(s.descriptor.station,s.descriptor.reference))].filter(Boolean));
@@ -708,6 +720,16 @@
       cloud?.changed();
     }
     async function refresh({active = false, force = false} = {}) {
+      if (!recording || !active) {
+        const today = dayOf();
+        if (today !== rehearsalDay) {
+          rehearsalDay = today;
+          recentPerformances.clear();
+          requestedPractice = practiceTarget(adapter.descriptor());
+          practiceIdentity = null;
+          adapter.clearSingerMix();
+        }
+      }
       recording = active;
       // The station picker can restore before IndexedDB has loaded the sources.
       // loadTakeLibrary schedules another refresh once that snapshot is ready.
@@ -809,22 +831,17 @@
       if (!base || target !== practiceTarget(adapter.descriptor())) return;
       let descriptor = selectedDescriptor(base);
       let draft = tracks.get(model.key(descriptor))?.state;
-      // A named singer keeps one unfinished pass and one combined performance.
-      if (!(base.station && draft?.track && !draft.segments.length)) {
-        if (draft?.track || draft?.segments.length) {
-          const id = crypto.randomUUID();
-          const siblings = [...tracks.values()].filter(t => identity(t.state.descriptor) === identity(base));
-          descriptor = {...base, slot:base.station ? base.slot + ":" + id : id,
-            layerNumber:1 + Math.max(1, ...siblings.map(t => t.state.descriptor.layerNumber || 1))};
-        }
-        const key = model.key(descriptor);
-        const previous = tracks.get(key)?.state;
-        draft = await adapter.store.saveComp({...(previous || model.empty(descriptor)), track:true});
-        saved = [...saved.filter(s => s.key !== key), draft];
+      if (!(base.station && draft?.track && !draft.segments.length && !viewFor(draft.key)?.state.segments.length)) {
+        const firstStage = base.station ? stations.descriptor(base,base.station,"start") : base;
+        descriptor = model.performanceDescriptor(firstStage, "take@" + rehearsalDay + ":" + crypto.randomUUID());
+        const siblings = [...tracks.values()].filter(t => model.performanceScope(t.state.descriptor) === model.performanceScope(base));
+        descriptor.layerNumber = 1 + Math.max(0, ...siblings.filter(t=>t.state.track || t.state.segments.length).map(t=>t.state.descriptor.layerNumber || 1));
+        draft = await adapter.store.saveComp({...model.empty(descriptor), track:true, createdAt:Date.now()});
+        saved = [...saved.filter(s => s.key !== draft.key), draft];
       }
       if (target !== practiceTarget(adapter.descriptor())) return;
-      slots[slotIdentity(base)] = descriptor.slot || null;
-      try { localStorage.setItem(slotKey, JSON.stringify(slots)); } catch {}
+      selectPerformance(descriptor);
+      if (base.station) station.verifyStage();
       revealAddedTrack = draft.key;
       noteExplicitSelection();
       adapter.selectDraft(layerId(draft));
@@ -934,10 +951,12 @@
           noteExplicitSelection();
         }
         const current = adapter.descriptor();
-        if (!locked(track) && current && identity(current) === identity(state.descriptor) && !state.descriptor.station && !station.current()) {
-          slots[identity(current)] = state.descriptor.slot || null;
-          localStorage.setItem(slotKey, JSON.stringify(slots));
-          armed = key;
+        if (expectedSelection === null && !locked(track) && current && identity(current) === identity(state.descriptor)
+          && (station.current()?.id ?? null) === (state.descriptor.station?.id ?? null)
+          && model.performanceDate(state,datedSources,dayOf) === rehearsalDay) {
+          selectPerformance(state.descriptor);
+          if (!station.current()) armed = key;
+          else checkSingerRoute = true;
         }
       }
       busy = true; render();
@@ -958,12 +977,14 @@
     }
     function stageFor(singer) {
       const base = adapter.descriptor();
-      const key = base && model.key(stations.descriptor(base, singer, "start"));
       if (!base) return "start";
+      const first=selectedDescriptor(stations.descriptor(base,singer,"start"));
+      const working=selectedDescriptor(stations.descriptor(base,singer,"scratchpad"));
       const ref=base.reference;
-      const landing=adapter.takes().some(t=>t.station?.id===singer.id && t.station.stage==="start" && t.finalized && t.complete && !t.pitchScore && !t.deleteAfter
+      const landing=adapter.takes().some(t=>t.station?.id===singer.id && t.trackSlot===first.slot && t.finalized && t.complete && !t.pitchScore && !t.deleteAfter
         && t.pitchReference?.part===ref.part && (t.pitchReference.line??null)===(ref.line??null) && t.pitchReference.rate===ref.rate);
-      return landing || saved.some(s => s.key === key && s.segments.length) ? "scratchpad" : "start";
+      const firstKey=model.key(first), workingKey=model.key(working);
+      return landing || saved.some(s => (s.key===firstKey || s.key===workingKey) && s.segments.length) ? "scratchpad" : "start";
     }
     function stationChanged(personChanged) {
       if(personChanged){singerRevision++;requestedPractice=null;adapter.clearSingerMix?.();}
@@ -971,9 +992,8 @@
       checkSingerRoute = revealSinger;
       adapter.clear();
       adapter.practicePersonChanged?.(personChanged);
-      const current = currentDescriptor();
       autoReview = personChanged && !station.current() ? null :
-        {initial: false, selection: adapter.selectionRevision(), key: current ? model.key(current) : null};
+        {initial: true, selection: adapter.selectionRevision(), key: null};
       void refresh({force: true});
     }
     const creditDialog=byId("takeSingerDialog"), creditInput=byId("takeSingerName");
@@ -1072,7 +1092,7 @@
         const comps = (await adapter.store.comps(song)).filter(s => s.segments.length);
         const sourceTracks=new Map(comps.map(state=>[state.key,{state,sources:new Map(takes
           .filter(t=>state.segments.some(s=>s.takeId===t.id) || model.eligible(t,state.descriptor)).map(t=>[t.id,t]))}]));
-        const grouped=model.singerTracks(sourceTracks,t=>stations.trackSinger(t.state,t.sources));
+        const grouped=model.singerTracks(sourceTracks,t=>stations.trackSinger(t.state,t.sources),null,dayOf);
         const rows = [...grouped.views.values()].map(({state,sources}) => {
           const {part, line = null, rate} = state.descriptor.reference;
           const bars = pitch.mergeRanges(state.segments.map(s => [s.from, s.to]))
@@ -1123,15 +1143,18 @@
         if(track?.state.segments.length) await play(armed,"review",adapter.selectionRevision());
       },
       stationPerson: () => station.current(),
+      stationHandoff: station.handoffReady,
       requireSinger:()=>{if(!station.needsSinger())return false;adapter.showSingerPicker();return true;},
-      prepareStation:station.enabled ? async () => {
+      prepareStation:async () => {
+        // A tab can remain open overnight. Resolve today's target before capturing.
+        if (!station.enabled) {await refresh();return;}
         await station.handoffReady();
         if (station.needsSinger()) {adapter.showSingerPicker();throw new Error('Choose a singer before recording.');}
-        if (!station.current()) return;
         await refresh();
+        if (!station.current()) return;
         saved=await adapter.store.comps(adapter.song());
         if (station.verifyStage()) await refresh({force:true});
-      } : null,
+      },
       recordingPlan, recordingKey, get pendingDraft() { return pendingDraft; },
       advanceStart: slot => station.advance(slot) ? recordingKey() : null,
       settleStation: station.settle, playbackChanged: station.playbackChanged, refreshStationMix: station.refreshMix,

@@ -8,6 +8,7 @@ const ROSTER = {singers: [{name: 'DemoA', voice: 'Alto'}, {name: 'DemoZ', voice:
   {name: 'DemoS', voice: 'Soprano'}, {name: 'DemoN', voice: ''}, {name: 'Loop Fixture', voice: ''}]};
 
 const slot = page => page.evaluate(() => __qa.compState?.descriptor.slot || null);
+const dailySlot = page => page.evaluate(() => 'take@' + MeleteRecording.recordingDay());
 const rows = page => page.locator('#compRows .comp-row').evaluateAll(list => list.map(row => ({
   singer: row.querySelector('.take-singer').textContent, part: row.querySelector('.take-part').textContent,
   mean: row.querySelector('.comp-mean').textContent, median: row.querySelector('.comp-median').textContent, armed: row.classList.contains('is-armed'),
@@ -25,7 +26,7 @@ const seed = (page, error, legacyFinal = false, performer = null) => page.evalua
   window.__stationCreated = Math.max(Date.now(), (window.__stationCreated || 0) + 1);
   const take = await q.takeStore.append({id, song: q.takeSong, createdAt: window.__stationCreated, sampleRate, replaces: true,...(performer?{performer}:{}),
     ...(legacyFinal ? {station:{...q.compState.descriptor.station, stage:'final'}, trackSlot:'station:demoa:final'}
-      : {trackSlot: q.compState.descriptor.slot || null}), part: d.label, rate, start, end, pitchReference: ref},
+      : {station:q.compState.descriptor.station, trackSlot:q.compState.descriptor.slot || null}), part: d.label, rate, start, end, pitchReference: ref},
   0, new Int16Array(frames), {finalized: true, complete: true});
   const contour = Array.from({length: Math.ceil(frames / 80)}, (_, i) => {
     const from = i / 100, to = Math.min((i + 1) / 100, frames / sampleRate);
@@ -119,7 +120,8 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     await page.screenshot({path: path.join(output, `station-picker-${label}.png`)});
     await input.press('Escape');
     assert.equal(await input.inputValue(), '', 'Escape leaves nobody chosen');
-    assert.equal(await slot(page), null);
+    const daily = await dailySlot(page);
+    assert.equal(await slot(page), daily);
 
     await input.click();
     await input.fill('aliasb');
@@ -136,19 +138,19 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     if (mobile) await firstOption.tap(); else await firstOption.click();
     await page.evaluate(() => __qa.refreshComp());
     assert.equal(await input.inputValue(), 'DemoA');
-    assert.equal(await slot(page), 'station:demoa:start');
+    assert.equal(await slot(page), 'station:demoa:start:'+daily);
     await input.fill(''); await input.blur();
     await input.click(); await input.press('ArrowDown'); await input.press('ArrowDown'); await input.press('Enter');
     await page.evaluate(() => __qa.refreshComp());
     assert.equal(await input.inputValue(), 'DemoA');
     assert.equal(await page.locator('#stationSingerList').isVisible(), false);
     assert.equal(await stage(page), 'Start');
-    assert.equal(await slot(page), 'station:demoa:start');
+    assert.equal(await slot(page), 'station:demoa:start:'+daily);
     assert.deepEqual(await rows(page), [], 'selecting a singer does not create an empty take');
 
     await seed(page, 30);
     assert.equal(await stage(page), 'Scratchpad', 'a landed Start take protects the baseline');
-    assert.equal(await slot(page), 'station:demoa:scratchpad');
+    assert.equal(await slot(page), 'station:demoa:scratchpad:'+daily);
     await seed(page, 20);
     await seed(page, 10);
     await seed(page, 12, true);
@@ -167,7 +169,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     await pick(page, 'demoa');
     assert.equal(await stage(page), 'Scratchpad', 'returning singers resume after Start');
     await pick(page, 'Guest Singer');
-    assert.equal(await slot(page), 'station:demoa:scratchpad', 'a name outside the directory cannot create a singer');
+    assert.equal(await slot(page), 'station:demoa:scratchpad:'+daily, 'a name outside the directory cannot create a singer');
     assert.deepEqual((await rows(page)).filter(row => row.armed).map(row => row.singer), ['DemoA']);
     await pick(page, 'DemoZ');
 
@@ -231,7 +233,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     await input.fill('');
     await input.blur();
     await page.evaluate(() => __qa.refreshComp());
-    assert.equal(await slot(page), null, 'clearing the field returns to the ordinary track');
+    assert.equal(await slot(page), daily, 'clearing the field returns to the ordinary track');
 
     // Each singer keeps manual adjustments; a newcomer gets their assigned guide.
     assert.equal(await page.locator('[data-settings-section="practice"] #stationPicker').count(), 1, 'the picker is a practice setting');
@@ -298,7 +300,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     assert.deepEqual((await rows(page)).filter(row => row.singer !== '—'), saved);
     await page.locator('#compRows .comp-row', {hasText: 'DemoA'}).first().locator('.comp-review').click();
     await page.waitForFunction(() => document.querySelector('#compRows .comp-row.is-selected, #compRows .comp-review[aria-pressed="true"]'));
-    assert.equal(await slot(page), null, 'reviewing a named track does not arm it');
+    assert.equal(await slot(page), daily, 'reviewing a named track does not arm it');
     await seed(page, 25);
     const after = await rows(page);
     assert.deepEqual(after.filter(row => row.singer !== '—'), saved, 'new recordings leave named tracks alone');
@@ -356,9 +358,9 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     assert.ok((await capture('demoa',before.id)) && !await capture('demoz',before.id),'correction survives reload');
     await pick(page, 'DemoN');
     assert.equal(await stage(page), 'Start');
-    assert.equal((await record(page)).trackSlot, 'station:demon:start', 'a real recording lands on the chosen track');
+    assert.equal((await record(page)).trackSlot, 'station:demon:start:'+daily, 'a real recording lands on the chosen track');
     assert.equal(await stage(page), 'Scratchpad');
-    assert.equal((await record(page)).trackSlot, 'station:demon:scratchpad');
+    assert.equal((await record(page)).trackSlot, 'station:demon:scratchpad:'+daily);
     assert.equal(await stage(page), 'Scratchpad', 'Scratchpad stays put for repeated comping');
     await page.waitForFunction(()=>__qa.recording.takes.filter(t=>t.station?.id==='demon' && t.pitchScore?.trackedSeconds>0).length>=2);
     await page.evaluate(()=>__qa.refreshComp());
@@ -377,7 +379,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     const loop = await page.evaluate(async () => {
       const passes = __qa.recording.takes.filter(t => t.station?.id === 'loop-fixture' && t.complete);
       const states = await __qa.takeStore.comps(__qa.takeSong);
-      const plays = stage => [...new Set(states.find(s => s.descriptor.slot === 'station:loop-fixture:' + stage)
+      const plays = stage => [...new Set(states.find(s => s.descriptor.station?.id === 'loop-fixture' && s.descriptor.station.stage === stage && s.segments.length)
         ?.segments.map(s => s.takeId))];
       return {first:passes[0].id, later:passes.slice(1).map(t=>t.id), start:plays('start'), scratch:plays('scratchpad')};
     });
@@ -426,7 +428,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     await open(page,origin+'?part=Alto');
     const corrected=page.locator('#compRows .comp-row').filter({hasText:'Demo Corrected'});
     assert.equal(await corrected.getAttribute('data-comp-key'),stableKey,'archival credit does not reroute the personal comp');
-    assert.equal(await slot(page),null);
+    assert.equal(await slot(page),await dailySlot(page));
     const published=await page.evaluate(async key=>{
       const q=__qa,store=q.takeStore,song=q.takeSong;
       const state=(await store.comps(song)).find(s=>s.key===key);

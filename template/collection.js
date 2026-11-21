@@ -52,7 +52,7 @@
     if (value !== null) stationPerson=JSON.parse(value);
   } catch {}
   let selected = -1, frame = null, settingsOpen = null, saving = false;
-  let reviewSinger = null;
+  let reviewSinger = null, recordingSession = null;
   const presetKeys = ["view", "myVol", "otherVol", "myPan", "otherPan", "layout", "width"];
   const passageKeys = ["part", "div", "loop", ...presetKeys];
   const songMixReceipts = new Map();
@@ -180,7 +180,9 @@
     const review = {singer:null};
     child?.dispatchEvent(new frame.contentWindow.CustomEvent("melete:capture-review", {detail:review}));
     reviewSinger = review.singer;
-    child?.dispatchEvent(new frame.contentWindow.CustomEvent("melete:deactivate"));
+    const leaving = {};
+    child?.dispatchEvent(new frame.contentWindow.CustomEvent("melete:deactivate", {detail:leaving}));
+    if (leaving.recording) recordingSession = leaving.recording;
     settingsOpen = child?.getElementById("settingsToggle")?.getAttribute("aria-expanded") === "true";
     const play = child?.getElementById("playPause");
     if (play?.classList.contains("is-playing")) play.click();
@@ -195,11 +197,12 @@
     if (settingsOpen !== null && (settings.getAttribute("aria-expanded") === "true") !== settingsOpen) settings.click();
     player.frame.inert = false;
     player.frame.setAttribute("aria-hidden", "false");
-    child.dispatchEvent(new player.frame.contentWindow.CustomEvent("melete:activate"));
+    const linkedPart = addressFields.part !== undefined || addressFields.div !== undefined;
     if (stationView) child.dispatchEvent(new player.frame.contentWindow.CustomEvent("melete:station-visit",
-      {detail:{name:stationPerson, linkedPart:addressFields.part !== undefined || addressFields.div !== undefined}}));
+      {detail:{name:stationPerson, linkedPart}}));
     deliverLink(player);
-    if (reviewSinger && addressFields.part === undefined && addressFields.div === undefined)
+    child.dispatchEvent(new player.frame.contentWindow.CustomEvent("melete:activate", {detail:{recordingSession,linkedPart}}));
+    if (reviewSinger && !linkedPart && !(recordingSession?.sing && recordingSession.practicing))
       child.dispatchEvent(new player.frame.contentWindow.CustomEvent("melete:review-singer", {detail:reviewSinger}));
     paint(player);
     loading.hidden = true;

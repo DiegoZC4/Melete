@@ -1,5 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const model=require('../template/practice_comp.js');
+const {recordingDay}=require('../template/loop_recorder.js');
 const {historySources}=require('../template/loop_recorder.js');
 test('archived takes show their recording dates and leave unknown times blank',()=>{
   const {reviewDates}=require('../template/comp_panel.js');
@@ -66,6 +67,43 @@ test('parallel divisi lines stay independent even on the same staff and recordin
   const {views}=model.singerTracks(new Map(voices.map(t=>[t.state.key,t])),singer,voices[1].state.key);
   assert.equal(views.size,3);
   for(const t of voices)assert.deepEqual(views.get(t.state.key).state.segments,t.state.segments);
+});
+test('separate + takes retain the complete earlier B2 even when the later take covers the same notes',()=>{
+  const older=track('earlier','Singer','scratchpad',0,4,60,3,new Date(2026,10,19,12).getTime());
+  const newer=track('later','Singer','scratchpad',0,2,64,3,new Date(2026,10,21,12).getTime());
+  for(const [t,id] of [[older,'legacy-uuid-one'],[newer,'legacy-uuid-two']]){
+    t.state.descriptor=model.performanceDescriptor(t.state.descriptor,id);
+    t.state.key=model.key(t.state.descriptor);
+  }
+  const sources=new Map([...older.sources,...newer.sources]);
+  const current=model.currentPerformances([older.state,newer.state],sources,'2026-11-21',recordingDay);
+  assert.equal(current.get(model.performanceScope(newer.state.descriptor)).id,'legacy-uuid-two');
+  const tracks=new Map([older,newer].map(t=>[t.state.key,t]));
+  const grouped=model.singerTracks(tracks,singer,newer.state.key,recordingDay);
+  assert.equal(grouped.views.size,2);
+  assert.deepEqual(grouped.views.get(older.state.key).state.segments,[{takeId:'earlier',from:0,to:4}]);
+  assert.deepEqual(grouped.views.get(newer.state.key).state.segments,[{takeId:'later',from:0,to:2}]);
+  assert.equal(model.currentPerformances([older.state,newer.state],sources,'2026-11-22',recordingDay).size,0);
+});
+test('within a dated take both stages share an identity, across midnight and explicit takes they stay separate',()=>{
+  const mk=(stage,id)=>{
+    const t=track(stage+id,'Singer',stage,0,4);
+    t.state.descriptor=model.performanceDescriptor(t.state.descriptor,id);
+    t.state.key=model.key(t.state.descriptor);return t;
+  };
+  const takes=[mk('start','take@2026-11-19'),mk('scratchpad','take@2026-11-19'),
+    mk('start','take@2026-11-21'),mk('start','take@2026-11-21:separate')];
+  const {views,owners}=model.singerTracks(new Map(takes.map(t=>[t.state.key,t])),singer,null,recordingDay);
+  assert.equal(views.size,3);
+  assert.equal(owners.get(takes[0].state.key),owners.get(takes[1].state.key));
+  assert.notEqual(owners.get(takes[2].state.key),owners.get(takes[3].state.key));
+  const source=new Map(takes.flatMap(t=>[...t.sources]));
+  const final=mk('final','take@2026-11-21:submitted');final.state.createdAt=Number.MAX_SAFE_INTEGER;
+  assert.notEqual(model.currentPerformances([...takes.map(t=>t.state),final.state],source,'2026-11-21',recordingDay)
+    .get(model.performanceScope(final.state.descriptor)).id,'take@2026-11-21:submitted');
+  takes[2].state.publication={kind:'archive'};
+  assert.equal(model.currentPerformances(takes.map(t=>t.state),source,'2026-11-21',recordingDay)
+    .get(model.performanceScope(takes[3].state.descriptor)).id,'take@2026-11-21:separate');
 });
 test('grouped Undo protects overwritten source audio as well as the visible composition',()=>{
   const empty={segments:[],track:false,firstTakeNumber:null};

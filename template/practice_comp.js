@@ -310,16 +310,57 @@
     normalize(state.segments);
     return true;
   }
-  // A singer can overdub several voices in the same song. Only pickups of
-  // the same scored part and divisi line belong in one reviewable performance.
-  function singerTracks(tracks, singerFor, preferredKey = null) {
+  // Start and Scratchpad are capture stages of one take. The suffix identifies
+  // the performance across those stages. Older + rows already have a UUID here.
+  const stageSlot = d => d.station ? `station:${d.station.id}:${d.station.stage}` : "";
+  function performanceId(d) {
+    const base = stageSlot(d), slot = d.slot || "";
+    if (slot === base) return "";
+    return base && slot.startsWith(base + ":") ? slot.slice(base.length + 1) : slot;
+  }
+  function performanceDescriptor(base, id) {
+    const slot = [stageSlot(base), id].filter(Boolean).join(":");
+    return slot ? {...base, slot} : base;
+  }
+  const performanceScope = d => JSON.stringify([d.song, d.station?.id ?? null,
+    d.reference.part, d.reference.line ?? null, d.reference.rate]);
+  function performanceDate(state, sources, dayOf) {
+    const dated = /^take@(\d{4}-\d{2}-\d{2})(?::|$)/.exec(performanceId(state.descriptor));
+    if (dated) return dated[1];
+    const ids = new Set([...state.segments.map(s => s.takeId), ...(state.processed || [])]);
+    const days = new Set();
+    for (const id of ids) {
+      const time = sources.get(id)?.createdAt;
+      if (Number.isFinite(time)) days.add(dayOf(time));
+    }
+    if (days.size) return days.size === 1 ? [...days][0] : null;
+    const time = state.createdAt ?? state.updatedAt;
+    return state.track && Number.isFinite(time) ? dayOf(time) : null;
+  }
+  function currentPerformances(saved, sources, day, dayOf) {
+    const current = new Map();
+    for (const state of saved) {
+      if (state.publication || state.descriptor.station?.stage === "final" || !(state.track || state.segments.length)
+        || performanceDate(state, sources, dayOf) !== day) continue;
+      const dates = state.segments.map(s => sources.get(s.takeId)?.createdAt).filter(Number.isFinite);
+      const time = dates.length ? Math.max(...dates) : state.createdAt ?? state.updatedAt ?? 0;
+      const scope = performanceScope(state.descriptor);
+      if (!current.has(scope) || time > current.get(scope).time) current.set(scope, {id:performanceId(state.descriptor), time});
+    }
+    return current;
+  }
+  function singerTracks(tracks, singerFor, preferredKey = null, dayOf) {
     const groups = new Map();
     for (const track of tracks.values()) {
       const singer = singerFor(track);
       const draft = track.state.track && !track.state.segments.length;
       const ref = track.state.descriptor.reference;
-      const group = singer?.id && !draft
-        ? JSON.stringify([track.state.song, singer.id, ref.part, ref.line ?? null, ref.rate]) : track.state.key;
+      const id = performanceId(track.state.descriptor);
+      const legacyDay = !id && dayOf ? performanceDate(track.state, track.sources, dayOf)
+        ?? (track.state.key === preferredKey ? dayOf() : null) : null;
+      const performance = id || (legacyDay ? "take@" + legacyDay : "");
+      const group = singer?.id && !draft && !track.state.publication
+        ? JSON.stringify([track.state.song, singer.id, ref.part, ref.line ?? null, ref.rate, performance]) : track.state.key;
       if (!groups.has(group)) groups.set(group, []);
       groups.get(group).push(track);
     }
@@ -370,5 +411,6 @@
     return {views,owners};
   }
   return {OFFER_VERSION, TRACK_VERSION, AUDIO_MARGIN_SECONDS, key, empty, adoptRevision, migrate, normalize, replace, clipNotes, matches, eligible, reconcile, reconcileAsync, workerSource, segmentCount,
-    segment, framesFor, stats, lastSung, bindMargins, repairMargins, offer, remove, undo, protectedIds, discardable, usedAudio, validate, singerTracks};
+    segment, framesFor, stats, lastSung, bindMargins, repairMargins, offer, remove, undo, protectedIds, discardable, usedAudio, validate,
+    performanceId, performanceDescriptor, performanceScope, performanceDate, currentPerformances, singerTracks};
 });

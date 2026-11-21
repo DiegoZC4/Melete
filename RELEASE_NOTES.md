@@ -1,4 +1,4 @@
-# Shared player release — 2026-11-18
+# Shared player release — 2026-11-21
 
 The website and offline station are built from the same template sources and
 receive the same HTML artifact and SHA-256 release manifest. The local host
@@ -41,10 +41,13 @@ not require changing drivers, recordings, singer directories or audio settings.
   singer’s track for the chosen part. A new part shows a selected empty row
   until its first pass. Switching during a recording saves the previous part
   and arms the new part for the next Play.
-- A singer’s pickups combine across recording stages within the same song,
-  voicepart, divisi line and playback speed. The table uses the original score
-  references to separate previously recorded parts. Grouped Undo history and
-  singer corrections continue to use the original source captures.
+- Starting a rehearsal on a new local date gives each singer a separate take
+  for each song, part, divisi line and speed. **+** starts another independent
+  take that day. Play and Stop keep pickups together within the selected take.
+  Older recordings created with **+** appear individually with their original audio.
+- Switching songs carries Sing, the selected station singer and a matching
+  voice part. Switching during a pass saves it with the outgoing song.
+  A linked part takes precedence. Turning Sing off also carries across songs.
 - Delete/Undo stays beside the affected row. Automatic empty-take cleanup
   requires verified zero-valued audio and preserves protected sources.
 - Local excludes uploaded recordings even when cached on the device. Cached

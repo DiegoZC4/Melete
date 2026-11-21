@@ -595,15 +595,13 @@
             const states = event.target.result, family = states.filter(s => s.descriptor.slot === d.slot && samePart(s.descriptor.reference));
             if (family.some(s=>s.publication)) { fail(new Error("Published recordings are read-only.")); return; }
             const named = {id:person.id, name:person.name, voice:person.voice || "", stage:d.station.stage};
-            const base = `station:${named.id}:${named.stage}`;
-            let occupied=states.some(s => s.descriptor.slot === base && samePart(s.descriptor.reference));
+            const slot = `station:${named.id}:${named.stage}:${crypto.randomUUID()}`;
             const sources=[];
             takes.index("song").openCursor(old.song).onsuccess = e => {
               const cursor=e.target.result;
               if (cursor) {
                 const take=cursor.value;
                 if (samePart(take.pitchReference)) {
-                  if (take.trackSlot===base) occupied=true;
                   if (take.trackSlot===d.slot) {
                     if (take.publication) { fail(new Error("Published recordings are read-only.")); return; }
                     if (take.active) { fail(new Error("Stop recording this take before changing its singer.")); return; }
@@ -612,8 +610,6 @@
                 }
                 cursor.continue(); return;
               }
-              // A destination can contain saved audio waiting for its first comp.
-              const slot=occupied ? base+":"+crypto.randomUUID() : base;
               const moved=family.map(state=>{
                 const descriptor={...state.descriptor,station:named,slot};
                 return {...state,descriptor,key:keyFor(descriptor),revision:state.revision+1};
@@ -740,14 +736,14 @@
             fail(new Error("This singer's comp changed. Reopen its singer field."));return;
           }
           const ids=new Set(members.flatMap(s=>[...(s.processed || []),...s.segments.map(p=>p.takeId)]));
-          const moves=new Map(), keys=new Map();
+          const moves=new Map(), keys=new Map(), performance=crypto.randomUUID();
           for (const member of members) {
             const old=states.get(member.key), d=old.descriptor;
             let descriptor=d;
             if (d.station) {
               if (d.station.id!==previousSinger) {fail(new Error("Singer attribution changed."));return;}
               descriptor={...d,station:{...d.station,id:person.id,name:person.name,voice:person.voice || ""},
-                slot:`station:${person.id}:${d.station.stage}:${crypto.randomUUID()}`};
+                slot:`station:${person.id}:${d.station.stage}:${performance}`};
             }
             const updated={...old,descriptor,key:keyFor(descriptor),revision:old.revision+1};
             moves.set(old.key,updated);keys.set(old.key,updated.key);

@@ -187,19 +187,22 @@ const {choosePart}=require('./browser-sing.cjs');
       await frame.waitForFunction(()=>__qa.recording.state==='off');
       if(await frame.evaluate(()=>__qa.engine.playing))await frame.locator('#playPause').click();
       await recordPass();
-      await frame.waitForFunction(()=>[...document.querySelectorAll('#compRows .comp-row')].filter(r=>r.querySelector('.take-singer').textContent==='Test Singer').length===1);
+      await frame.waitForFunction(()=>[...document.querySelectorAll('#compRows .comp-row')].filter(r=>
+        r.querySelector('.take-singer').textContent==='Test Singer' && !r.classList.contains('is-new')).length===2);
       const latest=await frame.evaluate(async()=>{
         const takes=await __qa.takeStore.list(__qa.takeSong);
         return Math.max(...takes.filter(t=>t.station?.name==='Test Singer' && t.complete && t.frames).map(t=>t.number));
       });
       await frame.waitForFunction(n=>[...document.querySelectorAll('#compRows .comp-row')].some(r=>
         r.querySelector('.take-singer').textContent==='Test Singer' && r.querySelector('.take-number').textContent===String(n)),latest);
-      assert.match(await namedRows.locator('.take-number').getAttribute('title'),new RegExp('Take '+latest+'.*in comp'));
+      const numbers=await namedRows.locator('.take-number').allTextContents();
+      assert.equal(new Set(numbers).size,2);
+      assert.match(await namedRows.locator('.take-number').filter({hasText:new RegExp('^'+latest+'$')}).getAttribute('title'),new RegExp('Take '+latest+'.*in comp'));
       assert.ok(named);
       assert.deepEqual(errors,[]);
       await page.screenshot({path:path.join(output,song+'-new-take.png')});
       reports.push({song,firstTrack:true,anotherPart:true,samePartLayer:true,newRowFirstAndVisible:true,
-        emptyMetrics:true,namedPassJoinsSingerComp:true,signedHistogram:true,
+        emptyMetrics:true,independentNamedTakes:true,signedHistogram:true,
         selectedDraft:true,mutedPlayingAndPinned:true,recordedIntoNewSlot:true,
         scrollReturnsToTop:true,existingOrderPreserved:true,cloudFilterRevealsNewLocalTake:true,pageErrors:errors.length});
     } finally {await context.close();}
