@@ -187,11 +187,11 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     // Listening to someone else must never redirect the next recording.
     const armedBefore = await slot(page);
     const recorded=page.locator('#compRows .comp-row:not(.is-new)').first();
-    await recorded.locator('.comp-review').click();
+    await recorded.locator('.comp-review .take-number').click();
     await page.waitForFunction(() => document.querySelector('#compRows .comp-row:not(.is-new) .comp-review').getAttribute('aria-pressed') === 'true');
     assert.equal(await slot(page), armedBefore);
     assert.equal(await input.inputValue(), 'DemoZ');
-    await recorded.locator('.comp-review').click();
+    await recorded.locator('.comp-review .take-number').click();
 
     assert.equal((await rows(page)).some(row => row.upload), false, 'named tracks never offer upload');
     const toggle = page.locator('#expandTakes'), fieldMenu = page.locator('#takeFieldMenu');
@@ -298,7 +298,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     assert.equal(await page.locator('#stationPicker').isVisible(), false);
     assert.equal(await page.locator('#stationStage').count(), 0);
     assert.deepEqual((await rows(page)).filter(row => row.singer !== '—'), saved);
-    await page.locator('#compRows .comp-row', {hasText: 'DemoA'}).first().locator('.comp-review').click();
+    await page.locator('#compRows .comp-row', {hasText: 'DemoA'}).first().locator('.comp-review .take-number').click();
     await page.waitForFunction(() => document.querySelector('#compRows .comp-row.is-selected, #compRows .comp-review[aria-pressed="true"]'));
     assert.equal(await slot(page), daily, 'reviewing a named track does not arm it');
     await seed(page, 25);
