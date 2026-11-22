@@ -235,11 +235,13 @@ async function checkLocalTakeFailures(page, origin, settled, {mobile, temporary,
   await page.evaluate(() => {
     navigator.storage.estimate = realEstimate;
     window.realUsage = __qa.takeStore.usage.bind(__qa.takeStore);
-    __qa.takeStore.usage = async () => { throw new DOMException('Test unavailable', 'InvalidStateError'); };
+    window.unavailableChecks = 0;
+    __qa.takeStore.usage = async () => { unavailableChecks++; throw new DOMException('Test unavailable', 'InvalidStateError'); };
   });
   await toggleRecording(page);
-  await page.waitForFunction(() => __qa.recording.state === 'off');
-  assert.match((await page.evaluate(() => __qa.recording)).notice, /Local storage unavailable/);
+  // Both failures leave the recorder off; wait for this check's own result.
+  await page.waitForFunction(() => unavailableChecks > 0 && __qa.recording.state === 'off'
+    && __qa.recording.notice.startsWith('Local storage unavailable'));
   assert.equal(await page.evaluate(() => quotaGumCalls), 0, 'unavailable storage never silently records in RAM only');
   assert.equal((await page.evaluate(() => __qa.recording)).takes.length, recovered.takes.length);
   await page.evaluate(() => {
