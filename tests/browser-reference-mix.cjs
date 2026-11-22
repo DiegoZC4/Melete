@@ -17,7 +17,7 @@ async function checkReferenceMix(browser,temporary,output) {
   execFileSync(process.env.PYTHON||'python3',[path.resolve(__dirname,'../build_trainer.py'),
     path.join(__dirname,'fixtures/shared-regressions.musicxml'),'--project-dir',project,'--config',config],{stdio:'pipe'});
   const html=(await fs.readFile(path.join(project,'dist/index.html'),'utf8')).replace('engine = new GuideEngine(sequence);',
-    'engine = new GuideEngine(sequence);window.__refQA={engine,get state(){return currentPreferenceState();}};');
+    'engine = new GuideEngine(sequence);window.__refQA={engine,get state(){return currentPreferenceState();},get savedRef(){return JSON.parse(localStorage.getItem(preferenceKey))?.reference;}};');
   const report=[];
   const offlineFile=path.join(temporary,'reference-offline.html');
   await fs.writeFile(offlineFile,html);
@@ -65,12 +65,32 @@ async function checkReferenceMix(browser,temporary,output) {
       await page.locator('.reference-pan').press('ArrowRight');
       const after=await page.evaluate(()=>__refQA.state);
       for(const key of ['audible','visible','volumes','pans','practicePart','scoreView'])assert.deepEqual(after[key],before[key],key);
+      const savedReference=()=>page.evaluate(()=>__refQA.savedRef);
+      assert.equal(after.reference.enabled,true,`Ref is still enabled before reloading at ${width}px`);
+      assert.deepEqual(await savedReference(),after.reference,'Ref written before reload');
+      if(width===1440)await page.addInitScript(()=>{
+        const decode=AudioContext.prototype.decodeAudioData;
+        const gesture=new Promise(resolve=>document.addEventListener('click',event=>{
+          if(event.isTrusted && event.target.closest('#playPause'))resolve();
+        },true));
+        AudioContext.prototype.decodeAudioData=async function(...args){await gesture;return decode.apply(this,args);};
+      });
       await page.reload();await page.waitForSelector('#playPause:not(:disabled)');
-      // Score readiness precedes asynchronous reference-audio restoration.
-      await page.waitForFunction(()=>__refQA.engine.referenceLayers.size===1
-        && document.querySelector('.reference-hear').getAttribute('aria-pressed')==='true');
+      assert.deepEqual(await savedReference(),after.reference,'saved Ref mix survives reload');
+      assert.deepEqual(await page.evaluate(()=>__refQA.state.reference),after.reference,'loaded Ref mix survives reload');
       assert.equal(await hear.getAttribute('aria-pressed'),'true');
       assert.equal(await page.locator('.reference-volume').getAttribute('data-value'),volume);
+      if(width===1440)assert.equal(await page.evaluate(()=>__refQA.engine.referenceLayers.size),0,'saved Ref stays on while decode awaits Play');
+      // A cold browser can defer Web Audio until the first user gesture. Check
+      // the saved UI first, then require audible reference output on actual Play.
+      await page.evaluate(()=>{
+        const e=__refQA.engine;e.updateMix(new Set(),[],[]);e.metronomeVolume=0;
+        e.ensureAudio();const a=e.context.createAnalyser();a.fftSize=2048;e.master.connect(a);
+        __refQA.refAudible=()=>{const x=new Float32Array(a.fftSize);a.getFloatTimeDomainData(x);return x.some(v=>Math.abs(v)>.03);};
+      });
+      await page.locator('#playPause').click();
+      await page.waitForFunction(()=>__refQA.engine.referenceLayers.get('reference:original')?.source && __refQA.refAudible());
+      await page.locator('#playPause').click();
       await page.evaluate(()=>document.dispatchEvent(new Event('melete:deactivate')));
       assert.equal(await page.evaluate(()=>__refQA.engine.referenceLayers.size),0,'switching songs releases reference audio');
       await page.evaluate(()=>document.dispatchEvent(new Event('melete:activate')));
