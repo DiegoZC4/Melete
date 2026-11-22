@@ -36,6 +36,8 @@ jobs:
   browser:
     runs-on: ubuntu-latest
     env:
+      # Exercise Web Audio and its worklets without an uncontrolled host speaker.
+      QA_SILENT_OUTPUT: '1'
       QA_LOOP_RELOAD_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.browser_suite == 'loop' && '1' || '' }}
     steps:
       - uses: actions/checkout@v4

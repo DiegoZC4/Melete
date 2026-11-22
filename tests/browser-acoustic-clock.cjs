@@ -1,8 +1,8 @@
 const assert = require('node:assert/strict');
 const {stabilizeFakeMedia} = require('./browser-fake-media.cjs');
 
-// Isolated browser only. Send the real guide through a known delay into the
-// real capture worklet, crossing the independently running Web Audio clocks.
+// Isolated browser only. Smoke-test a real cross-context MediaStream, then
+// use a sample-timed cable for absolute latency checks across page reloads.
 async function checkAcousticClock(context, origin) {
   const page=await context.newPage();
   try {
@@ -14,24 +14,37 @@ async function checkAcousticClock(context, origin) {
       const create=MeleteRecording.PcmCapture.create.bind(MeleteRecording.PcmCapture);
       window.cable={delay:.06};
       MeleteRecording.PcmCapture.create=async(mic,_source,onSamples,onError)=>{
-        const e=__qa.engine, bus=e.context.createMediaStreamDestination(), delay=e.context.createDelay(1);
-        const source=mic.createMediaStreamSource(bus.stream);
+        const out=__qa.engine.context, delay=out.createDelay(1);
+        const silent=out.createConstantSource();silent.offset.value=0;silent.connect(delay);silent.start();
         delay.delayTime.value=cable.delay;
-        if(!cable.disconnected)e.finalOutput.connect(delay);
-        delay.connect(bus);
-        const capture=await create(mic,source,onSamples,onError), stop=capture.stop.bind(capture);
-        capture.stop=async()=>{await stop();if(!cable.disconnected)e.finalOutput.disconnect(delay);
-          delay.disconnect();source.disconnect();bus.stream.getTracks().forEach(t=>t.stop());};
+        const connected=!cable.disconnected;
+        if(connected)__qa.engine.finalOutput.connect(delay);
+        // A fresh MediaStream adds a variable number of 10-ms FIFO blocks. It
+        // cannot stand in for a cable with identical latency after a reload.
+        const bus=cable.realStream ? out.createMediaStreamDestination() : null;
+        if(bus)delay.connect(bus);
+        const source=bus?mic.createMediaStreamSource(bus.stream):delay;
+        if(!bus && out.sampleRate!==mic.sampleRate)throw Error('Virtual cable needs identical input/output sample rates');
+        // Model a distinct input clock epoch on the deterministic cable. The
+        // player must translate it; assuming identical clocks is 431 ms wrong.
+        const offset=Math.round(.431*mic.sampleRate);
+        if(!bus)Object.defineProperty(mic,'currentTime',{configurable:true,get:()=>out.currentTime+offset/mic.sampleRate});
+        const capture=await create(bus?mic:out,source,bus?onSamples:(frame,pcm)=>onSamples(frame+offset,pcm),onError);
+        const stop=capture.stop.bind(capture);
+        capture.stop=async()=>{await stop();if(connected)__qa.engine.finalOutput.disconnect(delay);
+          silent.stop();silent.disconnect();delay.disconnect();source.disconnect();bus?.stream.getTracks().forEach(t=>t.stop());};
         return capture;
       };
     }
     await page.evaluate(installCable);
     await page.locator('#openTimingCheck').click();
     // Chrome's fake "default" is deliberately unrelated to the two named endpoints.
+    await page.evaluate(()=>{cable.realStream=true;});
     await page.locator('#measureTiming').click();
     await page.waitForFunction(()=>!document.getElementById('measureTiming').disabled);
     assert.match(await page.locator('#timingCheckStatus').innerText(),/This tab only/);
     assert.equal(await page.evaluate(()=>localStorage.getItem('melete:last-timing-route')),null);
+    await page.evaluate(()=>{cable.realStream=false;});
     await page.locator('#playbackDevice').selectOption({label:'Fake Audio Output 1'});
     await page.waitForFunction(()=>document.getElementById('playbackDeviceStatus').textContent.includes('selected'));
     await page.locator('#closeTimingCheck').click();
@@ -47,7 +60,11 @@ async function checkAcousticClock(context, origin) {
         const key=Object.keys(localStorage).find(k=>k.startsWith('melete:roundtrip:'));
         return {text,saved:key && JSON.parse(localStorage.getItem(key))};
       });
-      if(delay!==null)assert.ok(result.text.includes('Saved for this audio setup') && Math.abs(result.saved?.residualMs)<=12,result.text);
+      if(delay!==null){
+        assert.ok(result.text.includes('Saved for this audio setup') && Math.abs(result.saved?.residualMs)<=12,result.text);
+        const graphDelay=await page.evaluate(()=>__qa.engine.guideLookaheadSeconds);
+        assert.ok(Math.abs(result.saved.seconds-delay-graphDelay)<=.016,'known cable plus guide graph delay: '+result.text);
+      }
       else {assert.match(result.text,/0 of 4 chirps/);assert.deepEqual(result.saved,results.at(-1).saved,'weak input must not replace the last valid correction');}
       results.push(result);
     }
