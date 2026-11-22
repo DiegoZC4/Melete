@@ -69,13 +69,20 @@ song’s pronunciation dictionary and fresh VoiceSu LPC frames in score time.
 The trace input is a JSON object keyed by song slug. Each row begins with time
 in milliseconds, F1 and F2 in Hz. Use nulls for stale or unvoiced frames.
 The output JSON and listening WAV belong with the song deployment. The generic
-source checkout contains code and synthetic tests. The preferred public path
-is `/vowels/`; the legacy `/vowel/` route redirects, preserving the remaining
-path and query. For Apache/LiteSpeed with the files in `vowel-lab/`, use
+source checkout contains code and synthetic tests. The only public page is
+`/vowels` (no trailing slash). It returns the page directly; `/vowel`,
+`/vowels/` and direct index URLs are not aliases. Assets are served from
+`/vowel-lab/`. Ordinary directory and offline installations still resolve
+assets relative to the page. For Apache/LiteSpeed use
 [`tools/vowel-lab-routes.htaccess`](../tools/vowel-lab-routes.htaccess)
 in the document root. Standalone links accept
 `?song=autumn` and `?song=the-seed`, with an optional `part` equal to the
 printed part abbreviation.
+
+For this slashless website route, generate the deployment copy with
+`python3 tools/build_vowel_site_index.py STAGING/vowel-lab/index.html` before
+uploading. The static asset base is read by the browser's preload scanner.
+For a directory or offline installation, use the original index instead.
 
 The acoustic screen uses the middle 60% of steady syllables and the 15–45% and
 67–92% windows of glides. A region needs stable Burg measurements at a 5 kHz

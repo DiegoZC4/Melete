@@ -28,11 +28,20 @@ async function verify(browser, entry, mobile) {
         return start.apply(this,arguments);
       };
     });
-    const page=await context.newPage(), errors=[];
+    const page=await context.newPage(), errors=[], requests=[];
     page.on('pageerror',e=>errors.push(e.message));
+    page.on('request',r=>requests.push(new URL(r.url()).pathname));
     await page.goto(entry);
     await page.waitForFunction(()=>document.querySelectorAll('#map-key button').length===11);
     assert.ok(await page.evaluate(()=>window.isSecureContext));
+    const singlePage=new URL(page.url()).pathname==='/vowels';
+    if(singlePage) {
+      assert.equal(await page.evaluate(()=>new URL(document.baseURI).pathname),'/vowel-lab/');
+      assert.ok(await page.evaluate(()=>[...document.querySelectorAll('script[src],link[rel=stylesheet]')]
+        .every(el=>new URL(el.src || el.href).pathname.startsWith('/vowel-lab/'))));
+      assert.deepEqual(requests.filter(p=>/^\/[^/]+\.(js|css)$/.test(p)),[],
+        'The preload scanner must not make duplicate requests at the site root');
+    }
     const family=id=>page.locator('[data-family="'+id+'"]');
     const focus=page.locator('#map-focus');
     const symbols=()=>focus.locator('.map-reading').evaluateAll(nodes=>nodes.map(n=>n.dataset.vowel));
@@ -62,6 +71,12 @@ async function verify(browser, entry, mobile) {
     await press(lyric(/^fire/i,'a>ɪ(>ɹ)'));
     assert.deepEqual(await symbols(),['a>ɪ(>ɹ)']);
     await page.locator('#map-part').selectOption('T2');
+    if(singlePage) {
+      const here=new URL(page.url());
+      assert.equal(here.pathname,'/vowels');
+      assert.equal(here.searchParams.get('song'),'the-seed');
+      assert.equal(here.searchParams.get('part'),'T2');
+    }
     await press(family('OO'));
     assert.deepEqual(await symbols(),['u','ʊ']);
     await press(lyric(/^could/i,'ʊ'));
@@ -99,7 +114,20 @@ async function verify(browser, entry, mobile) {
 async function run(url,mobileEntry) {
   const entry=new URL('?song=autumn&part=A',url).href;
   const browser=await chromium.launch({channel:process.env.PLAYWRIGHT_CHANNEL || 'chrome',headless:true,args:['--mute-audio']});
-  try {await verify(browser,entry,false);await verify(browser,mobileEntry||entry,true);}
+  try {
+    if(new URL(url).pathname==='/vowels'){
+      const api=await browser.newContext();
+      try {
+        for(const path of ['/vowels','/vowels?song=the-seed&part=B2','/vowel','/vowel/','/vowels/',
+          '/vowel/index.html','/vowels/index.html','/vowel-lab','/vowel-lab/','/vowel-lab/index.html']) {
+          const res=await api.request.get(new URL(path,url).href,{maxRedirects:0});
+          assert.equal(res.status(),path.split('?')[0]==='/vowels'?200:404,path);
+          assert.equal(res.headers().location,undefined,path+' should not redirect');
+        }
+      } finally {await api.close();}
+    }
+    await verify(browser,entry,false);await verify(browser,mobileEntry||entry,true);
+  }
   finally {await browser.close();}
   console.log('Passed: desktop and touch, both song inventories, exact syllable audio, alternate and missing sounds, one label per key, phone layout.');
 }

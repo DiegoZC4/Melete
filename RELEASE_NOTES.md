@@ -5,8 +5,8 @@
   endings and cross-song borrowing are not flattened into family averages.
 - Reference clips play the exact decoded sample interval, including when the
   server does not support byte-range seeking.
-- Preferred website path: `/vowels/`. Existing singular links should retain
-  their song, part and fragment when redirected.
+- The website serves the chart at `/vowels` with no redirect. Song and part
+  are query parameters on that same path.
 
 # Shared player release — 2026-11-21
 
