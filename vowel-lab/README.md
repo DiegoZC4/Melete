@@ -48,8 +48,17 @@ encloses the central 80% of paired frames by robust distance in the Bark plane.
 Multiple excerpts retain separate boundaries. Early and late diphthong regions
 come from the same sung syllable. A triangle marks the late reading and a ring
 marks the early reading. An arrow requires displacement beyond their scatter.
-Pronunciation alternatives remain individual entries. Hums have no coordinates.
-Optional examples from the other song carry its name and a dashed outline.
+Autumn and The Seed each use eleven rehearsal buttons: EE, IH, AY, EH, short A,
+AH, AW, OH, OO, UH and R. Autumn's key is an interpretation of its pronunciation
+guide, not an inventory explicitly enumerated by the conductor. The Seed uses
+the same navigation, not Autumn's pronunciation rules. The R button reads Ö
+for Autumn and ER for The Seed. Open-vowel glides live under AH, schwa under
+UH, and short OO under OO. These are browsing groups, not shared acoustic
+targets. A syllable selects only its exact transcribed sound(s), preserving
+the glide, optional ending, readings and original excerpt. Hums have no target.
+Optional examples from the other song must match the exact transcription and
+carry that song's name and a dashed outline. New or unknown sounds remain
+reachable individually.
 
 Run the map builder with Python, NumPy and praat-parselmouth for a score project:
 
@@ -60,7 +69,11 @@ song’s pronunciation dictionary and fresh VoiceSu LPC frames in score time.
 The trace input is a JSON object keyed by song slug. Each row begins with time
 in milliseconds, F1 and F2 in Hz. Use nulls for stale or unvoiced frames.
 The output JSON and listening WAV belong with the song deployment. The generic
-source checkout contains code and synthetic tests. Standalone links accept
+source checkout contains code and synthetic tests. The preferred public path
+is `/vowels/`; the legacy `/vowel/` route redirects, preserving the remaining
+path and query. For Apache/LiteSpeed with the files in `vowel-lab/`, use
+[`tools/vowel-lab-routes.htaccess`](../tools/vowel-lab-routes.htaccess)
+in the document root. Standalone links accept
 `?song=autumn` and `?song=the-seed`, with an optional `part` equal to the
 printed part abbreviation.
 

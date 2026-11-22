@@ -32,6 +32,7 @@
 /tools/*
 !/tools/local_station/
 !/tools/build_song_vowel_map.py
+!/tools/vowel-lab-routes.htaccess
 !/.github/
 
 # Private extensions remain local; ordinary conversions do not load them.

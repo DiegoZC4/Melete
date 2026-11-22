@@ -1,0 +1,6 @@
+# Vowel Lab: a single build, one canonical address, and existing choir links.
+RewriteEngine On
+RewriteRule ^vowel(?:/(.*))?$ /vowels/$1 [R=301,L]
+RewriteRule ^vowels$ /vowels/ [R=301,L]
+RewriteRule ^vowels/$ vowel-lab/index.html [L]
+RewriteRule ^vowels/(.+)$ vowel-lab/$1 [L]

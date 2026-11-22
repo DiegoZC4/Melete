@@ -1,3 +1,13 @@
+# Standalone Vowel Lab — 2026-11-22
+
+- Autumn and The Seed each have 11 rehearsal vowel groups. Syllables still
+  select their exact pronunciations and recordings; diphthongs, consonantal
+  endings and cross-song borrowing are not flattened into family averages.
+- Reference clips play the exact decoded sample interval, including when the
+  server does not support byte-range seeking.
+- Preferred website path: `/vowels/`. Existing singular links should retain
+  their song, part and fragment when redirected.
+
 # Shared player release — 2026-11-21
 
 The website and offline station are built from the same template sources and
