@@ -134,7 +134,7 @@ async function checkRecordingMix(page, frame, {output,label}) {
     const id=crypto.randomUUID(),sr=8000,n=Math.ceil(ref.seconds*sr);
     const take=await q.takeStore.append({id,song:q.takeSong,sampleRate:sr,createdAt:Date.now(),
       start:ref.start,end:ref.end,rate:ref.rate,part:'S',replaces:true,pitchReference:ref,
-      trackSlot:clone?q.compState.descriptor.slot:null},0,
+      trackSlot:q.compDescriptor.slot},0,
       Int16Array.from({length:n},(_,i)=>2000*Math.sin(2*Math.PI*220*i/sr)),{finalized:true,complete:true});
     const frames=Array.from({length:Math.ceil(n/80)},(_,i)=>{
       const start=i*80/sr,end=Math.min((i+1)*80,n)/sr,note=ref.notes.find(n=>n[0]<=start&&n[1]>start);
@@ -144,8 +144,9 @@ async function checkRecordingMix(page, frame, {output,label}) {
     await q.reloadTakes();await q.refreshComp();return id;
   },clone);
   const original=await seed(false);
+  const originalSlot=await frame.evaluate(()=>(window.__qa||window.__probe).compState.descriptor.slot);
   await frame.locator('#addTrack').click();
-  await frame.waitForFunction(()=>(window.__qa||window.__probe).compState?.descriptor.slot);
+  await frame.waitForFunction(old=>{const s=(window.__qa||window.__probe).compState?.descriptor.slot;return s && s!==old;},originalSlot);
   const clone=await seed(true);
   await frame.waitForFunction(()=>document.querySelectorAll('#compRows > .comp-row').length===2);
   const parts=await frame.locator('#compRows .take-part').allTextContents();

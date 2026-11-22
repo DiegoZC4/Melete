@@ -214,6 +214,7 @@
       }};
     }
     async punchIn() {
+      await this.prepareTransportMedia();
       const state = await this.control("punchIn", {label:this.recordingLabel()});
       if (!state?.playing || !state.recording || !Number.isSafeInteger(state.frame) || !Number.isFinite(state.position))
         throw new Error("The native recording position could not be verified.");
@@ -287,8 +288,7 @@
     async layers() {
       const engine = this.engine;
       await engine.takeBalanceJob;
-      const layers = [...engine.takeLayers.values()].filter(layer => layer.id !== engine.overdubLayerId
-        && (!engine.recordingSingerId || layer.singerId === engine.recordingSingerId));
+      const layers = [...engine.takeLayers.values()].filter(layer => engine.canMonitorTake(layer));
       const refs = [...engine.referenceLayers.values()];
       const assets = {};
       for (const [prefix, group] of [["recording", layers], ["reference", refs]]) {
@@ -334,6 +334,7 @@
       await this.open();
       if (this.preparing) return this.preparing;
       this.preparing = (async () => {
+        const revision=this.engine.overdubRevision;
         await this.prepareMedia();
         const binding=JSON.stringify(this.assets);
         if (binding!==this.boundAssets) {
@@ -341,6 +342,7 @@
           this.boundAssets=binding;
         }
         await this.mix();
+        this.boundOverdubRevision=revision;
       })().finally(() => { this.preparing = null; this.releaseWhenIdle(); });
       return this.preparing;
     }
@@ -378,9 +380,13 @@
       }
       void this.prepare().catch(error => this.engine.nativeFailed?.(error));
     }
+    async prepareTransportMedia() {
+      // An in-flight warm-up may have already bound the old, audible comp.
+      do { await this.prepare(); } while(this.boundOverdubRevision!==this.engine.overdubRevision);
+    }
     async play(position) {
       const generation = this.engine.startRequest;
-      await this.prepare();
+      await this.prepareTransportMedia();
       const engine = this.engine;
       if (generation !== engine.startRequest) return;
       this.pausePromise = null;

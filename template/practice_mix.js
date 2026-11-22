@@ -74,6 +74,70 @@
     for(const value of values) counts.set(value,(counts.get(value)||0)+1);
     return [...counts].sort((a,b)=>b[1]-a[1] || Number(b[0]===fallback)-Number(a[0]===fallback))[0]?.[0] ?? fallback;
   }
+  // Score indices and divisi lines belong to one song. Names, not array
+  // positions, identify portable mixer channels (including separate soloists).
+  function voiceId(channel) {
+    const name=String(channel.short || channel.name || '').trim().toLowerCase();
+    const m=/^(s(?:oprano)?|a(?:lto)?|t(?:enor)?|b(?:ass)?)\s*(\d*)\s*(solo(?:ist)?)?$/.exec(name);
+    return m ? m[1][0]+m[2]+(m[3]?'solo':'') : name && 'part:'+name;
+  }
+  const familyOf=id=>/^([satb])(?:\d+)?(?:solo)?$/.exec(id)?.[1];
+  const portableFields=['tempo','metronome','takeVolume','takeReverb','scoreView','flow','help'];
+  function songSetup(channels,state,last) {
+    const ids=channels.map(voiceId), voices=structuredClone(last?.voices || {}), rows={};
+    for (const [i,id] of ids.entries()) {
+      if (!id || ids.indexOf(id)!==ids.lastIndexOf(id)) continue;
+      const row=Object.fromEntries([...roleFields,'visibleChannels'].map(f=>[f,state[f][i]]));
+      // Reopening a divided arrangement should restore its distinct balances.
+      // Only an edit to the combined knob overwrites the remembered divisions.
+      if (id===familyOf(id)) for(const f of roleFields) {
+        if(!last?.received?.[id] || row[f]===last.received[id][f])continue;
+        for (const key of Object.keys(voices)) if(familyOf(key)===id)voices[key][f]=row[f];
+      }
+      rows[id]=row;voices[id]={...row};
+    }
+    const isolated=state.visibleChannels.filter(Boolean).length===1 ? ids[state.visibleChannels.indexOf(true)] : null;
+    return {general:Object.fromEntries(portableFields.map(k=>[k,state[k]])),rows,voices,isolated,
+      allVisible:state.visibleChannels.every(Boolean), uniformAudible:new Set(state.audible).size===1?state.audible[0]:null};
+  }
+  function projectSong(channels,state,setup) {
+    const ids=channels.map(voiceId), next={...setup.general}, received={};
+    for(const f of [...roleFields,'visibleChannels'])next[f]=[...state[f]];
+    const rows=Object.entries(setup.rows);
+    for (const [i,id] of ids.entries()) {
+      if(!id || ids.indexOf(id)!==ids.lastIndexOf(id))continue;
+      const family=familyOf(id), coarse=family && setup.rows[family];
+      let row=Object.hasOwn(setup.rows,id)?setup.rows[id]:null;
+      if(!row && coarse)row={...coarse,...setup.voices[id],visibleChannels:coarse.visibleChannels};
+      if(!row && family===id) {
+        const members=rows.filter(([k])=>familyOf(k)===family).map(([,v])=>v);
+        const guide=familyOf(setup.isolated)===family && setup.rows[setup.isolated];
+        if(members.length)row={
+          audible:guide?guide.audible:members.some(v=>v.audible),
+          visibleChannels:members.some(v=>v.visibleChannels),
+          ...Object.fromEntries(['volumes','pans'].map(f=>[f,guide?guide[f]:common(members.map(v=>v[f]),state[f][i])])),
+        };
+      }
+      if(row)for(const f of [...roleFields,'visibleChannels']) next[f][i]=row[f];
+      else {
+        if(setup.allVisible)next.visibleChannels[i]=true;
+        if(setup.uniformAudible!=null)next.audible[i]=setup.uniformAudible;
+      }
+      received[id]=Object.fromEntries(roleFields.map(f=>[f,next[f][i]]));
+    }
+    let missingGuide=false;
+    if(setup.isolated) {
+      const family=familyOf(setup.isolated), same=ids.map((id,i)=>family && familyOf(id)===family?i:-1).filter(i=>i>=0);
+      const guide=ids.indexOf(setup.isolated);
+      const match=guide>=0?guide:same.find(i=>ids[i]===family)
+        ??same.find(i=>ids[i]===setup.isolated.replace(/solo$/,''))
+        ??same.find(i=>setup.voices[ids[i]]?.visibleChannels)
+        ??same.find(i=>state.visibleChannels[i])??same[0];
+      missingGuide=match==null;
+      next.visibleChannels=match==null?[...state.visibleChannels]:ids.map((_,i)=>i===match);
+    }
+    return {settings:next,memory:{voices:setup.voices,received},missingGuide};
+  }
   // Remember the backing value underneath the guide. Otherwise moving the
   // guide onto a deliberately quiet part would transplant its exception.
   function follow(channels,state,old,index,previous=null,layout=null,roles=[]) {
@@ -141,6 +205,6 @@
     return url.href;
   }
   const api={keys,read,fromMixer,address,linkedView,factory,defaultWidth,stationDefault,setStationDefault,seatOrder,project,fullPreset,
-    audioState,reviewKey,reviewProfile,roleKey,follow};
+    audioState,reviewKey,reviewProfile,roleKey,follow,songSetup,projectSong};
   if(typeof module==="object" && module.exports) module.exports=api; else root.MeletePracticeMix=api;
 })(globalThis);

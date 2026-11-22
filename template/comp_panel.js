@@ -144,6 +144,12 @@
       const descriptor = currentDescriptor();
       return descriptor ? model.key(descriptor) : null;
     }
+    function recordingLayers(key) {
+      const track=viewFor(key);
+      if(!track)return [];
+      return [layerId(track.state),...(track.members || []).map(t=>layerId(t.state)),
+        ...track.state.segments.map(s=>s.takeId)];
+    }
     const error = e => { console.error("Melete recording panel", e); adapter.toast(e.message || String(e), "error"); };
     const label = state => adapter.trackLabel(state.descriptor.reference.part, state.descriptor.reference.line ?? null);
     function displayNumber(state, sources) {
@@ -854,7 +860,8 @@
     function visualReview(track) {
       const {state, sources} = track, rate = state.descriptor.reference.rate;
       const origin = Math.min(0, state.segments[0]?.from || 0);
-      return {id: layerId(state), singerId:stations.playbackSingerId(state,sources), label: `${trackName(state,sources)} track`, ref: state.descriptor.reference,
+      return {id: layerId(state), compLayers:(track.members || []).map(t=>layerId(t.state)),
+        singerId:stations.playbackSingerId(state,sources), label: `${trackName(state,sources)} track`, ref: state.descriptor.reference,
         frames: track.frames.map(f => ({...f, start:f.start - origin, end:f.end - origin})),
         track: state.descriptor.reference.part, rate, origin, start: origin * rate,
         end: state.descriptor.reference.seconds * rate, latency: 0,
@@ -1155,7 +1162,7 @@
         saved=await adapter.store.comps(adapter.song());
         if (station.verifyStage()) await refresh({force:true});
       },
-      recordingPlan, recordingKey, get pendingDraft() { return pendingDraft; },
+      recordingPlan, recordingKey, recordingLayers, get pendingDraft() { return pendingDraft; },
       advanceStart: slot => station.advance(slot) ? recordingKey() : null,
       settleStation: station.settle, playbackChanged: station.playbackChanged, refreshStationMix: station.refreshMix,
       layers: () => shown.filter(key => viewFor(key).state.segments.length)

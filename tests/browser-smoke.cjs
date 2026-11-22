@@ -344,7 +344,7 @@ async function main() {
           results.push({viewport:mobile?'mobile':'desktop',microphone:await checkMicrophone(page,page,{output,label:mobile?'mobile':'desktop'})});
           continue;
         }
-        if (process.env.QA_COMP_ONLY) {
+        if (process.env.QA_COMP_ONLY || process.env.QA_COMP_MONITOR_ONLY) {
           results.push({viewport:mobile?'mobile':'desktop',comp:await compCheck()});
           continue;
         }

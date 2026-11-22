@@ -36,7 +36,7 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
       const id = crypto.randomUUID(), sr = 8000, n = Math.ceil(r.seconds * sr);
       const pcm = Int16Array.from({length:n}, (_,i)=>Math.round((2000+cents)*Math.sin(2*Math.PI*220*i/sr)));
       const record = await q.takeStore.append({id,song:q.takeSong,createdAt:now+index,sampleRate:sr,replaces:true,
-        part:d.label,label:'comp-test',rate:ref.rate,start,end,peak:.1,pitchReference:r},0,pcm,{finalized:true,complete:true});
+        part:d.label,trackSlot:d.slot,label:'comp-test',rate:ref.rate,start,end,peak:.1,pitchReference:r},0,pcm,{finalized:true,complete:true});
       const frames=Array.from({length:Math.ceil(n/80)},(_,i)=>{
         const from=i*80/sr,to=Math.min((i+1)*80,n)/sr,note=r.notes.find(n=>n[0]<=from&&n[1]>from);
         return {start:from,end:to,cents:note&&(cents===10||i%97!==0)?note[2][0]*100+cents+15*Math.sin(i*.37):null};
@@ -66,7 +66,8 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   assert.equal(created.restCleanup.changedIgnored,0,'rest audio survives a library reload sample for sample');
   assert.equal(created.restCleanup.changedKept,0,'singing and the one-beat guards preserve original samples');
   assert.deepEqual(created.replaced,{listed:true,stored:true},'recent replaced audio is protected by multilevel Undo');
-  assert.ok(created.state.segments.some(s=>s.takeId===created.ids[1]),'the newest recording punches in the passage it sang');
+  assert.ok(created.state.segments.some(s=>s.takeId===created.ids[1]),'the newest recording punches in the passage it sang: '+JSON.stringify({
+    ids:created.ids,key:created.state.key,processed:created.state.processed,segments:created.state.segments}));
   assert.ok(created.state.segments.some(s=>s.takeId===created.ids[0]),'the earlier recording keeps the rest of the track');
   assert.ok(created.history.past.at(-1).before.segments.length&&created.history.past.at(-1).before.segments.every(s=>s.takeId===created.ids[0]),'Undo holds the track before the newest recording');
   const recovered = await frame.evaluate(async ({ids}) => {
@@ -83,9 +84,15 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   assert.equal(recovered.state.offerVersion, 2);
   created.state = recovered.state;
   let row = trackRow(frame);
+  if(process.env.QA_COMP_MONITOR_ONLY) {
+    if(await row.locator('.comp-review').getAttribute('aria-pressed')==='true')await row.locator('.comp-review').click();
+    await row.locator('.comp-review').click();
+    await frame.waitForFunction(()=>(window.__qa||window.__probe).engine.takeReview?.buffer);
+    return {levels:await measurePunchMonitor(frame,true)};
+  }
   assert.ok(Number.isInteger(created.state.firstTakeNumber));
-  assert.equal(await row.locator('.take-number').textContent(), String(created.state.firstTakeNumber),
-    'a track built from two recordings keeps its first take number');
+  const lastNumber=await frame.evaluate(id=>(window.__qa||window.__probe).recording.takes.find(t=>t.id===id).number,created.ids[1]);
+  assert.equal(await row.locator('.take-number').textContent(),String(lastNumber),'the comp row identifies its latest contributing recording');
   assert.notEqual(await row.locator('.take-part').textContent(), '');
   assert.doesNotMatch(await frame.locator('#compView').innerText(), /\bBest\b/);
   await require('./browser-show-columns.cjs').showAllColumns(frame);
@@ -116,6 +123,7 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
       ranges:q.engine.takeReview.ranges,nonzero:q.engine.takeReview.buffer.getChannelData(0).some(x=>Math.abs(x)>.01)};
   });
   assert.ok(review.frames>0); assert.equal(review.nonzero,true);
+  assert.equal(await frame.locator('.take-pitch-trace-halo, .bar-pitch-trace-halo').count(),0,'saved color is drawn without a black under-stroke');
   assert.equal(review.ranges.length,created.state.segments.length);
   await checkSelectedTimeline(frame, created.state.segments.length);
   const firstPerformance=await frame.evaluate(()=>{
@@ -168,6 +176,7 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   });
   assert.equal(cachedPerformance.audioBuilds,1,'reselecting comp never rebuilds or decodes its audio');
   assert.equal(cachedPerformance.sameBuffer,true);
+  if(!process.env.QA_COMP_MONITOR_ONLY)await measurePunchMonitor(frame);
   const trackDownload=page.waitForEvent('download');await row.locator('.take-download').click();
   assert.match((await trackDownload).suggestedFilename(),/-track\.wav$/);
   assert.equal(await frame.evaluate(()=>__compPerformance.calls),1,'download reuses prepared track audio');
@@ -273,7 +282,7 @@ async function checkReferenceRevision(frame,page,{output,label,reload}) {
     const old={...d,reference:ref},id=crypto.randomUUID(),sr=8000,n=Math.ceil(ref.seconds*sr);
     const part=d.label.split(' \u00b7 ')[0];
     const take=await q.takeStore.append({id,song:q.takeSong,createdAt:Date.now(),sampleRate:sr,part,
-      label:'revision-proof',rate:ref.rate,start:0,end:ref.end,restAudioVersion:P.REST_POLICY_VERSION,pitchReference:ref},
+      label:'revision-proof',trackSlot:d.slot,rate:ref.rate,start:0,end:ref.end,restAudioVersion:P.REST_POLICY_VERSION,pitchReference:ref},
       0,Int16Array.from({length:n},(_,i)=>Math.round(1000*Math.sin(i/7))),{finalized:true,complete:true});
     const frames=Array.from({length:Math.ceil(n/80)},(_,i)=>{
       const start=i*80/sr,end=Math.min((i+1)*80,n)/sr,note=d.reference.notes.find(n=>n[0]<=start&&n[1]>start);
@@ -336,7 +345,7 @@ async function checkPhraseMargins(frame,page,{output,label,reload}) {
     const insert=async(r,noise)=>{
       const id=crypto.randomUUID(),n=Math.ceil(r.seconds*sr),pcm=new Int16Array(n).fill(noise?1000:0);
       const t=await q.takeStore.append({id,song:q.takeSong,createdAt:Date.now(),sampleRate:sr,
-        part:d.label,label:'phrase-margins',favorite:!noise,rate:r.rate,start:r.start,end:r.end,pitchReference:r,restAudioVersion:P.REST_POLICY_VERSION},
+        part:d.label,trackSlot:d.slot,label:'phrase-margins',favorite:!noise,rate:r.rate,start:r.start,end:r.end,pitchReference:r,restAudioVersion:P.REST_POLICY_VERSION},
         0,pcm,{finalized:true,complete:true});
       const frames=Array.from({length:Math.ceil(n/80)},(_,i)=>{
         const start=i*80/sr,end=Math.min((i+1)*80,n)/sr,note=r.notes.find(n=>n[0]<end&&n[1]>start);
@@ -430,6 +439,50 @@ async function checkPhraseMargins(frame,page,{output,label,reload}) {
   return result;
 }
 
+async function measurePunchMonitor(frame,realMic=false) {
+  const levels=await frame.evaluate(async realMic=>{
+    const q=window.__qa||window.__probe,e=q.engine,target=e.takeReview,source=q.compState.segments[0].takeId;
+    const position=e.currentSeconds(),pinned=e.pinnedTakeIds.has(target.id);
+    // Test the same PCM under three identities; audio content alone must
+    // never silence an independent backing dub.
+    const copy=id=>({id,blob:target.blob,buffer:target.buffer,rate:target.rate,start:target.start,
+      end:target.end,latency:target.latency,loudness:target.loudness,loudnessKey:target.loudnessKey});
+    const independent=q.recording.takes.find(t=>!q.compState.segments.some(s=>s.takeId===t.id));
+    const raw=copy(source),dub=copy(independent.id),meters=[];
+    const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+    const rms=()=>meters.map(a=>{const x=new Float32Array(a.fftSize);a.getFloatTimeDomainData(x);
+      return Math.sqrt(x.reduce((v,f)=>v+f*f,0)/x.length);});
+    try{
+      e.updateTakeLayers([target,raw,dub]);
+      for(const layer of [target,raw,dub]){const a=e.context.createAnalyser();a.fftSize=1024;layer.gain.connect(a);meters.push(a);}
+      const span=target.ranges.find(([a,b])=>b-Math.max(0,a)>1.5);
+      e.seek(Math.max(0,span[0])+.1);await e.startTransport();await delay(220);
+      const before=rms();e.setOverdubTarget(q.compState.key);await delay(160);
+      const during=rms();e.setOverdubTarget(null);await delay(150);
+      const after=rms();let live;
+      if(realMic) {
+        const sing=document.getElementById('pitchCapture');
+        const wait=async fn=>{const limit=performance.now()+8000;
+          while(!fn() && performance.now()<limit)await delay(10);if(!fn())throw Error('Synthetic microphone did not punch in or stop: '+q.recording.state);};
+        sing.click();await wait(()=>q.recording.state==='recording');await delay(150);live=rms();
+        sing.click();await wait(()=>q.recording.state==='off');
+      }
+      return {before,during,after,live};
+    }finally{
+      e.pauseTransport();e.setOverdubTarget(null);
+      for(const [i,l] of [target,raw,dub].entries())if(meters[i]){
+        if(e.takeLayers.get(l.id)===l)l.gain.disconnect(meters[i]);meters[i].disconnect();
+      }
+      e.updateTakeLayers([],[raw.id,dub.id]);if(!pinned)e.pinnedTakeIds.delete(target.id);
+      e.seek(position);
+    }
+  },realMic);
+  assert.ok(levels.before.every(x=>x>.001)&&levels.after.every(x=>x>.001),JSON.stringify(levels));
+  assert.ok(levels.during[0]<.00001&&levels.during[1]<.00001&&levels.during[2]>.001,JSON.stringify(levels));
+  if(realMic)assert.ok(levels.live[0]<.00001&&levels.live[1]<.00001&&levels.live[2]>.001,JSON.stringify(levels));
+  return levels;
+}
+
 async function checkSelectedTimeline(frame, segments) {
   assert.equal(await frame.locator('#takeTimeline').isVisible(),true);
   const expected=await frame.evaluate(()=>{
@@ -479,7 +532,7 @@ async function checkAutoTrim(frame) {
     const pcm = Int16Array.from({length: n}, (_, i) => 1 + i % 2000);
     // Already rest-cleaned, so every kept sample must equal what was recorded.
     const record = {id, song: q.takeSong, createdAt: Date.now(), sampleRate: sr, replaces: true, part: d.label, label: 'trim-test',
-      rate: d.reference.rate, start, end, peak: .1, pitchReference: r, restAudioVersion: P.REST_POLICY_VERSION};
+      rate: d.reference.rate, trackSlot:d.slot, start, end, peak: .1, pitchReference: r, restAudioVersion: P.REST_POLICY_VERSION};
     let saved;
     for (let at = 0; at < n; at += sr) {
       const last = at + sr >= n;
@@ -537,6 +590,10 @@ async function checkSegmentCapture(frame) {
   assert.equal(await frame.locator('#recordAudio').count(),0,'Sing is the only recording control');
   await toggleRecording(frame);
   await frame.waitForFunction(() => (window.__qa||window.__probe).recording.state==='recording');
+  assert.ok(await frame.evaluate(()=>{const q=window.__qa||window.__probe,e=q.engine;
+    return e.overdubLayerId==='comp:'+q.compState.key && !e.canMonitorTake({id:e.overdubLayerId})
+      && [...e.takeLayers.values()].every(l=>e.canMonitorTake(l)||!l.source);
+  }),'a live punch cannot schedule its previous performance');
   await frame.waitForFunction(()=>['signal','quiet','clipping'].includes(document.getElementById('microphoneCheck').dataset.state));
   assert.equal(await frame.locator('button#checkMicrophone').count(),0,'recording uses a passive inline meter, not another toggle');
   assert.equal(await frame.locator('#takeMicrophone').isDisabled(),true);

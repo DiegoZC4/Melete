@@ -44,7 +44,7 @@ async function checkCollections(browser, temporary, output) {
          get song(){return takeSongKey();}, get capture(){return pitchCaptureStream;},
          get recordState(){return takeState;}, get store(){return takeStore;},
          get comp(){return compPanel?.state();},
-         portable:currentPortableState, octave:takeOctave,
+         portable:currentPortableState, settings:captureSettingsState, apply:applySettingsState, octave:takeOctave,
          annotate(text){annotations.set('0:0',{tick:0,partIndex:0,text});saveAnnotations();}};`));
     const offline = path.join(temporary,`collection-${count}.html`);
     await fs.writeFile(offline,html);
@@ -83,6 +83,12 @@ async function checkCollections(browser, temporary, output) {
         const practiceGroup=frame.locator('[data-settings-section="practice"] .settings-section-toggle');
         if(await practiceGroup.count()&&await practiceGroup.getAttribute('aria-expanded')==='false')await practiceGroup.click();
         for(let step=0;step<2;step++)await frame.locator('#tempo').press('ArrowDown');
+        const mix=await frame.evaluate(()=>{
+          const s=__collection.settings();
+          __collection.apply({...s,metronome:150,horizontal:200,vertical:150,takeVolume:80,
+            audible:s.audible.map(()=>false),volumes:s.volumes.map((_,i)=>i?60:150),pans:s.pans.map((_,i)=>i?-50:70)});
+          return __collection.settings();
+        });
         await frame.locator('#playPause').click();
         await frame.waitForFunction(()=>__collection.engine.playing);
         if(count===2)await frame.locator('#songToggle [aria-selected="true"]').click();
@@ -92,7 +98,11 @@ async function checkCollections(browser, temporary, output) {
         assert.equal(await frame.evaluate(()=>__collection.engine.playing),false,'switching stops old playback');
         assert.equal(await frame.evaluate(()=>__collection.capture?.getAudioTracks().some(t=>t.readyState==='live')||false),false);
         assert.notEqual(await first.evaluate(()=>__collection.song),secondKey);
-        assert.equal(await first.locator('#tempo').getAttribute('data-value'),'100','preferences do not bleed between songs');
+        await first.waitForFunction(()=>__collection.settings().tempo===80);
+        const transferred=await first.evaluate(()=>__collection.settings());
+        for (const key of ['tempo','metronome','takeVolume','audible','volumes','pans'])
+          assert.deepEqual(transferred[key],mix[key],key+' follows the outgoing song');
+        assert.notEqual(transferred.horizontal,mix.horizontal);assert.notEqual(transferred.vertical,mix.vertical);
         await first.evaluate(()=>__collection.annotate('First annotation </script> with a second line\nkeep it'));
         const firstIdentity=await first.evaluate(()=>{window.__instance=crypto.randomUUID();return __instance;});
         if(count===2)await first.locator('#songToggle').click();
@@ -105,6 +115,7 @@ async function checkCollections(browser, temporary, output) {
         });
         assert.deepEqual(embedded,{pdf:[...pdf],conductor:false,extension:false},'manual PDF stays embedded, conductor assets do not');
         assert.equal(await frame.locator('#tempo').getAttribute('data-value'),'80');
+        assert.equal((await frame.evaluate(()=>__collection.settings())).horizontal,mix.horizontal,'song retains its own spacing');
         await frame.evaluate(()=>{
           __collection.annotate('Second annotation');
           localStorage.setItem(`melete:take-octaves:${__collection.song}`,JSON.stringify({'fixture-cloud-row':-1}));
@@ -123,7 +134,9 @@ async function checkCollections(browser, temporary, output) {
         await page.waitForTimeout(650);
         if(count===2)await frame.locator('#songToggle').click();
         else await frame.locator('#songSelect').selectOption('1');
-        await shown(page,'Second song');
+        const destination=await shown(page,'Second song');
+        await destination.waitForFunction(()=>document.querySelector('#pitchCapture').getAttribute('aria-pressed')==='true'
+          && __collection.capture?.getAudioTracks().some(t=>t.readyState==='live'));
         await frame.waitForFunction(()=>__collection.recordState==='off');
         const recorded=await frame.evaluate(async()=>{
           const takes=await __collection.store.list(__collection.song);
@@ -276,7 +289,7 @@ async function checkCollections(browser, temporary, output) {
         await station.close();
         assert.deepEqual(errors,[]);assert.deepEqual(requests,[]);
         results.push({songs:count,mobile,bytes:Buffer.byteLength(original),uniqueAssets:Object.keys(unpacked.assets).length,
-          separateSettings:true,recordingSurvivesSwitchAndReload:true,hostMicrophonePermission:true,offlineDownload:true,frameReload:true,stationSingerHandoff:true,errors,requests});
+          sharedMixerAndSongSpecificLayout:true,recordingSurvivesSwitchAndReload:true,hostMicrophonePermission:true,offlineDownload:true,frameReload:true,stationSingerHandoff:true,errors,requests});
       } finally {await context.close();}
     }
   }

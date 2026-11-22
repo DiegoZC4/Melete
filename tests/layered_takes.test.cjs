@@ -65,7 +65,7 @@ test('B2-only Pitchbar audition uses exactly the displayed divisi notes', () => 
 });
 
 test('scheduler look-ahead never cuts the final 28ms from a shifted recording', () => {
-  const start=app.indexOf('    scheduleTakeLayer('),end=app.indexOf('    stopVoices(',start);
+  const start=app.indexOf('    canMonitorTake('),end=app.indexOf('    stopVoices(',start);
   const C=vm.runInNewContext(`(class {${app.slice(start,end)}})`);
   const engine=new C();
   engine.playing=true;engine.context={currentTime:9.99};
@@ -75,12 +75,13 @@ test('scheduler look-ahead never cuts the final 28ms from a shifted recording', 
 });
 
 test('punch-in immediately silences the prior singer and keeps foreign or anonymous audio out of the pass', () => {
-  const start=app.indexOf('    setOverdubTarget('), end=app.indexOf('    stopVoices(',start);
-  const Engine=vm.runInNewContext(`(class {${app.slice(start,end)}})`);
+  const start=app.indexOf('    canMonitorTake('), end=app.indexOf('    stopVoices(',start);
+  const Engine=vm.runInNewContext(`(class {${app.slice(start,end)}})`,{compPanel:null});
   const engine=new Engine(), stopped=[], scheduled=[];
   const previous={id:'previous',singerId:'one'}, target={id:'comp:current',singerId:'two'};
   engine.takeLayers=new Map([[previous.id,previous],[target.id,target]]);
   engine.stopTakeLayerAudio=layer=>stopped.push(layer.id);
+  engine.balanceTakeLayers=()=>{};engine.pinnedTakeIds=new Set();
   engine.setOverdubTarget('current','two');
   assert.deepEqual(stopped,['previous','comp:current']);
   engine.playing=true;engine.context={currentTime:0};

@@ -17,7 +17,7 @@ async function checkCompMetrics(page, frame, {output, label}) {
     const sampleRate = 8000, frames = Math.ceil(ref.seconds * sampleRate), id = crypto.randomUUID();
     window.__metricCreated = Math.max(Date.now(), (window.__metricCreated || 0) + 1);
     const take = await q.takeStore.append({id, song:q.takeSong, createdAt:window.__metricCreated,
-      sampleRate, replaces:true, part:d.label, rate, start, end, pitchReference:ref},
+      sampleRate, replaces:true, part:d.label, trackSlot:d.slot, rate, start, end, pitchReference:ref},
     0, new Int16Array(frames), {finalized:true, complete:true});
     const contour = Array.from({length:Math.ceil(frames / 80)}, (_, i) => {
       const start = i / 100, end = Math.min((i + 1) / 100, frames / sampleRate);

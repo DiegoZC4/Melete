@@ -21,7 +21,7 @@ function fixture() {
   const c = vm.createContext({
     ready:true, conductorMode: false, rehearsalReview:null, stationReview:null, reviewMix:null, pitchCaptureState: 'off', takeState: 'off', microphoneRequest: null,
     singEnabled:false,singArmGeneration:0,compPanel:null,practicePartIndex:0,mixerParts:[{}],takeNotice:'',recordingLoopSpec:()=>null,loadTakeLibrary:async()=>{},
-    retainRecordingInput:false, preparingCapture:null, pitchCapturePageActive: true, pitchCaptureNotice: '',
+    retainRecordingInput:false, preparingCapture:null, pitchCapturePageActive: true, micSessionActive:true, pitchCaptureNotice: '',
     microphoneDeviceId: '', microphoneStreamDeviceId: '', microphoneCheck: null, latestDeviceRefresh:null,
     pitchCaptureContext: null, pitchCaptureStream: null, pitchCaptureSource: null,
     pitchCaptureAnalyser: null, pitchCaptureWorker: null, pitchCaptureBuffer: null, playing: false,

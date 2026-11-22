@@ -289,6 +289,8 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     const activeTake = await frame.evaluate(name => window[name].recording.takes.find(t=>t.active)?.id, probe);
     assert.ok(activeTake, 'Score view starts a real microphone recording');
     await frame.locator('#score [data-from-bin]').first().waitFor({state:'attached'});
+    assert.equal(await frame.locator('#score [data-from-bin]').first().locator('line').count(),1,
+      'even a short live segment has just the colored stroke');
     await frame.locator('#scoreViewToggle').click();
     await frame.waitForFunction(name=>!window[name].busy,probe);
     const range=await frame.evaluate(({name,tick})=>window[name].pitchResolution.reviewRange(tick),{name:probe,tick:target.tick});

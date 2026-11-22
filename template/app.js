@@ -279,6 +279,7 @@
   let takeScoring = null;
   const takeScoreFailures = new Map();
   let singEnabled = false, singArmGeneration=0, songRecordingHandoff=null;
+  let songSetupMemory=null, micSessionActive=!window.frameElement?.hasAttribute("data-melete-collection-player");
   function wantsPitchCapture() {
     return !rehearsalReview && !conductorMode && singEnabled;
   }
@@ -3404,7 +3405,7 @@
         queuedTakeReplay=null;
         void stopTakeRecording("", true, {discardShortTail:false});
         if (!Number.isInteger(index)) disablePitchCapture(false);
-        else if (singEnabled && takeState === "off") void armMicrophone();
+        else if (singEnabled && micSessionActive && takeState === "off") void armMicrophone();
       }
     }
   }
@@ -3489,6 +3490,10 @@
     const mix=window.MeletePracticeMix.read(detail);
     if (!mix || conductorMode) return false;
     const signature=JSON.stringify([takeSongKey(),mix]);
+    if(detail.carryMix) {
+      relativeMix=mix;relativeGuide=null;pendingMixReceipt=signature;
+      return true;
+    }
     const receipt=mixHost().history.state?.meleteMix;
     if(receipt?.signature===signature) {
       relativeMix=receipt.applied ? mix : null; relativeGuide=receipt.guide ?? lastGuideChannel;
@@ -5760,6 +5765,8 @@
       this.takeReview = null;
       this.takeLayers = new Map();
       this.overdubLayerId = null;
+      this.overdubExclusions = new Set();
+      this.overdubRevision = 0;
       this.referenceLayers = new Map();
       this.pinnedTakeIds = new Set();
       this.native = globalThis.MeleteNativeStation?.create(this) || null;
@@ -6561,13 +6568,13 @@
       this.takeBalanceRevision = (this.takeBalanceRevision || 0) + 1;
       if (!this.takeBus) return;
       // Fixed per-recording measurements; no full-song render on Hear changes.
-      this.takeBus.setNormalization(1 / Math.max(1, this.takeLayers.size));
+      this.takeBus.setNormalization(1 / Math.max(1, [...this.takeLayers.values()].filter(layer=>this.canMonitorTake(layer)).length));
       if (this.takeBalanceJob) return;
       this.takeBalanceJob = (async () => {
         let revision;
         do {
           revision = this.takeBalanceRevision;
-          const layers = [...this.takeLayers.values()];
+          const layers = [...this.takeLayers.values()].filter(layer=>this.canMonitorTake(layer));
           if (!layers.length) break;
           for (const layer of layers) {
             layer.loudness ||= await window.MeleteTakeLoudness.track(layer.buffer, layer.loudnessKey);
@@ -6590,12 +6597,22 @@
       this.updateTakeLayers([], [...this.takeLayers.keys()]);
     }
 
+    canMonitorTake(layer) {
+      if (layer.reference) return true;
+      if (this.recordingSingerId && layer.singerId!==this.recordingSingerId) return false;
+      if (!this.overdubLayerId) return true;
+      return !this.overdubExclusions.has(layer.id) && !layer.compLayers?.some(id=>this.overdubExclusions.has(id))
+        && (this.takeReview?.id!==layer.id || this.pinnedTakeIds.has(layer.id));
+    }
+
     setOverdubTarget(key, singerId=null) {
       this.overdubLayerId = key == null ? null : 'comp:' + key;
       this.recordingSingerId=singerId;
-      if (singerId) for(const layer of this.takeLayers.values()) if(layer.singerId!==singerId) this.stopTakeLayerAudio(layer);
-      const prior = this.takeLayers.get(this.overdubLayerId);
-      if (prior) this.stopTakeLayerAudio(prior);
+      this.overdubExclusions=new Set(key==null?[]:[this.overdubLayerId,...(compPanel?.recordingLayers(key) || [])]);
+      this.overdubRevision++;
+      for(const layer of this.takeLayers.values()) if(!this.canMonitorTake(layer)) this.stopTakeLayerAudio(layer);
+      if(this.takeLayers.size)this.balanceTakeLayers();
+      if(this.playing)this.scheduleTakeReview(SCHEDULER_LEAD_SECONDS);
     }
 
     stopTakeLayerAudio(review) {
@@ -6624,8 +6641,7 @@
     }
 
     scheduleTakeLayer(review, minimumLead) {
-      if (!review || !this.playing || !this.context || (this.overdubLayerId && review.id === this.overdubLayerId)) return;
-      if (this.recordingSingerId && !review.reference && review.singerId!==this.recordingSingerId) return;
+      if (!review || !this.playing || !this.context || !this.canMonitorTake(review)) return;
       const window = this.takeReviewWindow(minimumLead, review);
       const current = review.source ? this.takeReviewWindow(0, review) : null;
       if (review.source?.stretch && (!current || this.context.currentTime >= review.source.endTime)) this.stopTakeLayerAudio(review);
@@ -7658,10 +7674,7 @@
       "data-to-bin": toBin,
       "aria-hidden": "true",
     });
-    edge.append(
-      createSvgElement("line", { class: "bar-pitch-trace-halo", x1, y1, x2, y2 }),
-      createSvgElement("line", { class: "bar-pitch-trace", x1, y1, x2, y2, stroke: traceColor }),
-    );
+    edge.append(createSvgElement("line", { class: "bar-pitch-trace", x1, y1, x2, y2, stroke: traceColor }));
     system.traceLayer.append(edge);
     system.traceEdges.set(key, edge);
     [fromBin, toBin].forEach((bin) => {
@@ -9140,7 +9153,7 @@
     if(!Number.isInteger(practicePartIndex)){
       showPartChooser({title:"Sing which part?"});partChooserThen=()=>void togglePitchCapture();return;
     }
-    singEnabled=true; pitchCaptureNotice=takeNotice="";savePreferences();updatePitchCaptureAppearance();
+    micSessionActive=true;singEnabled=true; pitchCaptureNotice=takeNotice="";savePreferences();updatePitchCaptureAppearance();
     const generation=++singArmGeneration,transport=engine.transportRequest,moving=engine.playing;
     try {await loadTakeLibrary();const spec=recordingLoopSpec();if(spec)await checkTakeSpace(spec);}
     catch(e){if(generation===singArmGeneration && singEnabled){
@@ -9158,9 +9171,9 @@
   async function restorePitchCapture() {
     if (conductorMode) return;
     updatePitchCaptureAppearance();
-    if (!wantsPitchCapture() || !pitchCapturePageActive || document.hidden) return;
-    // Restoring the page may use an existing grant. Only a recording gesture
-    // should open Chrome's permission prompt when the grant has expired.
+    if (!micSessionActive || !wantsPitchCapture() || !pitchCapturePageActive || document.hidden) return;
+    // A collection reload remembers the switch, not an open microphone. An
+    // active handoff may reuse a grant; it never opens a permission prompt.
     try {
       const permitted = engine?.native ||
         (await window.MeleteMicrophoneCheck.microphoneNavigator(window).permissions?.query({name:'microphone'}))?.state==='granted';
@@ -10112,7 +10125,6 @@
       "data-take-id": review.id, "data-track": review.track, "data-line": review.ref.line ?? "",
       "data-selected": String(review.id === takeReview?.id), "data-ensemble": String(ensemble)});
     const title = createSvgElement("title"); title.textContent = label; group.append(title);
-    group.append(createSvgElement("path", {class: "bar-pitch-trace-halo take-pitch-trace-halo", d: paths.halo}));
     for (const [stroke, d] of paths.colors) group.append(createSvgElement("path", {
       class: "bar-pitch-trace-edge take-pitch-trace-edge bar-pitch-trace", d, stroke,
       "data-take-id": review.id, "data-reference": String(grey), opacity: grey ? .65 : 1, "aria-hidden": "true"}));
@@ -10572,6 +10584,7 @@
     recordingBarRanges = new Map(currentBars.map(({startTick,endTick,minPitch,maxPitch,referencePitch}) =>
       [startTick + ":" + endTick, {minPitch,maxPitch,referencePitch}]));
     const part = practicePartIndex, line = practiceDivisi[part] ?? null;
+    micSessionActive=true;
     const captureTarget = compDescriptor(part,line), captureSinger = compPanel?.stationPerson(), captureSlot = spec.trackSlot;
     const targetKey = compPanel?.recordingKey();
     engine.setOverdubTarget(targetKey,captureSinger?.id);
@@ -11984,7 +11997,7 @@
   attachHoldReset(elements.loopToggle, toggleLoop, clearLoop, "loop");
   elements.playPause.addEventListener("click", togglePracticePlayback);
   document.addEventListener("melete:restore-position", event => restorePlaybackPosition(event.detail?.milliseconds));
-  function restoreSongRecording(session, linkedPart) {
+  function restoreSongRecording(session, linkedPart, link) {
     if (!session || conductorMode || rehearsalReview) { void restorePitchCapture(); return; }
     const handoff = songRecordingHandoff = {session};
     singEnabled = session.sing;
@@ -11994,14 +12007,40 @@
       if (songRecordingHandoff !== handoff || !pitchCapturePageActive) return;
       // The destination's saved singer and mix have now finished loading.
       // An unavailable singer must never route this pass to somebody else.
-      singEnabled = session.sing && (!session.singer || compPanel?.stationPerson()?.id === session.singer);
-      if (singEnabled && session.practicing) {
-        leaveReviewForPartChoice();
-        const part = !linkedPart && mixerParts.find(p => p.short === session.part);
-        if (part) {
-          choosePracticePart(part.source,part.line);
-          hidePartChooser();
-        } else if (Number.isInteger(practicePartIndex)) compPanel?.practicePartChosen();
+      const singer=compPanel?.stationPerson(), allowed=!session.singer || singer?.id===session.singer;
+      let needsGuide=false;
+      if (session.practicing && allowed) leaveReviewForPartChoice();
+      if (session.setup) {
+        const mix=window.MeletePracticeMix, current=captureSettingsState();
+        const projected=mix.projectSong(mixerParts,current,session.setup), next=projected.settings;
+        needsGuide=projected.missingGuide && !singer && !linkedPart && session.practicing;
+        songSetupMemory=projected.memory;
+        if (mix.linkedView(link?.view)) next.scoreView=current.scoreView;
+        const keepGuide=linkedPart || Boolean(singer) || !session.practicing || !allowed;
+        const guide=next.visibleChannels.indexOf(true), target=practiceMixerIndex();
+        if (keepGuide && next.visibleChannels.filter(Boolean).length===1 && mixerParts[target] && guide!==target)
+          Object.assign(next,mix.follow(mixerParts,next,guide,target)?.settings);
+        if (keepGuide)next.visibleChannels=current.visibleChannels;
+        const linkedMix=!link?.carryMix && mix.read(link);
+        if (!allowed || (!session.practicing && (reviewMix || stationReview)) || linkedMix)
+          for(const key of ['audible','volumes','pans'])next[key]=current[key];
+        if (!allowed) {
+          for(const key of ['metronome','takeVolume','takeReverb'])next[key]=current[key];
+        }
+        if (allowed && !linkedMix) {
+          next.practiceMixMode=null;next.practiceMixPart=null;next.practiceMixUndo=null;
+        }
+        setSettingsHelp(next.help===true,{persist:false});
+        applySettingsState({...current,...next});
+        if(link?.carryMix && pendingMixReceipt) { relativeGuide=practiceMixerIndex();finishMixReceipt(relativeGuide!==null); }
+      }
+      singEnabled=session.sing && allowed && !needsGuide;
+      micSessionActive=true;
+      if(needsGuide && session.sing && allowed) {
+        showPartChooser({title:"Sing which part?"});partChooserThen=()=>{if(!singEnabled)void togglePitchCapture();};
+      } else if (session.practicing && allowed && Number.isInteger(practicePartIndex)) {
+        if(!linkedPart && (link?.carryMix || !window.MeletePracticeMix.read(link)))hidePartChooser();
+        if(!window.MeleteStation.requested())compPanel?.practicePartChosen();
       }
       savePreferences();
       void restorePitchCapture();
@@ -12012,7 +12051,7 @@
     pitchCapturePageActive = true;
     readSettingsSections();
     syncSettingsSections();
-    restoreSongRecording(event.detail?.recordingSession, event.detail?.linkedPart);
+    restoreSongRecording(event.detail?.recordingSession, event.detail?.linkedPart, event.detail?.link);
     if (ready) { initializeMediaSession(); void refreshMicrophoneChoices(); }
     if (takeLibraryReady) void loadTakeLibrary().catch(() => {});
     requestAnimationFrame(revealPendingLoopStart);
@@ -12020,7 +12059,8 @@
   document.addEventListener("melete:deactivate", event => {
     if (ready && event.detail) event.detail.recording = songRecordingHandoff?.session || {
       sing:wantsPitchCapture(), practicing:!stationReview && !reviewMix,
-      part:mixerParts[practiceMixerIndex()]?.short, singer:compPanel?.stationPerson()?.id || null
+      setup:window.MeletePracticeMix.songSetup(mixerParts,currentPreferenceState(),songSetupMemory),
+      singer:compPanel?.stationPerson()?.id || null
     };
     songRecordingHandoff=null;
     linkedPracticeState = null;

@@ -200,9 +200,11 @@
     const linkedPart = addressFields.part !== undefined || addressFields.div !== undefined;
     if (stationView) child.dispatchEvent(new player.frame.contentWindow.CustomEvent("melete:station-visit",
       {detail:{name:stationPerson, linkedPart}}));
+    const session=recordingSession, link=pendingLink || addressFields;
+    recordingSession=null;
     deliverLink(player);
-    child.dispatchEvent(new player.frame.contentWindow.CustomEvent("melete:activate", {detail:{recordingSession,linkedPart}}));
-    if (reviewSinger && !linkedPart && !(recordingSession?.sing && recordingSession.practicing))
+    child.dispatchEvent(new player.frame.contentWindow.CustomEvent("melete:activate", {detail:{recordingSession:session,linkedPart,link}}));
+    if (reviewSinger && !linkedPart && !(session?.sing && session.practicing))
       child.dispatchEvent(new player.frame.contentWindow.CustomEvent("melete:review-singer", {detail:reviewSinger}));
     paint(player);
     loading.hidden = true;
@@ -290,10 +292,12 @@
       if (["pitchbar","score"].includes(addressFields.view?.toLowerCase()))
         fields=Object.fromEntries(presetKeys.filter(k=>addressFields[k]!==undefined).map(k=>[k,addressFields[k]]));
     }
+    const continuingMix=switching && !link && history.state?.meleteMix?.applied;
     if (switching) deactivate();
     selected = index;
     addressFields = Object.fromEntries(passageKeys.filter(key => fields?.[key] !== undefined).map(key => [key, fields[key]]));
     pendingLink = Object.keys(addressFields).length ? {...addressFields} : null;
+    if (pendingLink && continuingMix && recordingSession?.setup) pendingLink.carryMix=true;
     writeAddress(!link);
     if (!switching) { deliverLink(players.get(index)); return; }
     const song = songs[index];

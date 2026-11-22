@@ -19,7 +19,7 @@ async function checkEnsembleContours(page, frame, {output, label}) {
       const id = crypto.randomUUID(), sampleRate = 8000, length = Math.ceil(ref.seconds * sampleRate);
       const pcm = Int16Array.from({length}, (_,i) => 2000 * Math.sin(2 * Math.PI * (220 + index * 55) * i / sampleRate));
       const take = await q.takeStore.append({id,song:q.takeSong,sampleRate,createdAt:Date.now(),replaces:true,
-        part:descriptor.label,start,end,rate:1,pitchReference:ref},0,pcm,{finalized:true,complete:true});
+        part:descriptor.label,trackSlot:descriptor.slot,start,end,rate:1,pitchReference:ref},0,pcm,{finalized:true,complete:true});
       const frames = Array.from({length:Math.ceil(length/80)},(_,i) => {
         const start = i/100, end = Math.min((i+1)/100,length/sampleRate);
         const note = ref.notes.find(n => n[0] <= start && n[1] > start);
@@ -32,12 +32,19 @@ async function checkEnsembleContours(page, frame, {output, label}) {
     },index));
   }
   const hear = id => frame.locator(`#compRows [data-comp-key=${JSON.stringify(id.slice(5))}] .take-hear`);
+  // Reveal the ensemble first. Leaving solo review releases its temporary
+  // preview; only explicit Hear selections should remain for the mix.
+  await frame.locator(`[data-visible-index="${count-1}"]`).press('Shift+Enter');
+  await frame.waitForFunction(count=>document.querySelectorAll('[data-visible-index][aria-pressed="true"]').length===count,count);
   for (const track of tracks) if (await hear(track.id).getAttribute('aria-pressed') !== 'true') await hear(track.id).click();
   await frame.waitForFunction(count => (window.__qa||window.__probe).engine.takeLayers.size===count,count);
-  await frame.locator(`[data-visible-index="${count-1}"]`).press('Shift+Enter');
   if (await frame.locator('[data-view="bars"]').getAttribute('aria-selected') !== 'true') await frame.locator('#scoreViewToggle').click();
   const displayed = () => frame.evaluate(() => [...new Set([...document.querySelectorAll('#barScore .take-pitch-trace-edge')].map(p=>p.dataset.takeId))].sort());
-  await frame.waitForFunction(count => new Set([...document.querySelectorAll('#barScore .take-pitch-trace-edge')].map(p=>p.dataset.takeId)).size===count,count);
+  await frame.waitForFunction(count => new Set([...document.querySelectorAll('#barScore .take-pitch-trace-edge')].map(p=>p.dataset.takeId)).size===count,count)
+    .catch(async err=>{throw new Error(err.message+' '+JSON.stringify(await frame.evaluate(()=>{
+      const q=window.__qa||window.__probe;return {visible:q.pitchbar.captureSettingsState().visibleChannels,
+        bars:document.querySelectorAll('#barScore .bar-note').length,edges:document.querySelectorAll('#barScore .take-pitch-trace-edge').length,
+        tracks:[...q.engine.takeLayers.values()].map(v=>({part:v.track,frames:v.frames?.length})),view:q.pitchbar.captureSettingsState().scoreView};})));});
   assert.deepEqual(await displayed(), tracks.map(t=>t.id).sort());
   assert.equal(await frame.locator('[data-visible-index][aria-pressed="true"]').count(),count);
   assert.equal(await frame.locator('#barScore [data-reference="true"]').count(),0,'ensemble contours are all graded');

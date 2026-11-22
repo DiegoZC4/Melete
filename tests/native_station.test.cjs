@@ -9,7 +9,7 @@ function fixture({station=true,origin='http://127.0.0.1:18746',injected=true}={}
     Float32Array,Set,Map,Promise,EventTarget,ArrayBuffer,Uint8Array,DataView,TextDecoder,AbortSignal,setTimeout,clearTimeout};
   if(injected)context.top.MeleteNativeStationConfig={origin,token:'fixture-only'};
   vm.runInNewContext(source,context);
-  const engine={basePosition:0,rate:1,playing:false};
+  const engine={basePosition:0,rate:1,playing:false,overdubRevision:0};
   return {bridge:context.MeleteNativeStation.create(engine),engine,context};
 }
 test('native audio is opt-in local station only; generic, public, and mobile stay on Web Audio',()=>{
@@ -90,6 +90,7 @@ test('native Hear toggles reuse rendered PCM per recording instead of mastering 
   b.upload=async key=>{uploads++;return key;};
   const a={id:'a',loudnessKey:'recording-a-v1',buffer:{},start:0,end:10,loudness:{gain:2}},d={...a,id:'b',loudnessKey:'recording-b-v1',buffer:{}};
   e.takeLayers=new Map([['a',a],['b',d]]);e.referenceLayers=new Map();e.duration=10;
+  e.canMonitorTake=()=>true;
   await b.layers();assert.equal(renders,2);assert.equal(uploads,2);
   e.takeLayers.delete('a');await b.layers();
   e.takeLayers.set('a',a);await b.layers();
@@ -107,7 +108,7 @@ test('individual Hear changes the active native assets during playback without s
   const Engine=vm.runInNewContext(`(class {${app.slice(start,end)}})`,{
     URL:{createObjectURL:()=>'',revokeObjectURL:()=>{}},Audio:class{load(){} removeAttribute(){}},
     window:{MeleteTakeMix:{bus:()=>({input:{}})}},takeReverbControl:{value:()=>0},takeVolumeControl:{value:()=>100},
-    takeOctave:()=>0,SCHEDULER_LEAD_SECONDS:.03});
+    compPanel:{recordingLayers:()=>['comp:old-alias','raw-take']},takeOctave:()=>0,SCHEDULER_LEAD_SECONDS:.03});
   Object.setPrototypeOf(e,Engine.prototype);
   Object.assign(e,{native:b,playing:true,basePosition:17,duration:40,takeLayers:new Map(),referenceLayers:new Map(),
     pinnedTakeIds:new Set(),context:{createGain:node,createMediaElementSource:node},
@@ -134,4 +135,27 @@ test('individual Hear changes the active native assets during playback without s
   assert.deepEqual(changes.at(-1),{'reference:0':reference});
   assert.equal(e.pinnedTakeIds.size,0);
   assert.equal(b.state.session,'same-session');assert.equal(b.state.playing,true);
+  const row=(id,extra={})=>({...review(),id,loudnessKey:id,...extra});
+  const target=row('comp:visible',{compLayers:['comp:old-alias']}), raw=row('raw-take'), dub=row('same-part-dub');
+  const temporary=row('temporary-review');
+  e.updateTakeLayers([target,raw,dub]);e.setTakeReview(temporary);await settle();
+  const pins=[...e.pinnedTakeIds];e.setOverdubTarget('writing-key');await settle();
+  assert.deepEqual([target,raw,dub,temporary].map(layer=>e.canMonitorTake(layer)),[false,false,true,false]);
+  assert.equal(Object.keys(changes.at(-1)).filter(k=>k.startsWith('recording:')).length,1);
+  e.setOverdubTarget(null);await settle();
+  assert.equal(Object.keys(changes.at(-1)).filter(k=>k.startsWith('recording:')).length,4);
+  assert.deepEqual([...e.pinnedTakeIds],pins,'punching in and out does not edit Hear buttons');
+});
+
+test('punch-in waits for an already warming native asset list to be replaced',async()=>{
+  const {bridge:b,engine:e}=fixture();let release;const events=[];
+  b.open=async()=>{};b.releaseWhenIdle=()=>{};b.mix=async()=>{};b.recordingLabel=()=> 'fixture';
+  b.prepareMedia=async()=>{const rev=e.overdubRevision;
+    if(rev===0)await new Promise(r=>{release=r;});
+    b.assets=rev===0?{target:'old',dub:'keep'}:{dub:'keep'};};
+  b.control=async(kind,params)=>{events.push([kind,params]);return {playing:true,recording:true,frame:4000,position:1};};
+  const warming=b.prepare();await new Promise(r=>setImmediate(r));
+  e.overdubRevision++;const punching=b.punchIn();release();await Promise.all([warming,punching]);
+  assert.deepEqual(events.map(e=>e[0]),['assets','assets','punchIn']);
+  assert.deepEqual({...events[1][1].assets},{dub:'keep'});
 });

@@ -14,7 +14,7 @@ async function checkRecordEdits(page,frame,{output,label}) {
   const seed=async(error)=>frame.evaluate(async error=>{
     const q=window.__qa||window.__probe,ref={...q.compDescriptor.reference,latency:0},sr=8000,n=Math.ceil(ref.seconds*sr),id=crypto.randomUUID();
     const take=await q.takeStore.append({id,song:q.takeSong,sampleRate:sr,createdAt:Date.now(),start:ref.start,end:ref.end,
-      rate:ref.rate,part:'fixture',replaces:true,pitchReference:ref},0,Int16Array.from({length:n},(_,i)=>1000*Math.sin(2*Math.PI*220*i/sr)),{finalized:true,complete:true});
+      rate:ref.rate,trackSlot:q.compDescriptor.slot,part:'fixture',replaces:true,pitchReference:ref},0,Int16Array.from({length:n},(_,i)=>1000*Math.sin(2*Math.PI*220*i/sr)),{finalized:true,complete:true});
     const frames=Array.from({length:Math.ceil(n/80)},(_,i)=>{const start=i/100,end=Math.min((i+1)/100,n/sr),note=ref.notes.find(n=>n[0]<=start&&n[1]>start);
       return {start,end,cents:note?note[2][0]*100+error:null};});
     await q.takeStore.pitchScore(id,n,ref,MeleteTakePitch.scoreFrames(frames,ref,n/sr),MeleteTakePitch.packContour(frames,take));

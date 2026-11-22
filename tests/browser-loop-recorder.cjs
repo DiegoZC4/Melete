@@ -5,7 +5,7 @@ const path = require('node:path');
 const {checkLocalTakeFailures} = require('./browser-local-takes.cjs');
 
 const recordingProbe = `
-  get compDescriptor() { return compDescriptor(); },
+  get compDescriptor() { const base=compDescriptor();return base && {...base,slot:compPanel?.slot()}; },
   get compState() { return compPanel?.state(); },
   refreshComp() { return compPanel?.refresh({force:true}); },
   invalidateCompAudio() { compPanel?.invalidate(); },
