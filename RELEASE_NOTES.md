@@ -1,4 +1,15 @@
-# Local choir player preview (2026-11-22)
+# Tablet settings and choir player (2026-11-22)
+
+- Touch devices use the available viewport, not a phone-width settings strip.
+  Parts sizes to all mixer columns including Ref. Groups wrap side by side;
+  on small phones only an oversized mixer needs to scroll horizontally.
+- Ordinary builds no longer include the vowel panel or its matching scripts.
+  The separate Vowel Lab is unchanged. For development only, the legacy
+  integrated experiment can be built with `--experimental-vowel-panel`.
+- Tested on a physical iPadOS 27 Safari viewport (1032 by 1244), both real
+  scores, and a generic nine-part score plus Ref down to a 320-pixel phone.
+
+# Song handoff and recording (2026-11-22)
 
 - Switching songs carries Sing, the metronome, tempo, viewing mode and the
   part mixer. Matching uses part names and divisi rather than column order;
@@ -9,7 +20,6 @@
 - Live and saved pitch contours no longer draw a dark outline over the color.
 - Verified with synthetic capture in desktop and phone-sized browsers.
   Native asset ordering has an automated test, not a new physical Windows test.
-  Neither the public player nor the rehearsal laptop has been updated.
 
 # Standalone Vowel Lab — 2026-11-22
 

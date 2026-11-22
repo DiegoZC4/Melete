@@ -126,6 +126,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="embed a manually prepared parts PDF unchanged (shared across songs)")
     parser.add_argument("--with-conductor", action="store_true",
                         help="opt into the separately installed conductor extension and configured assets")
+    parser.add_argument("--experimental-vowel-panel", action="store_true",
+                        help="include the development vowel panel (not used in published choir players)")
     parser.add_argument(
         "--musescore",
         help=(
@@ -1697,7 +1699,8 @@ def build_collection(args: argparse.Namespace) -> dict[str, Any]:
             atomic_write(config_path, stable_json(config))
             options = argparse.Namespace(score=source, config=config_path, project_dir=child,
                                          output=None, musescore=args.musescore, refresh_score=args.refresh_score,
-                                         with_conductor=args.with_conductor)
+                                         with_conductor=args.with_conductor,
+                                         experimental_vowel_panel=getattr(args, "experimental_vowel_panel", False))
             result = build(options)
             result["projectDir"] = str(project / "players" / name)
             result["output"] = str(project / "players" / name / "dist/index.html")
@@ -1967,9 +1970,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         app = read_required(TEMPLATE_DIR / "take_cleanup.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "take_pitch.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "live_pitch.js") + "\n" + app
-        app = read_required(TEMPLATE_DIR / "vowel_view.js") + "\n" + app
-        app = read_required(TEMPLATE_DIR / "vowel_targets.js") + "\n" + app
-        app = read_required(TEMPLATE_DIR / "vowel_matching.js") + "\n" + app
+        vowel_panel = getattr(args, "experimental_vowel_panel", False)
+        template = template.replace("{{EXPERIMENTAL_VOWEL_PANEL}}", read_required(TEMPLATE_DIR / "vowel_panel.html") if vowel_panel else "")
+        template = template.replace("{{EXPERIMENTAL_VOWEL_TOGGLE}}",
+            '<button class="binary-feature-button" id="vowelToggle" type="button" aria-pressed="false" '
+            'aria-controls="vowelPanel" data-help="Compare your vowel with the score or an example.">Vowels</button>' if vowel_panel else "")
+        if vowel_panel:
+            styles += "\n" + read_required(TEMPLATE_DIR / "vowel_panel.css")
+            for name in ("vowel_view.js", "vowel_targets.js", "vowel_matching.js"):
+                app = read_required(TEMPLATE_DIR / name) + "\n" + app
         app = read_required(TEMPLATE_DIR / "vocal_pitch.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "loop_recorder.js") + "\n" + app
         app = read_required(TEMPLATE_DIR / "native_station.js") + "\n" + app

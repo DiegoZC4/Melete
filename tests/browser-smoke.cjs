@@ -93,6 +93,8 @@ async function main() {
       return context;
     };
     const focused = Object.keys(process.env).some(key => /^QA_.*_ONLY$/.test(key) && process.env[key]);
+    if (!focused || process.env.QA_TABLET_ONLY)
+      results.push({tabletSettings:await require('./browser-tablet-settings.cjs').checkTabletSettings(browser,temporary)});
     if (!focused || process.env.QA_REVIEW_CACHE_ONLY)
       results.push({reviewCache:await require('./browser-review-cache.cjs').checkReviewCache(browser,html)});
     if(!focused || process.env.QA_LIBRARY_ONLY) results.push({libraryMerge:await require('./browser-library-merge.cjs').checkLibraryMerge(browser)});
@@ -116,6 +118,7 @@ async function main() {
     if (!focused || process.env.QA_REFERENCE_ONLY) results.push({referenceMix:await checkReferenceMix(browser,temporary,output)});
     if (!focused || process.env.QA_ROUTES_ONLY) results.push({practiceRoutes:await checkPracticeRoutes(browser,temporary,output)});
     for (const mobile of [false, true]) {
+      if(process.env.QA_TABLET_ONLY)continue;
       if(!focused || process.env.QA_NOTE_STEP_ONLY){
         const ctx=await newContext(mobile);
         try{const tab=await ctx.newPage();tab.on('pageerror',e=>errors.push(e.message));

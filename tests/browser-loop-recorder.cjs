@@ -491,7 +491,14 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   });
   await toggleRecording(page);
   await page.waitForFunction(() => Boolean(window.grantLateMicrophone));
-  await toggleRecording(page);
+  // Capture may still be preparing while the browser permission prompt is up.
+  // Cancel via Sing itself, not the helper which infers a transport action.
+  const cancel=page.locator('#pitchCapture');
+  assert.equal(await cancel.getAttribute('aria-busy'),'true',JSON.stringify(await page.evaluate(()=>({
+    state:__qa.recording.state, pitch:__qa.recording.pitch, notice:__qa.recording.notice,
+    sing:document.getElementById('pitchCapture').outerHTML,playing:__qa.engine.playing}))));
+  if(await page.locator('#settingsToggle').getAttribute('aria-expanded')!=='true')await page.locator('#settingsToggle').click();
+  await cancel.click();
   await page.evaluate(() => grantLateMicrophone());
   await page.waitForFunction(() => __qa.recording.state === 'off');
   assert.equal((await page.evaluate(() => __qa.recording)).microphone, false, 'late permission cannot restart a canceled take');

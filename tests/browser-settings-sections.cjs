@@ -143,7 +143,8 @@ async function checkSettingsSections(frame, page, {mobile, output, label, probe 
   // The optional audition view still supports individual takes and folding.
   await frame.evaluate(async probe=>{window[probe].enableAudition();await window[probe].reloadTakes();},probe);
   await group('takes').screenshot({path: path.join(output, `sections-${label}-takes.png`)});
-  await frame.getByRole('button', {name: `Review take ${number}`, exact: true}).click();
+  // The mean-error cell opens the distribution, even when it sits at the row's center.
+  await frame.getByRole('button', {name: `Review take ${number}`, exact: true}).locator('.take-number').click();
   await frame.waitForFunction(probe => window[probe].takeReview, probe);
   await frame.locator('#playPause').click();
   await frame.waitForFunction(probe => window[probe].engine.playing, probe);

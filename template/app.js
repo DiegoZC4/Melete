@@ -11781,7 +11781,7 @@
     event.preventDefault();
   });
   attachHoldReset(elements.pitchCapture, togglePitchCapture, clearPitchTrace, "pitch trace");
-  vowelView = window.MeleteVowelView.attach({
+  vowelView = window.MeleteVowelView?.attach({
     input: () => pitchCapturePageActive && !document.hidden && pitchCaptureEnabled() && pitchInputIsLive()
       ? pitchCaptureAnalyser : null,
     section: () => practiceMixerIndex(),
@@ -12607,7 +12607,7 @@
       });
       engine.onPresentation = seconds => {
         const tick = engine.tickAtSeconds(seconds);
-        vowelView.position(tick);
+        vowelView?.position(tick);
         if (conductor) conductor.draw(tick * config.conductorScore.division / sequence.division);
         else updateBarPlayhead(tick);
       };

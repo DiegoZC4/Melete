@@ -1,0 +1,36 @@
+#lyricEditing { grid-column: 1; }
+#vowelToggle { grid-column: 2; width: 100%; display: grid; place-items: center; padding: 0; }
+.vowel-panel {
+  position: fixed; right: 12px; bottom: 12px; z-index: 785;
+  width: min(284px, calc(100vw - 24px)); max-height: calc(100dvh - 65px); overflow: auto;
+  box-sizing: border-box; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px;
+  color: var(--ink); background: var(--panel-solid); box-shadow: 0 4px 16px #0002;
+}
+.vowel-panel[hidden], .vowel-panel [hidden] { display: none; }
+.vowel-panel header, .vowel-readings, .vowel-actions { display: flex; align-items: center; gap: 7px; }
+.vowel-panel header, .vowel-readings { justify-content: space-between; }
+.vowel-panel h2 { font: inherit; font-size: 15px; font-weight: 730; margin: 0; }
+.vowel-panel p, .vowel-readings { font-size: 11px; line-height: 1.4; }
+.vowel-panel p { margin: 5px 0 0; color: var(--muted); }
+.vowel-panel .take-command { min-height: 25px; padding-inline: 7px; }
+.vowel-actions { margin-top: 7px; }
+.vowel-syllable, .vowel-corpus { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.vowel-syllable { margin-top: 6px; font-size: 14px; }
+.vowel-corpus { margin-top: 4px; color: var(--muted); font-size: 11px; }
+#vowelSyllablePanel select { font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 4px; }
+#vowelTarget { color: var(--ink); fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+#vowelTarget .optional { stroke-dasharray: 2 2; }
+#vowelHz { font-variant-numeric: tabular-nums; }
+#vowelChart { display: block; width: 100%; margin-top: 6px; }
+#vowelChart text { font: 11px system-ui, sans-serif; fill: var(--muted); }
+#vowelChart .vowel-tick { font-size: 11px; font-variant-numeric: tabular-nums; }
+#vowelChart .vowel-landmark { font-size: 13px; font-weight: 650; }
+.vowel-field { fill: var(--field); stroke: var(--line); }
+.vowel-grid { fill: none; stroke: var(--line); stroke-dasharray: 2 4; }
+#vowelReference { color: var(--ink); }
+.vowel-region { fill: currentColor; fill-opacity: .13; stroke: currentColor; stroke-opacity: .42; }
+.vowel-path { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+#vowelReference .vowel-path { stroke-dasharray: 3 3; }
+#vowelTrail, #vowelDot { color: var(--accent); }
+.vowel-sample, .vowel-beat, #vowelDot { fill: currentColor; }
+#vowelDot { stroke: var(--field); stroke-width: 1.5; }

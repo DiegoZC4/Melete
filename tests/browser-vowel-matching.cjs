@@ -1,4 +1,5 @@
-// Run against the built, offline two-song preview. Every take is synthetic in a disposable context.
+// Only for a development collection built with --experimental-vowel-panel.
+// The normal offline choir player must have none of this UI. All takes are synthetic.
 const assert=require('node:assert/strict');
 const path=require('node:path'), fs=require('node:fs/promises'), {pathToFileURL}=require('node:url');
 const {chromium}=require('playwright');

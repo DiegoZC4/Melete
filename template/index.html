@@ -202,7 +202,7 @@
               </button>
               <div class="display-control-row display-lyric-edit-row">
                 <button class="binary-feature-button" id="lyricEditing" type="button" aria-label="Hide Lyrics" aria-pressed="false" data-help="Edit hidden words. Hold or right-click: show/hide all.">Hide Lyrics</button>
-                <button class="binary-feature-button" id="vowelToggle" type="button" aria-pressed="false" aria-controls="vowelPanel" data-help="Compare your vowel with the score or an example.">Vowels</button>
+                {{EXPERIMENTAL_VOWEL_TOGGLE}}
               </div>
             </div>
           </section>
@@ -368,28 +368,7 @@
       <div class="bar-score" id="barScore" aria-label="{{TITLE}} pitch-bar score" hidden></div>
     </main>
 
-    <aside id="vowelPanel" class="vowel-panel" aria-labelledby="vowelHeading" hidden>
-      <header><h2 id="vowelHeading">Vowel matching</h2>
-        <button id="vowelClose" class="take-command" type="button" aria-label="Close vowel matching">Close</button></header>
-      <div id="vowelSyllablePanel" hidden>
-        <div class="vowel-syllable"><strong id="vowelSyllable"></strong><span id="vowelSymbols"></span>
-          <select id="vowelVariant" aria-label="Pronunciation for this syllable" hidden></select></div>
-        <label class="vowel-corpus">Approx. speech landmarks
-          <select id="vowelCorpus" aria-label="Speech reference group"><option value="men">Men</option><option value="women">Women</option></select></label>
-        <p id="vowelTargetDetail"></p>
-      </div>
-      <svg id="vowelChart" viewBox="0 0 300 222" role="img" aria-label="Vowel chart with Bark spacing and hertz labels. F2 increases to the left and F1 increases downward.">
-        <desc>The filled dot tracks the live vowel. A hollow ring or arrow shows the score syllable when a speech landmark is available.</desc>
-        <text x="165" y="13" text-anchor="middle">← F2 (Hz)</text>
-        <text transform="translate(14 129) rotate(-90)" text-anchor="middle">← F1 (Hz)</text>
-        <g id="vowelScale"></g>
-        <g id="vowelReference"></g><g id="vowelTrail"></g><g id="vowelTarget"></g><circle id="vowelDot" r="4.5" visibility="hidden"/>
-      </svg>
-      <div class="vowel-readings"><span id="vowelStatus" role="status">Turn on Sing to use the mic</span><output id="vowelHz" aria-live="off"></output></div>
-      <div class="vowel-actions"><button class="take-command" id="vowelPin" type="button" disabled>Start example</button>
-        <button class="take-command" id="vowelClear" type="button" hidden>Clear reference</button></div>
-      <p id="vowelGuide">Sing a held vowel or word, then pin the example.</p>
-    </aside>
+    {{EXPERIMENTAL_VOWEL_PANEL}}
 
     <dialog id="takeDistributionDialog" class="comp-cloud-dialog" aria-labelledby="distributionTitle">
       <form method="dialog"><strong id="distributionTitle">Intonation distribution</strong><button aria-label="Close intonation distribution">Close</button></form>
