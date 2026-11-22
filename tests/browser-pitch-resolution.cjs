@@ -229,7 +229,7 @@ async function checkFinalPhrase(frame,page,probe,output,label) {
     await frame.waitForFunction(name=>!window[name].busy,probe);
     const key=await frame.evaluate(name=>window[name].compState.key,probe);
     const row=frame.locator('#compRows [data-comp-key='+JSON.stringify(key)+'] .comp-review');
-    if(await row.getAttribute('aria-pressed')!=='true')await row.click();
+    if(await row.getAttribute('aria-pressed')!=='true')await row.locator('.take-number').click();
     await frame.waitForFunction(name=>window[name].pitchResolution.savedTraceEnd()?.point,probe);
     const rendered=await frame.evaluate(name=>window[name].pitchResolution.savedTraceEnd(),probe);
     assert.ok(rendered.connected&&Math.abs(rendered.right-rendered.point.x)<1,
@@ -330,7 +330,7 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     }, {name:probe,id:recordedId});
     assert.ok(comp.includesTake && comp.tracked > 0,'Score recording was saved, scored and incorporated');
     const row=frame.locator(`#compRows [data-comp-key=${JSON.stringify(comp.key)}] .comp-review`);
-    if(await row.getAttribute('aria-pressed')!=='true')await row.click();
+    if(await row.getAttribute('aria-pressed')!=='true')await row.locator('.take-number').click();
     assert.equal(await frame.evaluate(name=>window[name].engine.playing,probe),false,'inspecting the saved contour does not start playback');
     for(const view of ['standard','bars']) {
       await frame.evaluate(({name,view})=>window[name].pitchResolution.setScoreView(view),{name:probe,view});

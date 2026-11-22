@@ -103,7 +103,7 @@ async function checkReviewCache(browser,html,{baseline=false,delayMs=0}={}) {
   }
   async function listen() {
     const files=counts.length,bytes=transferred;
-    await row.click();
+    await row.locator('.take-number').click();
     await page.waitForFunction(()=>window.cacheQAResult?.data?.id===cacheQA.selected()&&window.cacheQAResult&&cacheQA.audible(cacheQA.selected()));
     const result=await page.evaluate(async()=>{
       const {ms,data}=window.cacheQAResult;
@@ -161,7 +161,7 @@ async function checkReviewCache(browser,html,{baseline=false,delayMs=0}={}) {
     pendingManifest=new Promise(resolve=>{release=resolve;});
     try {
       await unopened.locator('.take-hear').click();
-      await unopened.locator('.comp-review').click();
+      await unopened.locator('.comp-review .take-number').click();
       await page.waitForFunction(()=>cacheQA.loading('submitted:reviewer:unopened'));
       await page.locator('#addTrack').click();
       await page.waitForFunction(()=>document.querySelector('#compRows .is-new.is-selected.is-armed'));

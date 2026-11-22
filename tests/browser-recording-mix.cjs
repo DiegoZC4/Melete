@@ -155,7 +155,7 @@ async function checkRecordingMix(page, frame, {output,label}) {
   const latestTrack=await frame.evaluate(()=>(window.__qa||window.__probe).compState.key);
   // New recordings may select their completed track. Clear review explicitly,
   // then turn on both independent Hear controls.
-  for(const selected of await frame.locator('#compRows .comp-review[aria-pressed="true"]').all())await selected.click();
+  for(const selected of await frame.locator('#compRows .comp-review[aria-pressed="true"]').all())await selected.locator('.take-number').click();
   for(const row of await frame.locator('#compRows > .comp-row').all())if(await row.locator('.take-hear').getAttribute('aria-pressed')!=='true')await row.locator('.take-hear').click();
   try { await frame.waitForFunction(()=>(window.__qa||window.__probe).engine.takeLayers.size===2); }
   catch(error){throw new Error(JSON.stringify(await frame.evaluate(()=>{
@@ -166,7 +166,7 @@ async function checkRecordingMix(page, frame, {output,label}) {
   if(await frame.locator('[data-view="bars"]').getAttribute('aria-selected')!=='true')await frame.locator('#scoreViewToggle').click();
   await frame.waitForFunction(()=>new Set([...document.querySelectorAll('#barScore [data-reference="true"]')].map(p=>p.dataset.takeId)).size===2);
   const firstRow=frame.locator('#compRows > .comp-row').first();
-  await firstRow.locator('.comp-review').click();
+  await firstRow.locator('.comp-review .take-number').click();
   await frame.waitForFunction(()=>document.querySelector('#barScore [data-reference="false"]'));
   assert.equal(await frame.locator('[data-visible-index][aria-pressed="true"]').count(),1);
   assert.equal(await frame.locator('[data-audio-index][aria-pressed="false"]').count(),1);
@@ -176,17 +176,17 @@ async function checkRecordingMix(page, frame, {output,label}) {
   const scoreGroups=frame.locator('#score .take-pitch-trace-group');
   await scoreGroups.first().waitFor({state:'attached'});
   assert.equal(await frame.locator('#scoreContour').count(),0);
-  await firstRow.locator('.comp-review').click();
+  await firstRow.locator('.comp-review .take-number').click();
   await frame.waitForFunction(()=>!document.querySelector('#score .take-pitch-trace-group'));
   assert.ok(await frame.evaluate(()=>(window.__qa||window.__probe).engine.takeLayers.size>=1),'deselection clears notation even with audible recordings');
-  await firstRow.locator('.comp-review').click();
+  await firstRow.locator('.comp-review .take-number').click();
   await scoreGroups.first().waitFor({state:'attached'});
   await page.screenshot({path:require('node:path').join(output,`${label}-notation-contour.png`)});
   await frame.locator('#scoreViewToggle').click();
   await frame.waitForFunction(()=>!(window.__qa||window.__probe).busy);
   await firstRow.locator('.take-hear').click();
   assert.ok(await frame.locator('#barScore [data-reference="false"]').count(),'selected contour remains graded even when muted');
-  await firstRow.locator('.comp-review').click();
+  await firstRow.locator('.comp-review .take-number').click();
   await frame.waitForFunction(()=>!(document.querySelector('#barScore [data-reference="false"]')));
   assert.equal(await frame.evaluate(()=>new Set([...document.querySelectorAll('#barScore .take-pitch-trace-edge')].map(p=>p.dataset.takeId)).size),1);
   assert.equal(await frame.locator('#barScore [data-from-bin]').count(),0,'deselection cannot restore a raw live trace');

@@ -22,7 +22,7 @@ async function checkRecordEdits(page,frame,{output,label}) {
   },error);
   const key=await seed(30);
   const row=frame.locator(`[data-comp-key='${key.replaceAll("'","\\'")}']`);
-  if(await row.locator('.comp-review').getAttribute('aria-pressed')!=='true')await row.locator('.comp-review').click();
+  if(await row.locator('.comp-review').getAttribute('aria-pressed')!=='true')await row.locator('.comp-review .take-number').click();
   await frame.waitForFunction(()=>!!(window.__qa||window.__probe).takeReview?.duration);
   await frame.evaluate(()=>{
     const q=window.__qa||window.__probe,settings=q.pitchbar.captureSettingsState();settings.loopEnabled=false;q.pitchbar.applySettingsState(settings);
@@ -104,7 +104,7 @@ async function checkRecordEdits(page,frame,{output,label}) {
   assert.equal(commit.incorporated,true);assert.equal(commit.selected,`comp:${key}`);assert.ok(commit.frames>0);
   assert.equal(commit.sameSvg,true,'committing a contour does not rebuild the pitchbar');
   // Manual deselection during delayed audio preparation wins over its completion.
-  await row.locator('.comp-review').click();
+  await row.locator('.comp-review .take-number').click();
   await frame.evaluate(()=>{__editProbe.restore();__editProbe.releaseAudio();});
   await frame.waitForFunction(()=>document.querySelector('#compRows .comp-review')?.getAttribute('aria-busy')==='false');
   assert.equal(await row.locator('.comp-review').getAttribute('aria-pressed'),'false');

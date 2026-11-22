@@ -85,8 +85,8 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   created.state = recovered.state;
   let row = trackRow(frame);
   if(process.env.QA_COMP_MONITOR_ONLY) {
-    if(await row.locator('.comp-review').getAttribute('aria-pressed')==='true')await row.locator('.comp-review').click();
-    await row.locator('.comp-review').click();
+    if(await row.locator('.comp-review').getAttribute('aria-pressed')==='true')await row.locator('.comp-review .take-number').click();
+    await row.locator('.comp-review .take-number').click();
     await frame.waitForFunction(()=>(window.__qa||window.__probe).engine.takeReview?.buffer);
     return {levels:await measurePunchMonitor(frame,true)};
   }
@@ -100,7 +100,7 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   assert.equal(await frame.locator(created.ids.map(id => `#takeList [data-take-id="${id}"]`).join(', ')).count(), 0,
     'track recordings are not listed as loose takes');
   assert.equal(await frame.locator('#compProgress, .comp-progress, .comp-summary').count(),0,'no separate comp graphic remains');
-  if(await row.locator('.comp-review').getAttribute('aria-pressed')==='true')await row.locator('.comp-review').click();
+  if(await row.locator('.comp-review').getAttribute('aria-pressed')==='true')await row.locator('.comp-review .take-number').click();
   assert.equal(await frame.locator('#takeTimeline').isVisible(),false);
   const chapters = await frame.locator('#timelineSegments').innerHTML();
   await frame.evaluate(()=>{
@@ -110,7 +110,7 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
     __compPerformance.observer=new PerformanceObserver(list=>__compPerformance.tasks.push(...list.getEntries().map(e=>e.duration)));
     __compPerformance.observer.observe({type:'longtask'});
   });
-  await row.locator('.comp-review').click();
+  await row.locator('.comp-review .take-number').click();
   await frame.waitForFunction(()=>(window.__qa||window.__probe).takeReview?.id.startsWith('comp:'));
   assert.deepEqual(await frame.evaluate(()=>(window.__qa||window.__probe).savedPractice),
     created.preferences,'explicit review does not overwrite the saved recording mix');
@@ -162,12 +162,12 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
       await checkSelectedTimeline(frame, created.state.segments.length);
     } finally { await page.setViewportSize(viewport); }
   }
-  await row.locator('.comp-review').click();
+  await row.locator('.comp-review .take-number').click();
   assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).takeReview),null);
   assert.equal(await frame.locator('#takeTimeline').isVisible(),false);
   assert.equal(await frame.locator('#takeTimeline span').count(),0,'deselection removes all coverage');
   await frame.evaluate(()=>{__compPerformance.start=performance.now();__compPerformance.tasks=[];});
-  await row.locator('.comp-review').click();
+  await row.locator('.comp-review .take-number').click();
   await frame.waitForFunction(()=>(window.__qa||window.__probe).takeReview?.id.startsWith('comp:'));
   const cachedPerformance=await frame.evaluate(()=>{
     const q=window.__qa||window.__probe,p=__compPerformance;
@@ -181,7 +181,7 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   assert.match((await trackDownload).suggestedFilename(),/-track\.wav$/);
   assert.equal(await frame.evaluate(()=>__compPerformance.calls),1,'download reuses prepared track audio');
   assert.equal(await row.locator('.comp-review').getAttribute('aria-pressed'),'true','download does not toggle selection');
-  await row.locator('.comp-review').click();
+  await row.locator('.comp-review .take-number').click();
   await frame.evaluate(()=>{MeleteCompAudio.prepare=__compPerformance.prepare;__compPerformance.observer.disconnect();delete window.__compPerformance;});
   const protection=await frame.evaluate(async ids=>{
     const q=window.__qa||window.__probe;
@@ -243,13 +243,13 @@ async function checkComp(frame, page, {output, label, reload, cloud: testCloud =
   const wasBars=await frame.locator('[data-view="bars"]').getAttribute('aria-selected')==='true';
   if(!wasBars)await frame.locator('#scoreViewToggle').click();
   await frame.waitForFunction(()=>!(window.__qa||window.__probe).busy);
-  await row.locator('.comp-review').click();
+  await row.locator('.comp-review .take-number').click();
   await frame.waitForFunction(()=>(window.__qa||window.__probe).takeReview?.id.startsWith('comp:'));
   const pitchbarPaths=await frame.locator('#barScore .take-pitch-trace-edge').count();
   assert.ok(pitchbarPaths>0&&pitchbarPaths<1000,'full-length pitchbar contour uses a bounded path palette');
   await frame.locator('#takePanel').scrollIntoViewIfNeeded();
   await page.screenshot({path:path.join(output,`comp-pitchbar-${label}.png`)});
-  await row.locator('.comp-review').click();
+  await row.locator('.comp-review .take-number').click();
   if(!wasBars)await frame.locator('#scoreViewToggle').click();
   if (testCloud) {
     assert.equal(await frame.locator('#compAccount').isVisible(),false,'offline/unconfigured builds omit cloud controls');
@@ -323,7 +323,7 @@ async function checkReferenceRevision(frame,page,{output,label,reload}) {
     assert.equal(await frame.locator('.take-timeline-start').count(),1);
     assert.equal(await frame.locator('.take-timeline-end').count(),1);
     await page.screenshot({path:path.join(output,`reference-revision-${label}.png`)});
-    await row.locator('.comp-review').click();
+    await row.locator('.comp-review .take-number').click();
     frame=await reload();
     await frame.waitForFunction(adopted,fixture.oldKey);
     return {...result,reload:true,bounds:true};
@@ -404,11 +404,11 @@ async function checkPhraseMargins(frame,page,{output,label,reload}) {
     const review=row.locator('.comp-review');
     if (await frame.locator('[data-view="standard"]').getAttribute('aria-selected')==='true') {
       assert.equal(await review.getAttribute('aria-pressed'),'false');
-      await review.click();
+      await review.locator('.take-number').click();
       await frame.locator('#score .take-pitch-trace-group').first().waitFor({state:'attached'});
       assert.equal(await review.getAttribute('aria-pressed'),'true');
     }
-    await review.click();
+    await review.locator('.take-number').click();
     await frame.waitForFunction(()=>(window.__qa||window.__probe).takeReview===null);
     assert.equal(await frame.locator('#reviewRestComp').count(),0,'no obsolete rest-repair variant');
     frame=await reload();

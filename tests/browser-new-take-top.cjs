@@ -132,8 +132,8 @@ const {choosePart}=require('./browser-sing.cjs');
       await dialog.getByRole('button',{name:'Close intonation distribution'}).click();
       assert.equal(await scored.locator('.comp-review').getAttribute('aria-pressed'),selected);
       // Review one recording, pin a different part with Hear, then add during playback.
-      if(await scored.locator('.comp-review').getAttribute('aria-pressed')==='true')await scored.locator('.comp-review').click();
-      await scored.locator('.comp-review').click();
+      if(await scored.locator('.comp-review').getAttribute('aria-pressed')==='true')await scored.locator('.comp-review .take-number').click();
+      await scored.locator('.comp-review .take-number').click();
       await frame.waitForFunction(key=>__qa.engine.takeLayers.has('comp:'+key),second);
       const sibling=await rowFor(firstSibling);
       await sibling.locator('.take-hear').click();
@@ -156,7 +156,7 @@ const {choosePart}=require('./browser-sing.cjs');
       const namedRows=frame.locator('#compRows .comp-row').filter({has:frame.locator('.take-singer',{hasText:'Test Singer'})});
       await frame.waitForFunction(()=>[...document.querySelectorAll('#compRows .comp-row')].some(r=>r.querySelector('.take-singer').textContent==='Test Singer' && r.querySelector('.comp-mean').textContent!=='—'));
       // Reviewing an older part on the station must return to this singer's recording target.
-      await scored.locator('.comp-review').click();
+      await scored.locator('.comp-review .take-number').click();
       await frame.waitForFunction(key=>__qa.engine.takeReview?.id==='comp:'+key,second);
       await frame.locator('#playPause').click();
       await frame.waitForFunction(()=>__qa.engine.playing);

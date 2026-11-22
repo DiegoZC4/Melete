@@ -28,7 +28,7 @@ async function checkCachedTakeReview(frame, id) {
   }, id);
   try {
     const row = frame.locator(`.take-row[data-take-id="${id}"] .take-select`);
-    await row.click();
+    await row.locator('.take-number').click();
     await frame.waitForFunction(id => (window.__qa || window.__probe).takeReview?.id === id, id);
     const proof = await frame.evaluate(id => {
       const qa = window.__qa || window.__probe;
@@ -47,7 +47,7 @@ async function checkCachedTakeReview(frame, id) {
       (window.__qa || window.__probe).pitchResolution.reviewRange(tick), rangeFixture.tick);
     assert.ok(selectedRange.max < 108,
       'an inactive raw observation must never expand the saved contour range');
-    await row.click();
+    await row.locator('.take-number').click();
     assert.equal(await frame.evaluate(() => (window.__qa || window.__probe).takeReview), null);
     const deselected=await frame.evaluate(tick =>
       (window.__qa || window.__probe).pitchResolution.reviewRange(tick),rangeFixture.tick);
@@ -137,7 +137,7 @@ async function checkTakeReview(frame, page, {output, label}) {
   }, fixture);
   const row = frame.locator(`.take-row[data-take-id="${fixture.id}"]`);
   await frame.waitForFunction(() => !(window.__qa || window.__probe).busy);
-  await row.locator('.take-select').click();
+  await row.locator('.take-select .take-number').click();
   await frame.evaluate(()=>window.__releasePartLoad());
   await frame.waitForFunction(id => (window.__qa || window.__probe).takeReview?.id === id, fixture.id);
   await frame.evaluate(async()=>{await (window.__qa||window.__probe).refreshComp();});
@@ -173,7 +173,7 @@ async function checkTakeReview(frame, page, {output, label}) {
   assert.equal(await frame.locator('[data-visible-index][aria-pressed="true"]').count(),1);
   assert.equal(await frame.locator('[data-audio-index][aria-pressed="false"]').count(),1);
   await frame.evaluate(()=>__takeReviewProof.preferences=(window.__qa||window.__probe).savedPractice);
-  await row.locator('.take-select').click();
+  await row.locator('.take-select .take-number').click();
   await require('./browser-sing.cjs').choosePart(frame,Number(cell));
   await frame.waitForFunction(() => !(window.__qa || window.__probe).busy);
   await frame.evaluate(({start,end})=>{
@@ -185,7 +185,7 @@ async function checkTakeReview(frame, page, {output, label}) {
     __takeReviewProof.traces=Object.fromEntries(Object.keys(localStorage).filter(key=>key.includes('pitch-trace')).map(key=>[key,localStorage.getItem(key)]));
   },fixture);
   const practiceEdges = await frame.locator('#barScore .bar-pitch-trace-edge').count();
-  await row.locator('.take-select').click();
+  await row.locator('.take-select .take-number').click();
   await frame.waitForFunction(id => (window.__qa || window.__probe).takeReview?.id === id, fixture.id);
   if (await frame.locator('[data-view="bars"]').getAttribute('aria-selected') !== 'true') {
     await frame.locator('#scoreViewToggle').click();
@@ -309,14 +309,14 @@ async function checkTakeReview(frame, page, {output, label}) {
   });
   // Clicking the selected row removes only that track, while practice continues.
   await frame.locator('#settingsToggle').click();
-  await row.locator('.take-select').click();
+  await row.locator('.take-select .take-number').click();
   assert.equal(await frame.evaluate(() => (window.__qa || window.__probe).engine.playing), true);
   assert.equal(await frame.evaluate(() => (window.__qa || window.__probe).engine.takeReviewSource), null);
   assert.equal(await row.locator('.take-select').getAttribute('aria-pressed'), 'false');
   assert.equal(await frame.locator('#barScore .bar-pitch-trace-edge:not(.take-pitch-trace-edge)').count(), practiceEdges,
     'deselect never restores an inactive live contour');
   const position = await frame.evaluate(() => (window.__qa || window.__probe).engine.currentSeconds());
-  await row.locator('.take-select').click();
+  await row.locator('.take-select .take-number').click();
   await frame.waitForFunction(id => (window.__qa || window.__probe).takeReview?.id === id, fixture.id);
   assert.equal(await frame.evaluate(() => (window.__qa || window.__probe).engine.playing), true);
   assert.ok(await frame.evaluate(position => (window.__qa || window.__probe).engine.currentSeconds() >= position, position),
@@ -370,7 +370,7 @@ async function checkTakeReview(frame, page, {output, label}) {
   assert.deepEqual(preserved, {noReview: true, paused: true, sameAudio: true, samePreferences: true, sameTrace: true});
   await frame.evaluate(() => (window.__qa || window.__probe).reloadTakes());
   const cached = await checkCachedTakeReview(frame, fixture.id);
-  await row.locator('.take-select').click();
+  await row.locator('.take-select .take-number').click();
   await frame.waitForFunction(id => (window.__qa || window.__probe).takeReview?.id === id, fixture.id);
   const singWasOn = await frame.evaluate(() => (window.__qa || window.__probe).savedPractice.sing);
   if (!singWasOn) await frame.locator('#pitchCapture').click();

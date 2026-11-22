@@ -198,7 +198,7 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
   assert.equal(await page.locator('#takeMicrophone').isEnabled(), true);
   assert.equal(await page.locator('#settingsToggle').evaluate(button => button.classList.contains('has-recording')), false);
   const reviewButton=page.locator('#compRows > .comp-row.is-armed .comp-review');
-  if(await reviewButton.getAttribute('aria-pressed')!=='true')await reviewButton.click();
+  if(await reviewButton.getAttribute('aria-pressed')!=='true')await reviewButton.locator('.take-number').click();
   await page.waitForFunction(() => __qa.takeReview);
   assert.equal(await page.evaluate(() => __qa.engine.playing), false, 'selection loads without auto-playing');
   await page.locator('#playPause').click();
