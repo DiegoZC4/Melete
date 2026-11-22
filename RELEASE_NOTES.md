@@ -1,3 +1,16 @@
+# Local choir player preview (2026-11-22)
+
+- Switching songs carries Sing, the metronome, tempo, viewing mode and the
+  part mixer. Matching uses part names and divisi rather than column order;
+  horizontal and vertical scale, passages, and recordings remain per song.
+- Punching in silences the previous audio of the comp being replaced, including
+  when it is selected or explicitly audible. Independent backing dubs retain
+  their Hear state. Punching out does not change the listening mix.
+- Live and saved pitch contours no longer draw a dark outline over the color.
+- Verified with synthetic capture in desktop and phone-sized browsers.
+  Native asset ordering has an automated test, not a new physical Windows test.
+  Neither the public player nor the rehearsal laptop has been updated.
+
 # Standalone Vowel Lab — 2026-11-22
 
 - Autumn and The Seed each have 11 rehearsal vowel groups. Syllables still
