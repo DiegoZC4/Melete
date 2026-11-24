@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 from urllib.parse import urljoin, urlsplit
@@ -13,6 +14,7 @@ from urllib.request import Request, urlopen
 
 NATIVE_PROTOCOL = 1
 MAX_PLAYER_BYTES = 128 * 1024 * 1024
+SHARED_REPO = 'https://github.com/DiegoZC4/Melete.git'
 
 
 def validate_player(data):
@@ -102,6 +104,8 @@ def update(player, manifest_url, fetch=download):
             raise ValueError('Invalid release size or hash')
         prior = hashlib.sha256(player.read_bytes()).hexdigest()
         result = {'player': str(player), 'sha256': digest, 'previousSha256': prior, 'updated': False}
+        if re.fullmatch(r'[a-f0-9]{40}', str(info.get('sourceCommit',''))):
+            result['sourceCommit']=info['sourceCommit']
         if prior == digest:
             return result
         payload = fetch(urljoin(manifest_url, info['player']), size)
@@ -129,15 +133,44 @@ def update(player, manifest_url, fetch=download):
             lock.unlink(missing_ok=True)
 
 
+def follow_source(repo, branch, revision):
+    """Opt-in code checkout only; the installed HTML never depends on Git working."""
+    if not re.fullmatch(r'[0-9a-f]{40}',revision or ''):
+        return 'deferred: no released revision'
+    def git(*args):
+        return subprocess.check_output(['git','-c','core.fsmonitor=false','-C',str(repo),*args],
+            env={**os.environ,'GIT_TERMINAL_PROMPT':'0'},text=True,timeout=40,stderr=subprocess.PIPE).strip()
+    if git('remote','get-url','origin') not in (SHARED_REPO,SHARED_REPO.removesuffix('.git'),'git@github.com:DiegoZC4/Melete.git'):
+        return 'deferred: not the shared repository'
+    if git('branch','--show-current')!=branch or git('status','--porcelain'):
+        return 'deferred: different branch or local edits'
+    if git('rev-parse','HEAD')!=revision:
+        git('fetch','--quiet','--no-tags','origin','main')
+        try:
+            git('merge-base','--is-ancestor',revision,'FETCH_HEAD')
+            git('merge-base','--is-ancestor','HEAD',revision)
+        except subprocess.CalledProcessError:
+            return 'deferred: not a released fast-forward'
+        if git('branch','--show-current')!=branch or git('status','--porcelain'):
+            return 'deferred: changed during fetch'
+        git('merge','--ff-only','--quiet',revision)
+    return git('rev-parse','HEAD')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('player', type=Path)
     parser.add_argument('--manifest', required=True, help='Published HTTPS release.json URL')
+    parser.add_argument('--checkout',type=Path,help='Optionally fast-forward a clean shared Melete source checkout')
+    parser.add_argument('--checkout-branch',default='main',help='Only follow this explicitly configured local branch')
     args = parser.parse_args()
     try:
         result = update(args.player, args.manifest)
     except (OSError, ValueError) as error:
         parser.exit(1, f'Update not installed: {error}\nThe existing player is still available offline.\n')
+    if args.checkout:
+        try: result['checkout']=follow_source(args.checkout,args.checkout_branch,result.get('sourceCommit'))
+        except (OSError,subprocess.SubprocessError): result['checkout']='deferred: Git unavailable or checkout not updated'
     print(json.dumps(result, indent=2))
     print('Updated. Finish any recording, then reopen Melete to use it.' if result['updated'] else 'Already up to date.')
     print('Recordings, settings, singer directory and native audio calibration are unchanged.')

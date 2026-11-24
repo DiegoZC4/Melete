@@ -5,6 +5,8 @@ param(
     [Parameter(Mandatory)][string]$Player,
     [Parameter(Mandatory)][uri]$Manifest,
     [Parameter(Mandatory)][string]$User,
+    [string]$Checkout,
+    [string]$CheckoutBranch = 'main',
     [switch]$DefinitionOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -17,7 +19,13 @@ $sid = ([Security.Principal.NTAccount]$User).Translate([Security.Principal.Secur
 $channel = 'Melete verified offline player'
 $tag = 'Melete local_station verified player updater v1'
 function XmlText([string]$s) { [Security.SecurityElement]::Escape($s) }
-$argsText = XmlText ('"{0}" "{1}" --manifest "{2}"' -f $updater,$Player,$Manifest.AbsoluteUri)
+$argsLine = '"{0}" "{1}" --manifest "{2}"' -f $updater,$Player,$Manifest.AbsoluteUri
+if ($Checkout) {
+    $Checkout=(Resolve-Path -LiteralPath $Checkout).ProviderPath
+    if ($CheckoutBranch -notmatch '^[A-Za-z0-9][A-Za-z0-9/._-]*$') { throw 'Invalid source branch' }
+    $argsLine += ' --checkout "{0}" --checkout-branch "{1}"' -f $Checkout,$CheckoutBranch
+}
+$argsText = XmlText $argsLine
 $events = XmlText '<QueryList><Query Id="0"><Select Path="Microsoft-Windows-NetworkProfile/Operational">*[System[EventID=10000]]</Select><Select Path="System">*[System[Provider[@Name="Microsoft-Windows-Power-Troubleshooter"] and EventID=1]]</Select></Query></QueryList>'
 $xml = @"
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">

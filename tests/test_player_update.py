@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -81,3 +82,27 @@ class PlayerUpdateTests(unittest.TestCase):
         for data in (b'', b'<html>Melete</html>', b'<!doctype html>Melete', b'<!doctype html>unrelated</html>'):
             with self.assertRaises(ValueError):
                 updater.release_manifest(data)
+
+    def test_checkout_only_fast_forwards_the_pinned_clean_branch_to_the_release(self):
+        origin=self.root/'source';repo=self.root/'checkout';origin.mkdir()
+        real=subprocess.check_output
+        def git(path,*args):
+            return real(['git','-C',str(path),'-c','user.name=Fixture','-c','user.email=f@example.org',*args],text=True).strip()
+        git(origin,'init','-q','-b','main')
+        git(origin,'commit','--allow-empty','-qm','one')
+        first=git(origin,'rev-parse','HEAD')
+        git(self.root,'clone','-q',str(origin),str(repo))
+        git(repo,'remote','set-url','origin',updater.SHARED_REPO)
+        git(origin,'commit','--allow-empty','-qm','two')
+        release=git(origin,'rev-parse','HEAD')
+        git(origin,'commit','--allow-empty','-qm','unreleased')
+        def offline_git(cmd,**kwargs):
+            if 'fetch' in cmd: cmd=[str(origin) if arg=='origin' else arg for arg in cmd]
+            return real(cmd,**kwargs)
+        with patch.object(subprocess,'check_output',side_effect=offline_git):
+            self.assertEqual(updater.follow_source(repo,'main',release),release)
+            self.assertIn('deferred',updater.follow_source(repo,'main',first))
+            self.assertIn('deferred',updater.follow_source(repo,'another-branch',release))
+            (repo/'my-work').write_text('local changes')
+            self.assertIn('deferred',updater.follow_source(repo,'main',release))
+        self.assertEqual(git(repo,'rev-parse','HEAD'),release)

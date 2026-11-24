@@ -115,7 +115,9 @@ async function checkInputErrors(frame,start,tablet) {
     const descriptors=keys.map(k=>Object.getOwnPropertyDescriptor(devices,k)),enumerate=devices.enumerateDevices.bind(devices);
     if(tablet){Object.defineProperty(navigator,'platform',{configurable:true,value:'MacIntel'});
       Object.defineProperty(navigator,'maxTouchPoints',{configurable:true,value:5});}
-    const test=window.qaBadInput={denied:true,requests:0,contexts:[],restore(){if(tablet){delete navigator.platform;delete navigator.maxTouchPoints;}keys.forEach((k,i)=>{
+    const labels=new Map(),proto=MediaStreamTrack.prototype,label=Object.getOwnPropertyDescriptor(proto,'label');
+    Object.defineProperty(proto,'label',{...label,get(){return labels.get(this.id)??label.get.call(this);}});
+    const test=window.qaBadInput={denied:true,requests:0,contexts:[],streams:[],restore(){Object.defineProperty(proto,'label',label);if(tablet){delete navigator.platform;delete navigator.maxTouchPoints;}keys.forEach((k,i)=>{
       if(descriptors[i])Object.defineProperty(devices,k,descriptors[i]);else delete devices[k];});}};
     Object.defineProperty(devices,'enumerateDevices',{configurable:true,value:async()=>[...await enumerate(),
       {kind:'audioinput',deviceId:'qa-recovery-mic',label:'USB Audio'}, {kind:'audioinput',deviceId:'qa-ipad-mic',label:'iPad Microphone'}]});
@@ -127,8 +129,11 @@ async function checkInputErrors(frame,start,tablet) {
       // Deliver real frames below -90 dBFS to test the separate live-but-silent case.
       const built=test.chosen==='qa-ipad-mic';
       const gain=test.gain=ctx.createGain();gain.gain.value=built ? .1 : .00002;osc.connect(gain).connect(out);osc.start();
-      Object.defineProperty(out.stream.getAudioTracks()[0],'label',{configurable:true,value:built?'iPad Microphone':' USB Audio'});
-      await ctx.resume();return out.stream;
+      // WebKit may return a fresh JS wrapper for the same native track.
+      const stream=out.stream,track=stream.getAudioTracks()[0];test.streams.push({stream,track});
+      labels.set(track.id,built?'iPad Microphone':' USB Audio');
+      Object.defineProperty(stream,'getAudioTracks',{configurable:true,value:()=>[track]});
+      await ctx.resume();return stream;
     }});
   },tablet);
   try {
@@ -149,9 +154,9 @@ async function checkInputErrors(frame,start,tablet) {
     assert.equal(await frame.evaluate(()=>qaBadInput.chosen),'qa-recovery-mic','retry must actually use the staged alternate input');
     assert.match(await frame.locator('#micRecoveryAdvice').innerText(),/splitter/);
     if(tablet){
-      assert.equal(await frame.locator('#micRecoveryRoute').innerText(),'Active input: USB Audio');
+      await frame.waitForFunction(()=>document.querySelector('#micRecoveryRoute').textContent==='Active input: USB Audio');
       await frame.locator('#micRecoveryBuiltin').click();await state('signal');
-      assert.equal(await frame.locator('#micRecoveryRoute').innerText(),'Active input: iPad Microphone');
+      await frame.waitForFunction(()=>document.querySelector('#micRecoveryRoute').textContent==='Active input: iPad Microphone');
       assert.equal(await frame.evaluate(()=>localStorage.getItem('choir-practice:microphone:v1:ipad')),'qa-ipad-mic');
       assert.equal(await frame.locator('#playPause').getAttribute('aria-label'),'Play score','changing input must not start a take');
     }

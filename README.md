@@ -84,7 +84,10 @@ For an opt-in Windows station, `tools/local_station/Register-PlayerUpdates.ps1`
 registers the same manifest with the installed HTML updater. Supply `-Python`
 (the path to pythonw.exe), `-Player`, `-Manifest` (HTTPS), and `-User` (the
 station operator). It runs with that user's ordinary rights at logon, system
-resume and network connection, never on a timer. Remove just that subscription
+resume and network connection, never on a timer. Optional `-Checkout` and
+`-CheckoutBranch` also fast-forward a clean shared repo to the released Git
+revision, not to unreleased changes. Other branches, edits, or divergent history
+are left alone and never prevent the HTML from updating. Remove just that subscription
 with `Unregister-ScheduledTask -TaskName 'Melete verified offline player'`.
 
 Keep your score and generated project **outside this repository**.
