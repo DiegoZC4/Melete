@@ -274,7 +274,7 @@ async function main() {
             mobile,output,label:mobile?'mobile':'desktop',
           })});
           results.push({viewport:mobile?'mobile':'desktop', lyrics:await checkSelectiveLyrics(page,page,{
-            mobile, output, splitWord:'together', label:mobile?'mobile':'desktop', reload:async()=>{await page.reload();await settled();return page;},
+            mobile, output, splitWord:'together', repeatedWord:'sing', label:mobile?'mobile':'desktop', reload:async()=>{await page.reload();await settled();return page;},
           })});
         } finally {await lyricContext.close();}
         if(process.env.QA_LYRICS_ONLY)continue;

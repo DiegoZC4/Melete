@@ -21,6 +21,12 @@
         var KEY = "choir-practice-theme";
         var COLOR = { light: "#f4efe7", dark: "#171b19" };
         var root = document.documentElement;
+        // iPadOS can report browser display-mode even in an installed song iframe.
+        var ipad = navigator.platform === "iPad" || /iPad/.test(navigator.userAgent) ||
+          (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+        if (ipad && (navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches)) {
+          root.classList.add("ipad-home-player");
+        }
         function stored() {
           try { var v = localStorage.getItem(KEY); return v === "light" || v === "dark" ? v : null; }
           catch (e) { return null; }
@@ -132,6 +138,7 @@
         </button>
       </div>
 
+      <div id="micSignalWarning" role="status" hidden>No mic signal during this phrase. <button type="button" class="take-command" id="micSignalAction">Check input</button></div>
       <div class="settings-panel" id="settingsPanel" aria-hidden="true">
         <div class="settings-strip">
           <section class="control-group parts-group" data-settings-section="parts" aria-labelledby="partsLabel">
@@ -257,7 +264,8 @@
                     <label class="timing-device" id="timingInputSlot">Input</label>
                     <label class="timing-device">Output <select id="playbackDevice" aria-describedby="timingDefaultOutput"><option value="">System default</option></select></label>
                     <small id="timingDefaultOutput" hidden>System default follows your device's Sound settings. If you hear Melete in your headphones, leave it selected.</small>
-                    <label class="output-signal">Signal <meter id="outputSignal" aria-label="Playback level before system volume" min="-90" max="0" value="-90"></meter><output id="outputDb">Silent</output></label>
+                    <label class="output-signal" title="Digital playback before headphone volume; highest level held after measuring">Playback out <meter id="outputSignal" aria-label="Playback level before system volume" min="-90" max="0" value="-90"></meter><output id="outputDb">Silent</output></label>
+                    <label class="output-signal" id="timingReturnRow" title="Peak sample from the microphone used for this timing measurement">Mic return <meter id="timingMicSignal" aria-label="Calibration microphone return" min="-90" max="0" value="-90"></meter><output id="timingMicDb">Not sampled</output></label>
                     <button type="button" class="take-command" id="testPlaybackOutput" title="One tone on the left, then two on the right">Test stereo</button>
                     <button type="button" class="take-command" id="downloadAudioLog">Audio log</button><p id="playbackDeviceStatus" role="status"></p>
                     <p>Take the headphones off and turn direct mic monitoring off. Hold an earpiece near the recording mic, then measure. A fourth chirp checks the first three.</p>
@@ -269,7 +277,7 @@
                   </dialog>
                   <div id="microphoneCheck" class="mic-check-inline" data-state="idle">
                     <div class="mic-check-meter" role="meter" aria-label="Microphone input level" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60"><div class="mic-check-fill"></div></div>
-                    <div id="checkMicrophone" aria-label="Microphone input" title="Input level while Sing is on"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"></path></svg><span role="status" aria-live="polite">Mic off</span><output></output></div>
+                    <button type="button" id="checkMicrophone" aria-label="Microphone input settings" aria-haspopup="dialog" aria-controls="micRecoveryDialog" title="Open microphone settings"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"></path></svg><span role="status" aria-live="polite">Mic off</span><output></output></button>
                     <div class="mic-check-stats">
                       <div id="recordingToday" title="Practice time today across songs: pitch-only and audio, including repeats and rests."><output aria-label="Minutes recorded today across songs">-- min</output> today</div>
                       <div id="takeStorage"><output aria-label="Recordings stored across songs">-- MB</output></div>
@@ -379,6 +387,18 @@
         <p>Each bucket spans one cent through ±100 ¢. Larger errors share one bucket per side. Octave equivalents share 0 ¢. Measurements split at note changes. Unlisted buckets have zero measurements.</p>
         <table><thead><tr><th scope="col">Error (¢)</th><th scope="col">Measurements</th><th scope="col">Measured time (s)</th></tr></thead><tbody></tbody></table>
       </details>
+    </dialog>
+    <dialog id="micRecoveryDialog" class="comp-cloud-dialog" aria-labelledby="micRecoveryTitle">
+      <form method="dialog"><strong id="micRecoveryTitle">Microphone input</strong><button type="submit" class="icon-button" aria-label="Close microphone settings" autofocus><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"></path></svg></button></form>
+      <strong id="micRecoveryState" role="status"></strong>
+      <p id="micRecoveryAdvice"></p>
+      <p id="micRecoveryRoute" hidden></p>
+      <p id="micRecoveryProcessing" hidden></p>
+      <label class="timing-device">Input <select id="micRecoveryDevice"></select></label>
+      <label class="output-signal">Level <meter id="micRecoveryLevel" min="-60" max="0" value="-60" aria-label="Microphone level"></meter><output id="micRecoveryDb">Silent</output></label>
+      <p id="micRecoveryLock" hidden>Pause playback before changing or retrying the microphone.</p>
+      <button class="take-command" type="button" id="micRecoveryRetry">Retry microphone</button>
+      <button class="take-command" type="button" id="micRecoveryBuiltin" hidden>Use iPad Microphone</button>
     </dialog>
     <dialog id="compCloudDialog" class="comp-cloud-dialog" aria-labelledby="compCloudTitle">
       <form method="dialog"><strong id="compCloudTitle">Google account</strong><button class="icon-button" aria-label="Close account settings"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"></path></svg></button></form>

@@ -595,7 +595,9 @@ async function checkSegmentCapture(frame) {
       && [...e.takeLayers.values()].every(l=>e.canMonitorTake(l)||!l.source);
   }),'a live punch cannot schedule its previous performance');
   await frame.waitForFunction(()=>['signal','quiet','clipping'].includes(document.getElementById('microphoneCheck').dataset.state));
-  assert.equal(await frame.locator('button#checkMicrophone').count(),0,'recording uses a passive inline meter, not another toggle');
+  assert.equal(await frame.locator('#checkMicrophone').getAttribute('aria-haspopup'),'dialog','the meter opens input settings');
+  assert.equal(await frame.locator('#checkMicrophone').getAttribute('aria-pressed'),null,'the meter is not a second recording toggle');
+  assert.equal(await frame.locator('#checkMicrophone').isEnabled(),true,'an active take does not block read-only input inspection');
   assert.equal(await frame.locator('#takeMicrophone').isDisabled(),true);
   const spec=await frame.evaluate(()=>(window.__qa||window.__probe).countIn.spec);
   assert.ok(Math.abs(spec.start-target.tick)<3,'free recording starts at the chosen playhead, not zero');

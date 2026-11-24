@@ -227,9 +227,7 @@ window.MeleteVowelView = (() => {
     }
     function connect(analyser) {
       releaseWorker();
-      const url=URL.createObjectURL(new Blob([tools.workerSource()],{type:"text/javascript"}));
-      try { channel=new window.MeleteLivePitch.Channel(new Worker(url),accept,failure); }
-      finally { URL.revokeObjectURL(url); }
+      channel=window.MeleteLivePitch.Channel.fromSource(tools.workerSource(),accept,failure);
       source=analyser; buffer=new Float32Array(analyser.fftSize);
     }
     function finishExample() {

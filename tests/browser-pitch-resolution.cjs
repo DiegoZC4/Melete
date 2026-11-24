@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const {strokePixel}=require('./browser-stroke-pixel.cjs');
 
 // This instrumentation exists only in isolated QA builds. A quiet synthetic
 // input exercises the actual analyser/Pitchy path without recording the user.
@@ -134,7 +135,7 @@ const pitchTraceProbe = `pitchResolution: {
     const note=sequence.notes.find(n=>n[0]===0&&n[2]-n[1]>=sequence.division/2);
     const first=pitchTraceBinAtTick(note[1])+1,last=Math.min(pitchTraceBinAtTick(note[2])-1,first+12);
     const lane=pitchTraceLane(0,{create:true});
-    for(let bin=first;bin<=last;bin++){lane.pitches[bin]=(note[3]+offset)*100;pitchTraceCount++;}
+    for(let bin=first;bin<=last;bin++){lane.pitches[bin]=Math.round((note[3]+offset)*100);pitchTraceCount++;}
     this.octaveTarget={first,last,pitch:note[3],offset,tick:pitchTraceTickAtBin(first)};
     updatePitchTraceIncrementally(new Map([[0,new Set(Array.from({length:last-first+1},(_,i)=>first+i))]]));
   },
@@ -144,7 +145,7 @@ const pitchTraceProbe = `pitchResolution: {
     const edges=[...s.traceLayer.querySelectorAll('.bar-pitch-trace-edge .bar-pitch-trace')];
     return {min:s.minPitch,max:s.maxPitch,pitch:t.pitch,offset:t.offset,
       raw:pitchTraceLane(0).pitches[t.first],targetY:s.yAtPitch(t.pitch),actualY:s.yAtPitch(t.pitch+t.offset),
-      edges:edges.map(e=>({y:Number(e.getAttribute('y1')),color:e.getAttribute('stroke')}))};
+      edges:edges.map(e=>({y:Number(e.getAttribute('y1')),color:e.getAttribute('stroke'),paint:(${strokePixel})(e)}))};
   },
   prepare() {
     engine.pauseTransport(); clearLoop(); stopTakePreview(); clearPitchTrace(); engine.setRate(1);
@@ -351,15 +352,16 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     assert.equal(await frame.locator('#compRows .comp-review[aria-pressed="true"]').count(),1);
     const finalPhrase=await checkFinalPhrase(frame,page,probe,output,label);
     const octaves=[];
-    for(const offset of [-12,12,-11]) {
+    for(const offset of [-12,12,-11,12.3]) {
       await frame.evaluate(({probe,offset})=>window[probe].pitchResolution.seedOctave(offset),{probe,offset});
       await frame.waitForFunction(probe=>!window[probe].busy&&window[probe].pitchResolution.octaveSnapshot()?.edges.length,probe);
       const view=await frame.evaluate(probe=>window[probe].pitchResolution.octaveSnapshot(),probe);
-      assert.equal(view.raw,(view.pitch+offset)*100,'raw pitch keeps the sung octave');
+      assert.equal(view.raw,Math.round((view.pitch+offset)*100),'raw pitch keeps the sung octave');
       assert.ok(view.min<=view.pitch+offset&&view.max>=view.pitch+offset,'pitchbar expands enough to display the actual register');
       assert.ok(view.edges.every(e=>Math.abs(e.y-view.actualY)<.01),'trace is drawn at actual pitch, not on the target octave');
       assert.ok(Math.abs(view.actualY-view.targetY)>30,'the sung octave remains visibly distinct');
-      assert.ok(view.edges.every(e=>offset===-11?e.color!=='rgb(0 255 0)':e.color==='rgb(0 255 0)'), 'octaves are green but a semitone error is not');
+      const expected=offset===-11?'rgb(255, 0, 0)':offset===12.3?'rgb(208, 168, 0)':'rgb(0, 255, 0)';
+      assert.ok(view.edges.every(e=>e.paint===expected),'actual live SVG paint for '+offset);
       octaves.push(view);
       if(output)await page.screenshot({path:path.join(output,`octave-${label}-${offset}.png`)});
     }

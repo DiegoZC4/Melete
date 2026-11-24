@@ -56,7 +56,7 @@ function fixture({division=960, bpm=84, rate=1}={}) {
     pitchCaptureIntervalMs:10, pitchCaptureCadenceMs:10, pitchCapturePreviousAudioTime:null,
     pitchCapturePreviousTick:null, pitchCapturePreviousSeconds:null, pitchCaptureWasSilent:true, pitchCaptureMisses:0,
     pitchCaptureUnvoicedFrame:null, pitchOctaveHistory:[],
-    window:{MeleteVocalPitch:require('../template/vocal_pitch.js')},
+    window:{MeleteVocalPitch:require('../template/vocal_pitch.js'),MeleteTakePitch:require('../template/take_pitch.js')},
     pitchTraceLaneAt:()=>0, pitchPendingEvidence:null, PITCH_CONFIDENCE_THRESHOLD:.8,
     pitchRestState:()=> 'sing',
     queuePitchTracePaint:()=>{}, schedulePitchTraceSave:()=>{}, pitchCaptureWorker:null,

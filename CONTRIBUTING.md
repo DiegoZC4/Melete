@@ -43,6 +43,38 @@ The standalone take-column and settings-cleanup browser checks use synthetic
 scores by default; set `QA_COLLECTION_PROJECT` to a restored rehearsal project
 to include the real Autumn and Seed players as well.
 
+For the recording workflow across desktop browser engines:
+
+```sh
+npx playwright install firefox webkit chromium
+npm run test:compat -- all
+```
+
+For a cold offline Home Screen regression, run `npm run test:offline -- webkit`
+(or `firefox` / `chromium`). This rejects a damaged download and an incompatible
+update, stops the HTTP server, and quits and relaunches the browser twice.
+It switches songs, records synthetic audio, checks the stored PCM and pitch
+score, and tests take-only replay. Pass a hosted directory after the engine
+to test an actual release candidate instead of the generated two-song fixture.
+An engine test does not verify an iPad's physical microphone route.
+
+`node tests/browser-display-identity.cjs` builds two synthetic scores and checks
+the actual painted contour pixels and badge visibility across login states.
+`node tests/browser-tab-handoff.cjs` switches two genuine Chromium tabs with
+fake microphones and checks release, reacquisition and interrupted-take saving.
+Both run in CI without private scores, accounts, or local DevHub services.
+
+Pass one engine instead of `all` for a focused run. An optional second argument
+is a built two-song collection; otherwise the test builds its own. Each engine
+switches songs and score views, records on a written entrance at desktop and
+phone widths, checks stored pitch and audio across reload, measures take-only
+playback against a muted control, and downloads a WAV. Tests use disposable
+profiles, synthetic input, silent output and no cloud writes. Firefox and
+Chromium exercise browser-provided test capture; WebKit uses a Web Audio stream.
+A separate input check denies a request, grants a silent stream, then supplies
+a tone and checks recovery. This does not test OS permission prompts, physical
+microphones, splitters or iPad Safari.
+
 `QA_HORIZONTAL_FOLLOW_ONLY=1` exercises horizontal Score playback on desktop
 and phone-sized windows. It measures the engraved beat line across one bar,
 then scrolls away and uses Return to Playback while the audio keeps running.

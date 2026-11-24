@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const {strokePixel}=require('./browser-stroke-pixel.cjs');
 const {choosePart, stopRecording} = require('./browser-sing.cjs');
 
 async function checkEnsembleContours(page, frame, {output, label}) {
@@ -23,7 +24,7 @@ async function checkEnsembleContours(page, frame, {output, label}) {
       const frames = Array.from({length:Math.ceil(length/80)},(_,i) => {
         const start = i/100, end = Math.min((i+1)/100,length/sampleRate);
         const note = ref.notes.find(n => n[0] <= start && n[1] > start);
-        return {start,end,cents:note ? note[2][0]*100+(index===1?100:5) : null};
+        return {start,end,cents:note ? note[2][0]*100+(index===1?100:index===0&&i%100>=50?30:5) : null};
       });
       await q.takeStore.pitchScore(id,length,ref,MeleteTakePitch.scoreFrames(frames,ref,ref.seconds),MeleteTakePitch.packContour(frames,take));
       await q.reloadTakes(); await q.refreshComp();
@@ -50,9 +51,11 @@ async function checkEnsembleContours(page, frame, {output, label}) {
   assert.equal(await frame.locator('#barScore [data-reference="true"]').count(),0,'ensemble contours are all graded');
   const grades = await frame.evaluate(tracks => tracks.map(t=>{
     const paths=[...document.querySelectorAll('#barScore .take-pitch-trace-edge')].filter(p=>p.dataset.takeId===t.id);
-    return {id:t.id,colors:[...new Set(paths.map(p=>p.getAttribute('stroke')))]};
+    return {id:t.id,colors:[...new Set(paths.map(p=>p.getAttribute('stroke')))],paint:[...new Set(paths.map(p=>getComputedStyle(p).stroke))]};
   }),tracks);
   assert.ok(grades[0].colors.includes('rgb(0 255 0)'),JSON.stringify(grades));
+  const middle=frame.locator('#barScore .take-pitch-trace-edge[stroke="color-mix(in oklab, lime, red 50%)"]').first();
+  assert.equal(await middle.evaluate(strokePixel),'rgb(208, 168, 0)','saved 30-cent section has the OKLab midpoint');
   assert.ok(grades[1].colors.includes('rgb(255 0 0)'),JSON.stringify(grades));
   assert.ok(!grades[1].colors.includes('rgb(0 255 0)'), 'a wrong note is not accepted from a different visible part');
   await hear(tracks[0].id).click();

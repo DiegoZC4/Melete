@@ -74,15 +74,22 @@ test('independent simultaneous phrases stay on their own staves', () => {
   assert.equal(plan.hidden.size, 0);
 });
 
-test('a rest ends a run, so the first word after it stays', () => {
-  const words = [0, 960, 2880, 3840].map(tick => lyric(6, tick, 'hold'));
+test('a long rest ends a backing run, so the first syllable after it stays', () => {
+  const words = [0, 960, 2880, 3840].map(tick => lyric(6, tick, 'dm'));
   const notes = [[6, 0, 960], [6, 960, 1920], [6, 2880, 3840], [6, 3840, 4800]];
-  assert.deepEqual([...tools.repeatedLyrics(words, notes)], [words[1], words[3]]);
-  assert.deepEqual([...tools.repeatedLyrics(words, [...notes, [5, 0, 4800]])], [words[1], words[3]],
+  assert.deepEqual([...tools.repeatedLyrics(words, notes, 480)], [words[1], words[3]]);
+  assert.deepEqual([...tools.repeatedLyrics(words, [...notes, [5, 0, 4800]], 480)], [words[1], words[3]],
     'another part singing through the gap does not fill this part\'s rest');
   assert.deepEqual([...tools.repeatedLyrics(words, [[6, 0, 1920], [6, 1000, 4800]])], words.slice(1),
     'overlapping notes leave no rest');
   assert.deepEqual([...tools.repeatedLyrics(words)], words.slice(1), 'without notes no rest is known');
+});
+
+test('each written word cues a new attack even on the same pitch; untexted ties add no syllable', () => {
+  const words = [[0,'down'],[720,'down'],[1440,'hold'],[1680,'hold'],[1920,'mm'],[2160,'mm'],
+    [2400,'down'],[2640,'mm']].map(([t,target])=>lyric(7,t,target));
+  const notes = words.map((w,i)=>[7,w[1],words[i+1]?.[1]??2880,41]);
+  assert.deepEqual([...tools.repeatedLyrics(words,notes)], [words[5]]);
 });
 
 test('notes without a word do not count as a rest', () => {

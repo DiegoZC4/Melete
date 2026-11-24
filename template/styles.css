@@ -129,10 +129,8 @@ button { color: inherit; }
   z-index: 500;
   top: 0;
   border-bottom: 1px solid var(--line);
-  background: var(--panel);
+  background: var(--panel-solid);
   box-shadow: 0 4px 18px rgba(58, 48, 37, 0.08);
-  backdrop-filter: blur(20px) saturate(1.18);
-  -webkit-backdrop-filter: blur(20px) saturate(1.18);
 }
 
 .transport-primary {
@@ -141,6 +139,12 @@ button { color: inherit; }
   align-items: center;
   gap: 10px;
   padding: max(6px, env(safe-area-inset-top)) 12px 6px;
+}
+
+/* The native status-bar fade reaches 32pt into the Home Screen web viewport,
+   even when WebKit reports a zero safe-area inset. Keep controls below it. */
+:root.ipad-home-player:not(:fullscreen) .transport-primary {
+  padding-top: calc(max(6px, env(safe-area-inset-top, 0px)) + 32px);
 }
 
 .play-button,
@@ -372,6 +376,17 @@ button { color: inherit; }
 }
 
 .settings-toggle { position: relative; display: inline-grid; }
+.offline-readiness {
+  flex: 0 0 auto; border: 0; padding: 4px; line-height: 1.15;
+  font-family: inherit; font-weight: 600; font-size: 11px; color: var(--muted);
+  background: transparent; cursor: pointer; white-space: nowrap;
+}
+.offline-readiness[hidden] { display: none; }
+.offline-readiness[data-state="failed"], #micSignalWarning { color: var(--danger, #bd4e41); }
+#micSignalWarning { padding: 3px 12px 6px; font-size: 12px; font-weight: 600; }
+@media (max-width: 600px) {
+  .offline-readiness { max-width: 46px; padding-inline: 1px; white-space: normal; }
+}
 .settings-panel { display: none; border-top: 1px solid var(--line); }
 .settings-panel.is-open { display: block; }
 
@@ -711,7 +726,8 @@ button { color: inherit; }
 #timingCheckDialog .timing-device select { grid-column:2;grid-row:auto;min-width:0;width:100%; }
 #timingCheckDialog small { color:var(--muted); }
 #headsetTimingHelp summary { cursor:pointer; }
-#timingCheckDialog .output-signal { display:grid;grid-template-columns:auto minmax(40px,1fr) 8ch;gap:8px;margin:6px 0; }
+#timingCheckDialog .output-signal { display:grid;grid-template-columns:6.1em minmax(30px,1fr) 10ch;align-items:center;gap:6px;margin:6px 0; }
+#timingCheckDialog .output-signal[hidden] { display:none; }
 .output-signal meter { width:100%; }.output-signal output { text-align:right;font-variant-numeric:tabular-nums; }
 #timingCheckDialog p:empty { display:none; }
 .take-microphone select {
@@ -733,9 +749,12 @@ button { color: inherit; }
 .mic-check-inline [role="status"] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mic-check-inline output { margin-left: auto; font-size: 9px; white-space: nowrap; }
 /* Second line of the monitor, clear of the icon. */
-.mic-check-stats { position: absolute; left: 22px; right: 6px; bottom: 2px; display: flex; justify-content: space-between; gap: 4px; color: var(--muted); font-size: 9px; line-height: 10px; white-space: nowrap; }
+.mic-check-stats { pointer-events: none; position: absolute; left: 22px; right: 6px; bottom: 2px; display: flex; justify-content: space-between; gap: 4px; color: var(--muted); font-size: 9px; line-height: 10px; white-space: nowrap; }
 .mic-check-stats output { margin-left: 0; color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
 .mic-check-inline[data-state="error"] #checkMicrophone { color: #df5555; }
+.mic-check-inline #checkMicrophone { cursor: pointer; }
+#micRecoveryDialog .output-signal { margin-block: .65em; }
+#micRecoveryDialog p { margin-block: .65em; }
 .mic-check-dialog {
   box-sizing: border-box; width: 360px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 32px);
   overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 8px;

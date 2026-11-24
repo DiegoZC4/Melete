@@ -355,7 +355,6 @@ console.log(JSON.stringify([
         self.assertIn("detector.minVolumeAbsolute = 0", (ROOT / "template" / "vocal_pitch.js").read_text())
         self.assertNotIn(".findPitch(", app)
         self.assertNotIn("adaptiveNoise", app)
-        self.assertIn("rgb(${red} ${255 - red} 0)", app)
         self.assertIn('if (!Number.isFinite(errorCents)) return "rgb(255 0 0)"', app)
         self.assertNotIn("if (!traceColor) continue", app)
         self.assertNotIn("--pitch-trace-neutral", styles)
@@ -481,7 +480,7 @@ console.log(JSON.stringify({{
             [
                 "rgb(0 255 0)",
                 "rgb(0 255 0)",
-                "rgb(128 127 0)",
+                "color-mix(in oklab, lime, red 50%)",
                 "rgb(255 0 0)",
                 "rgb(255 0 0)",
             ],
@@ -1419,8 +1418,8 @@ console.log(JSON.stringify(sweepSupersededStorage("autumn")));
         self.assertIn("engine.beforeStart = () =>", app)
         self.assertIn("disablePitchCapture(false, { preservePreference: true });", app)
         restoration = app.split("function restorePitchCapture() {", 1)[1].split("\n  }", 1)[0]
-        self.assertIn("armMicrophone()", restoration)
-        self.assertIn("state==='granted'", restoration)
+        self.assertIn("armMicrophone({recover:true})", restoration)
+        self.assertIn('permission==="granted"', restoration)
         self.assertNotIn("startTakeRecording", restoration)
         self.assertIn("preferences: { ...currentPreferenceState(), sing: false },", app)
         self.assertIn("""    updatePitchCaptureAppearance();
@@ -2564,6 +2563,20 @@ console.log(JSON.stringify({{
         marked_again, count_again = build_trainer.annotate_repeated_lyrics(marked)
         self.assertEqual(count_again, 1)
         self.assertEqual(marked_again, marked)
+
+    def test_compact_preserves_written_repetitions_and_cleans_old_cache_flags(self) -> None:
+        old = ' data-choir-repeated-lyric="true"'
+        def note(text, flag="", tie=""):
+            return f'<note><pitch><step>F</step><octave>2</octave></pitch>{tie}<lyric{flag}><text>{text}</text></lyric></note>'
+        raw = ('<score-partwise><part><measure>' + note("down") + note("down", old, '<tie type="start"/>') +
+               '<note><pitch><step>F</step><octave>2</octave></pitch><tie type="stop"/></note>' +
+               note("hold") + note("hold", old) + note("dm") + note("dm") + '</measure></part></score-partwise>')
+        marked, count = build_trainer.annotate_repeated_lyrics(raw)
+        self.assertEqual(count, 1)
+        lyrics = list(build_trainer.ET.fromstring(marked).iter("lyric"))
+        self.assertEqual([l.findtext("text") for l in lyrics], ["down", "down", "hold", "hold", "dm", "dm"])
+        self.assertEqual([i for i,l in enumerate(lyrics) if l.get(build_trainer.REPEATED_LYRIC_ATTRIBUTE)], [5])
+        self.assertEqual(build_trainer.annotate_repeated_lyrics(marked), (marked, count))
 
     def test_backing_breaths_only_bridge_one_quarter_in_the_same_voice(self) -> None:
         word = lambda text, voice=1: f"<note><voice>{voice}</voice><duration>3</duration><lyric><text>{text}</text></lyric></note>"

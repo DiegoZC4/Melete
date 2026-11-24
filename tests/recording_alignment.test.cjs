@@ -1,5 +1,13 @@
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
+test('the soft output primer cannot be mistaken for a calibration chirp',()=>{
+  const {timingChirp,timingPrimer,chirpReadings,fitChirps}=require('../template/microphone_check.js');
+  const rate=44100, at=[.1,.94,1.77,2.61], dirs=[false,true,false,true];
+  const signal=new Float32Array(rate*4), primer=timingPrimer(rate);
+  assert.ok(Math.max(...primer)<.046 && Math.max(...timingChirp(rate))<=.10001);
+  at.forEach(t=>signal.set(primer,Math.round((t+.08)*rate)));
+  assert.equal(fitChirps(chirpReadings(signal,rate,at,dirs)),null);
+});
 test('a calibration for an unidentified system output expires when its route changes',()=>{
   const {timingRouteKey}=require('../template/microphone_check.js');
   const mic={kind:'audioinput',deviceId:'mic',label:'USB input'};

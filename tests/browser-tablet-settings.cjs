@@ -6,6 +6,44 @@ const {wavBytes} = require('../template/loop_recorder.js');
 const {timing} = require('../template/reference_audio.js');
 const {expandSettingsFixture} = require('./browser-settings-sections.cjs');
 
+async function checkHomeTransport(browser,html) {
+  const origin='http://127.0.0.1:8809/transport-fixture';
+  for(const [platform,touch,installed,embedded,clearance] of [
+    ['MacIntel',5,true,false,32],['MacIntel',5,true,true,32],['iPad',5,true,true,32],
+    ['MacIntel',5,false,true,0],['MacIntel',0,true,false,0],['iPhone',5,true,false,0]
+  ]){
+    const context=await browser.newContext({viewport:{width:1032,height:1344},hasTouch:!!touch});
+    try{
+      // Match WebKit on the physical iPad: display-mode is browser, navigator.standalone is true.
+      await context.addInitScript(({platform,touch,installed})=>{
+        for(const [key,value] of Object.entries({platform,maxTouchPoints:touch,standalone:installed}))
+          Object.defineProperty(navigator,key,{configurable:true,get:()=>value});
+      },{platform,touch,installed});
+      await context.route(origin,r=>r.fulfill({contentType:'text/html',body:embedded?
+        '<style>*{margin:0}iframe{border:0;width:100%;height:100dvh}</style><iframe></iframe>':html}));
+      const page=await context.newPage();await page.goto(origin);
+      if(embedded)await page.locator('iframe').evaluate((f,src)=>{f.srcdoc=src;},html);
+      const frame=embedded?page.frames().find(f=>f.parentFrame()):page;
+      await frame.waitForSelector('#playPause:not(:disabled)');
+      if(await frame.locator('#partChooser').isVisible())await frame.locator('#partChooserDismiss').click();
+      for(const theme of ['dark','light']){
+        await page.emulateMedia({colorScheme:theme});
+        const result=await frame.evaluate(()=>{
+          const header=document.querySelector('.transport'),row=header.querySelector('.transport-primary');
+          const seek=document.querySelector('#seek'),r=seek.getBoundingClientRect(),s=getComputedStyle(header);
+          return {pad:parseFloat(getComputedStyle(row).paddingTop),color:s.backgroundColor,filter:s.backdropFilter,
+            y:document.querySelector('#playPause').getBoundingClientRect().top,
+            hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===seek};
+        });
+        assert.equal(result.pad,6+clearance,JSON.stringify({platform,touch,installed,embedded,theme,result}));
+        assert.ok(result.y>=clearance&&result.hit,'safe-area padding must precede, not cover, the usable playbar');
+        assert.match(result.color,/^rgb\(/,'the sticky surface is opaque');
+        assert.equal(result.filter,'none');
+      }
+    } finally {await context.close();}
+  }
+}
+
 async function checkGeometry(frame, width) {
   const geometry = await frame.evaluate(() => {
     const box = e => {const {left,top,right,bottom,width} = e.getBoundingClientRect();return {left,top,right,bottom,width};};
@@ -48,6 +86,7 @@ async function checkTabletSettings(browser,temporary) {
     data:Buffer.from(wavBytes(new Int16Array(16000),8000)).toString('base64'),timing:timing(sequence)}}));
   build(['--config',config]);
   const html=await fs.readFile(path.join(project,'dist/index.html'),'utf8');
+  await checkHomeTransport(browser,html);
   assert.doesNotMatch(html,/id="vowel(?:Toggle|Panel)"|#vowelPanel|function makeEstimator\(/,'release has no embedded vowel panel or estimator');
   const result=[];
   const context=await browser.newContext({viewport:{width:1032,height:1244},isMobile:true,hasTouch:true});

@@ -11,6 +11,7 @@
 !/RELEASE_NOTES.md
 !/build_trainer.py
 !/collection.py
+!/offline_player.py
 !/practice_routes.py
 !/vowel_targets.py
 !/vowel_syllables.mjs

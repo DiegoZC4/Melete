@@ -84,10 +84,12 @@ def update(player, manifest_url, fetch=download):
     https_url(manifest_url)
     lock = player.with_name(player.name + '.update.lock')
     # Concurrent updates must not overwrite each other's last-known-good copy.
-    with lock.open('x') as held:
-        held.write(str(os.getpid()))
+    # Windows deletes this lock when its last handle closes, even after power loss.
+    temporary_flag = getattr(os, 'O_TEMPORARY', 0)
+    held = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_RDWR | temporary_flag, 0o600)
     pending = None
     try:
+        os.write(held, str(os.getpid()).encode('ascii'))
         info = json.loads(fetch(manifest_url, 16384))
         if info.get('schema') != 1 or info.get('kind') != 'melete-player':
             raise ValueError('Unknown player release format')
@@ -122,7 +124,9 @@ def update(player, manifest_url, fetch=download):
     finally:
         if pending:
             pending.unlink(missing_ok=True)
-        lock.unlink(missing_ok=True)
+        os.close(held)
+        if not temporary_flag:
+            lock.unlink(missing_ok=True)
 
 
 def main():

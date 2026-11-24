@@ -226,6 +226,7 @@
     rehearsalWake(Boolean(pitchCapturePageActive && !document.hidden && rehearsing));
   }
   let microphoneRequest = null;
+  let lastMicFailure = null;
   let latestDeviceRefresh = null;
   let microphoneDeviceId = "";
   let microphoneStreamDeviceId = "";
@@ -233,6 +234,15 @@
   let microphoneCheck = null;
   let timingDevices=[], timingOutputDevice = "", timingCache = {key:null, result:null}, recordingPassClock = null;
   let sessionTiming=null, timingRouteEpoch=0;
+  const timingHolds=window.MeleteMicrophoneCheck.timingHolds(()=>localStorage);
+  const ungradedTimingText="Audio saved without a pitch grade: recording timing was unverified.";
+  function wiredHoldKey(){
+    const m=window.MeleteMicrophoneCheck;
+    if(engine?.native || !m.wiredTabletSetup(window,timingDevices,microphoneDeviceId))return null;
+    const output=m.physicalEndpoint(timingDevices,"audiooutput",engine?.context?.sinkId) ||
+      timingDevices.find(d=>d.kind==="audiooutput"&&d.deviceId==="default")?.label;
+    return JSON.stringify([microphoneDeviceId,output]);
+  }
   let anonymousRouteSession;
   function invalidateSessionTiming(){sessionTiming=null;timingRouteEpoch++;}
   let recordingClockWatch=null;
@@ -285,6 +295,7 @@
   }
   // A collection's hidden song stays inactive until melete:activate.
   let pitchCapturePageActive = !window.frameElement?.inert;
+  let micOwnershipEpoch = 0, micOpenedHere = false;
   let pitchCaptureNotice = "";
   let pitchCaptureStream = null;
   let pitchCaptureContext = null;
@@ -7374,8 +7385,9 @@
       0,
       1,
     );
-    const red = Math.round(distance * 255);
-    return `rgb(${red} ${255 - red} 0)`;
+    if (distance === 0) return "rgb(0 255 0)";
+    if (distance === 1) return "rgb(255 0 0)";
+    return `color-mix(in oklab, lime, red ${+(distance * 100).toFixed(2)}%)`;
   }
 
   function pitchTraceBinTicks() {
@@ -8231,7 +8243,13 @@
     elements.pitchCapture.disabled = !ready || conductorMode || Boolean(rehearsalReview);
     elements.pitchCapture.setAttribute("aria-pressed", String(wantsPitchCapture() && !retry));
     elements.pitchCapture.setAttribute("aria-busy", String(requesting));
-    elements.pitchCapture.dataset.state = takeState === "off" && wantsPitchCapture() ? (pitchCaptureNotice ? "unavailable" : "armed") : takeState;
+    const standby = takeState === "off" && wantsPitchCapture() && !armed && !requesting && !pitchCaptureNotice;
+    elements.pitchCapture.dataset.state = takeState === "off" && wantsPitchCapture()
+      ? (pitchCaptureNotice ? "unavailable" : requesting ? "requesting" : standby ? "standby" : "armed") : takeState;
+    if (microphoneCheck?.dialog.dataset.state === "idle") {
+      const label = standby ? "Mic on Play" : "Mic off";
+      if (microphoneCheck.status.textContent !== label) microphoneCheck.paint("idle", label);
+    }
     elements.pitchCapture.classList.toggle("is-pending", wantsPitchCapture() && !recording);
     elements.pitchCapture.classList.toggle("is-recording", recording);
     elements.pitchCapture.setAttribute("aria-label", requesting
@@ -8244,7 +8262,9 @@
         : recording ? "Recording microphone audio and pitch. Turn off to keep listening."
           : takeState === "stopping" ? "Saving this pass locally."
             : stationReview ? "Review playback only. Click the faded practice part to return to the selected singer."
-            : wantsPitchCapture() ? pitchCaptureNotice || "Ready. Play or Space records audio and pitch."
+            : wantsPitchCapture() ? pitchCaptureNotice || (standby
+              ? "Sing is on. Play or Space opens the microphone and starts recording."
+              : "Play or Space records audio and pitch.")
               : "Record microphone audio and pitch locally during playback.";
     if (!Number.isInteger(practicePartIndex)) elements.pitchCapture.dataset.help += " Show one part in See to record; otherwise Play is playback only.";
     elements.pitchCapture.dataset.help += " Use headphones. Hold to clear the live display.";
@@ -8706,6 +8726,11 @@
     }
     pitchCaptureIntervalMs = Math.max(pitchCaptureIntervalMs,
       clamp(cost / 0.5, PITCH_CAPTURE_INTERVAL_MS, PITCH_CAPTURE_FALLBACK_INTERVAL_MS));
+    if(window.MeleteTakePitch.ungraded(takeJournal?.spec.pitchReference)){
+      const cents=Number.isFinite(frequency)&&frequency>0&&clarity>=.85?6900+1200*Math.log2(frequency/440):null;
+      takeJournal.observePitch(frame.audioFrame,frame.audioWidth,cents);
+      return; // The observations have microphone time, not verified score time.
+    }
     const decision = evaluatePitchEvidence(frequency, clarity, seconds, frame);
     takeJournal?.observePitch(frame.audioFrame, frame.audioWidth, decision.accepted ? decision.pitchCents : null);
     if (decision.backfill) takeJournal?.observePitch(decision.backfill.audioFrame, decision.backfill.audioWidth, decision.backfill.pitchCents);
@@ -8737,15 +8762,12 @@
 
   function ensurePitchWorker() {
     if (pitchCaptureWorker) return;
-    const url = URL.createObjectURL(new Blob([window.MeleteLivePitch.workerSource(embeddedText("pitchy-runtime"))],
-      {type: "text/javascript"}));
-    try {
-      pitchCaptureWorker = new window.MeleteLivePitch.Channel(new Worker(url), acceptPitchSample, error => {
+    pitchCaptureWorker = window.MeleteLivePitch.Channel.fromSource(
+      window.MeleteLivePitch.workerSource(embeddedText("pitchy-runtime")), acceptPitchSample, error => {
         console.error(error);
         disablePitchCapture(false, { preservePreference: true, reason: "Pitch tracking unavailable; press Play to retry." });
         showToast("Background pitch tracking unavailable; playback is unchanged", "error");
       });
-    } finally { URL.revokeObjectURL(url); }
   }
 
   function stopPitchSampling() {
@@ -8834,13 +8856,30 @@
       if (!retainRecordingInput || !visible) releaseMicrophoneInput();
       if (pitchCaptureContext && pitchCaptureContext !== engine?.context) void pitchCaptureContext.suspend();
     }
-    elements.takeMicrophone.disabled = active;
-    elements.takeMicrophone.title = active ? "Turn Sing off to change input" : "Microphone for Sing and recording";
-    microphoneCheck?.syncSelector(elements.takeMicrophone);
+    syncMicSelectorLock();
   }
 
-  function readMicrophoneChoice() {
-    try { microphoneDeviceId = localStorage.getItem("choir-practice:microphone:v1") || ""; } catch {}
+  function microphoneChoiceLocked() {
+    return Boolean(engine?.native || engine?.playing || engine?.starting || engine?.preparing || takeState!=="off" || pitchCaptureState==="requesting"
+      || microphoneRequest || microphoneCheck?.requesting || microphoneCheck?.calibrating);
+  }
+  function syncMicSelectorLock() {
+    const locked=microphoneChoiceLocked(), select=elements.takeMicrophone;
+    if(select.disabled!==locked)select.disabled=locked;
+    select.title=locked?"Input cannot change during playback, recording, or setup":"Microphone for Sing and recording";
+  }
+  function readMicrophoneChoice(devices) {
+    try {
+      const key="choir-practice:microphone:v1", selected=localStorage.getItem(key) || "";
+      microphoneDeviceId=selected;
+      if(devices && selected){
+        const mic=window.MeleteMicrophoneCheck, builtin=mic.tabletBuiltin(devices,navigator);
+        const pinned=localStorage.getItem(key+":ipad");
+        microphoneDeviceId=mic.resolveInputChoice(selected,pinned,builtin);
+        if(microphoneDeviceId!==selected)localStorage.setItem(key,microphoneDeviceId);
+        if(builtin?.deviceId===microphoneDeviceId && pinned!==microphoneDeviceId)localStorage.setItem(key+":ipad",microphoneDeviceId);
+      }
+    } catch {}
     return microphoneDeviceId;
   }
 
@@ -8848,7 +8887,9 @@
     const track=pitchCaptureStream?.getAudioTracks()[0], settings=track?.getSettings?.() || {};
     const sink=engine?.context?.sinkId;
     if(!track || !pitchCaptureContext || !engine?.context)return null;
-    return window.MeleteMicrophoneCheck.timingRouteKey(timingDevices,{...settings,deviceId:settings.deviceId || microphoneDeviceId},
+    const mic=window.MeleteMicrophoneCheck, route=mic.inputRoute(timingDevices,microphoneDeviceId,track);
+    if(route.different)return null;
+    return mic.timingRouteKey(timingDevices,{...settings,deviceId:route.id || settings.deviceId || microphoneDeviceId},
       sink,[pitchCaptureContext.sampleRate,engine.context.sampleRate],timingRouteEpoch,track.id);
   }
   function timingProfile(){
@@ -8890,8 +8931,11 @@
     }
     const key=timingKey();
     if(!key)return null;
-    if(key.startsWith("session:"))return key===sessionTiming?.key ?
-      window.MeleteMicrophoneCheck.freshCalibration(sessionTiming.result,Date.now(),timingProfile()) : null;
+    const held=timingHolds.get(wiredHoldKey());
+    if(key===sessionTiming?.key && (!held || sessionTiming.hold===held && sessionTiming.track===pitchCaptureStream?.getAudioTracks()[0]))
+      return window.MeleteMicrophoneCheck.freshCalibration(sessionTiming.result,Date.now(),timingProfile());
+    if(held)return null;
+    if(key.startsWith("session:"))return null;
     if(timingCache.key!==key){let result=null;try{result=JSON.parse(localStorage.getItem(key));}catch{}
       timingCache={key,result};}
     return window.MeleteMicrophoneCheck.freshCalibration(timingCache.result,Date.now(),timingProfile());
@@ -8906,10 +8950,12 @@
   }
   window.addEventListener("storage",event=>{
     if(!event.key || event.key===timingCache.key) timingCache={key:null,result:null};
+    timingHolds.changed(event.key);
   });
   function recordingLatency() {
     const result=currentCalibration();
     if(result)return result.seconds;
+    if(timingHolds.get(wiredHoldKey()))return 0; // Raw capture clock, not a zero-latency measurement.
     return estimatedRecordingLatency();
   }
   function estimatedRecordingLatency() {
@@ -8917,12 +8963,12 @@
       +Math.max(0,(Number(engine.context?.baseLatency)||0)+(Number(engine.context?.outputLatency)||0))
       +(engine.guideLookaheadSeconds||0);
   }
-  async function measureRecordingTiming() {
+  async function measureRecordingTiming(reopened=false) {
     const message=document.getElementById("timingCheckStatus"), button=document.getElementById("measureTiming"), close=document.getElementById("closeTimingCheck");
     if(microphoneCheck.calibrating) return;
     if(engine.playing || takeState!=="off" || preparingCapture){message.textContent="Stop playback and finish the current take before measuring.";return;}
     microphoneCheck.calibrating=true;button.disabled=close.disabled=true;syncMicrophoneActivity();refreshTimingRouteHelp();
-    let capture;const nodes=[];
+    let capture,renewInput=false;const nodes=[];
     try {
       message.textContent="Measuring three chirps and checking a fourth…";
       if (engine?.native) {
@@ -8934,47 +8980,129 @@
         return;
       }
       await engine.prepareAudio();await ensureMicrophoneInput();await refreshMicrophoneChoices();
-      const key=timingKey(), epoch=timingRouteEpoch, ctx=engine.context, mic=pitchCaptureContext, track=pitchCaptureStream.getAudioTracks()[0];
-      const chain = await recordingChain();
-      if(!key)throw Error("Cannot identify the audio route. Select the microphone and output by name, then measure again.");
+      const initialKey=timingKey(), ctx=engine.context, mic=pitchCaptureContext, track=pitchCaptureStream.getAudioTracks()[0];
       const blocks=[];let failure=null;
-      capture=await window.MeleteRecording.PcmCapture.create(mic,pitchCaptureSource,(frame,samples)=>blocks.push([frame,samples]),e=>{failure=e;});
-      const check=window.MeleteMicrophoneCheck, directions=[false,true,false,true], offsets=[.35,1.12,1.95,2.74];
-      const buffers=[false,true].map(down=>{
-        const pattern=check.timingChirp(ctx.sampleRate,down), buf=ctx.createBuffer(1,pattern.length,ctx.sampleRate);
+      const levels=timingMeterRun={peak:0,output:null,sampled:false,done:false};
+      capture=await window.MeleteRecording.PcmCapture.create(mic,pitchCaptureSource,(frame,samples)=>{
+        blocks.push([frame,samples]);levels.sampled=true;
+        for(let i=0;i<samples.length;i++)levels.peak=Math.max(levels.peak,Math.abs(samples[i]));
+      },e=>{failure=e;});
+      const check=window.MeleteMicrophoneCheck, wiredInstall=check.wiredTabletSetup(window,timingDevices,microphoneDeviceId);
+      const {offsets,maxDelay,tail}=wiredInstall?check.wiredTimingPlan:check.timingPlan;
+      const {directions}=check.timingPlan;
+      const buffers=(wiredInstall?[0,1,2,3,4]:[0,1]).map(id=>{
+        const pattern=wiredInstall?check.wiredCodes.signal(ctx.sampleRate,id):check.timingChirp(ctx.sampleRate,Boolean(id));
+        const buf=ctx.createBuffer(1,pattern.length,ctx.sampleRate);
         buf.copyToChannel(pattern,0);return buf;
       });
-      const anchor=ctx.currentTime, micAnchor=mic.currentTime;
-      offsets.forEach((delta,i)=>{const n=ctx.createBufferSource();n.buffer=buffers[Number(directions[i])];n.connect(engine.master);n.start(anchor+delta);nodes.push(n);});
-      await new Promise(resolve=>setTimeout(resolve,3550));
+      const primer=check.timingPrimer(ctx.sampleRate), warmBuffer=ctx.createBuffer(1,primer.length,ctx.sampleRate);
+      warmBuffer.copyToChannel(primer,0);
+      // A short pure tone did not warm the actual iPad duplex path: its first
+      // real sweep could take twice as long as later ones. Prime before grading.
+      const warm=ctx.createBufferSource();warm.buffer=wiredInstall?buffers[4]:warmBuffer;warm.connect(engine.master);nodes.push(warm);
+      warm.start(ctx.currentTime+.03);
+      await new Promise(resolve=>setTimeout(resolve,wiredInstall?1650:400));
+      // iPad can announce its devices again just after duplex startup. Pin the
+      // same verified endpoints, then guard every change throughout the timed sweeps.
+      if(!document.hidden && track.readyState==="live" && (ctx.state!=="running" || mic.state!=="running")){
+        // Opening the iPad's duplex route can interrupt the playback graph that just resumed.
+        await Promise.race([Promise.all([...new Set([ctx,mic])].map(c=>c.resume())).catch(()=>{}),
+          new Promise(resolve=>setTimeout(resolve,1200))]);
+      }
+      await refreshMicrophoneChoices();
+      check.verifyInputRoute(timingDevices,readMicrophoneChoice(),track);
+      const key=timingKey();
+      if(ctx.state!=="running" || mic.state!=="running" || document.hidden || track.readyState!=="live" || !key ||
+        (initialKey?.startsWith("melete:") && initialKey!==key)){
+        noteAudioEvent("calibration-warmup-interrupted",{inputClock:mic.state,outputClock:ctx.state,streamState:track.readyState,
+          hidden:document.hidden,namedInitially:initialKey?.startsWith("melete:")===true,routeChanged:initialKey!==key});
+        throw Error("The audio route changed or paused during warm-up. No timing setting was changed.");
+      }
+      const previous=currentCalibration(), chain=await recordingChain();
+      // Snapshot both clocks after the duplex route wakes, not at the first output tone.
+      const epoch=timingRouteEpoch, anchor=ctx.currentTime, micAnchor=mic.currentTime;
+      offsets.forEach((delta,i)=>{const n=ctx.createBufferSource();n.buffer=buffers[wiredInstall?i:Number(directions[i])];n.connect(engine.master);n.start(anchor+delta);nodes.push(n);});
+      await new Promise(resolve=>setTimeout(resolve,(offsets.at(-1)+tail)*1000));
       await capture.stop();capture=null;
+      await refreshMicrophoneChoices();
+      const input=check.verifyInputRoute(timingDevices,readMicrophoneChoice(),track);
       if(failure || track.readyState!=="live" || document.hidden || !blocks.length || epoch!==timingRouteEpoch || key!==timingKey())throw Error("The device changed or the check was interrupted. No timing setting was changed.");
       const first=blocks[0][0], last=blocks.at(-1);
       const data=new Float32Array(last[0]+last[1].length-first);for(const [frame,samples] of blocks)data.set(samples,frame-first);
-      const readings=check.chirpReadings(data,mic.sampleRate,offsets.map(v=>micAnchor+v-first/mic.sampleRate),directions);
+      const starts=offsets.map(v=>micAnchor+v-first/mic.sampleRate);
+      const readings=wiredInstall?starts.map((v,i)=>check.wiredCodes.read(data,mic.sampleRate,v,i,maxDelay)):
+        check.chirpReadings(data,mic.sampleRate,starts,directions,maxDelay);
       const result=check.fitChirps(readings), values=readings.map(p=>p.accepted?Math.round(p.seconds*1000):null);
       const estimateMs=Math.round(estimatedRecordingLatency()*1000);
+      const level=levels.peak?Math.round(20*Math.log10(levels.peak))+" dBFS":"silence";
+      const heard=readings.filter(r=>r.audible).length, clear=values.filter(Number.isFinite).length;
+      const evidence={chirpsMs:values,heard,clear,inputPeak:level,outputDbfs:levels.output,searchMs:maxDelay*1000,
+        selectedInput:check.reportedInput(input.selected),trackInput:check.reportedInput(input.track),
+        reportedDevice:check.reportedInput(input.reported),verifiedInput:input.verified,
+        outputEndpoint:check.reportedInput(timingDevices.find(d=>d.kind==="audiooutput" && d.deviceId===timingOutputDevice)?.label),
+        match:readings.map(r=>Number.isFinite(r.peak)?Math.round(1000*r.peak)/1000:null)};
+      const buffered=wiredInstall && check.bufferedReturns(readings);
+      const holdKey=wiredInstall?wiredHoldKey():null;
+      if(buffered && holdKey){
+        timingHolds.set(holdKey,crypto.randomUUID());sessionTiming=null;
+        await takeStore.timingChain(null);
+      }
+      if(buffered && !reopened){
+        noteAudioEvent("calibration-reopening",{...evidence,estimateMs});
+        message.textContent="Long audio delay. Reopening the wired audio route and checking again…";
+        renewInput=true;return;
+      }
       if(!result){
-        const count=values.filter(v=>v!==null).length;
-        let peak=0;for(const sample of data)peak=Math.max(peak,Math.abs(sample));
-        const level=peak?Math.round(20*Math.log10(peak))+" dBFS":"silence";
-        noteAudioEvent("calibration-rejected",{chirpsMs:values,inputPeak:level,estimateMs});
-        if(count<4)document.getElementById("headsetTimingHelp").open=true;
-        throw Error((count===4 ? "Inconsistent delays: "+values.join(", ")+" ms." :
-          "Heard "+count+" of 4 chirps; mic peak: "+level+". Move one earpiece closer to the selected input or try the headset options above.")+" No timing change was saved. Unverified estimate: "+estimateMs+" ms.");
+        const input=track.label?.trim()||"Selected microphone";
+        noteAudioEvent("calibration-rejected",{...evidence,estimateMs,
+          input:check.reportedInput(input),processing:check.captureProfile(track),reasons:readings.map(r=>r.reason)});
+        if(clear<4 && check.reportedInput(input)!=="ipad-mic")document.getElementById("headsetTimingHelp").open=true;
+        throw Error("Heard "+heard+" of 4 chirps through "+input+"; mic peak: "+level+". "+
+          (clear===4 ? "Inconsistent delays: "+values.join(", ")+" ms." : heard>clear ? "Competing echoes made the delay ambiguous." :
+            !levels.peak ? "The input returned silence." : !heard ? "No sweep stood out from the background." : "Not enough clear chirps.")+
+          (timingHolds.get(holdKey) ? " Previous timing is not in use. New takes will save without pitch grades until timing is verified." :
+            previous ? " Still using the measured "+Math.round(previous.seconds*1000)+" ms for this route." :
+            " No correction saved; estimate only: "+estimateMs+" ms."));
       }
       result.profile=timingProfile();
-      const sessionOnly=key.startsWith("session:");
-      if(sessionOnly)sessionTiming={key,result};
+      const unusualBuffer=result.seconds>.55;
+      const sessionOnly=key.startsWith("session:") || unusualBuffer;
+      const hadHold=timingHolds.get(holdKey);
+      if(sessionOnly)sessionTiming={key,result,hold:hadHold,track};
       else{
-        localStorage.setItem(key,JSON.stringify(result));timingCache={key,result};
+        sessionTiming=null;localStorage.setItem(key,JSON.stringify(result));timingCache={key,result};
+        timingHolds.set(holdKey,null);
         try{localStorage.setItem("melete:last-timing-route",key);}catch{}
       }
-      noteAudioEvent("calibration",{delayMs:Math.round(result.seconds*1000),spreadMs:result.spreadMs,checkMs:result.residualMs,estimateMs,chirpsMs:values});
+      noteAudioEvent("calibration",{...evidence,delayMs:Math.round(result.seconds*1000),spreadMs:result.spreadMs,checkMs:result.residualMs,estimateMs});
+      // A large jump can be buffering in this running audio session, not the hardware.
+      // It is not evidence that a previously calibrated performance was that late.
+      const splitChain=reopened || unusualBuffer || hadHold || previous && Math.abs(previous.seconds-result.seconds)>.15;
+      if(splitChain)await takeStore.timingChain(null);
       message.textContent="Measured "+Math.round(1000*result.seconds)+" ms (unverified estimate "+estimateMs+" ms). Check chirp: "+result.residualMs+" ms after correction. "+
-        (sessionOnly?"This tab only. Keep the same headset connected; measure again after switching devices.":"Saved for this audio setup.")+await applyMeasuredTiming(chain,result);
+        (unusualBuffer?"Using this unusually long delay for this session only. Check again after reopening.":sessionOnly?"This tab only. Keep the same headset connected; measure again after switching devices.":"Saved for this audio setup.")+
+        (splitChain?" Earlier takes were not retimed.":await applyMeasuredTiming(chain,result));
     }catch(e){message.textContent=e?.message || "No timing setting was changed.";}
-    finally {for(const n of nodes){try{n.stop();n.disconnect();}catch{}}try{await capture?.stop();}catch{}microphoneCheck.calibrating=false;syncMicrophoneActivity();refreshTimingRouteHelp();button.disabled=close.disabled=false;}
+    finally {
+      for(const n of nodes){try{n.stop();n.disconnect();}catch{}}try{await capture?.stop();}catch{}
+      if(timingMeterRun)timingMeterRun.done=true;
+      const idle=()=>!document.hidden && !engine.playing && takeState==="off" && !preparingCapture;
+      const restoreMeter=renewInput && microphoneCheck.active;
+      if(renewInput && idle()){
+        if(restoreMeter)microphoneCheck.close();
+        releaseMicrophoneInput();
+        const clocks=[...new Set([engine.context,pitchCaptureContext])].filter(Boolean);
+        await Promise.race([Promise.all(clocks.map(c=>c.suspend())).catch(()=>{}),new Promise(r=>setTimeout(r,1000))]);
+        await new Promise(r=>setTimeout(r,350));
+      }
+      microphoneCheck.calibrating=false;
+      if(renewInput && idle() && !reopened)await measureRecordingTiming(true);
+      if(restoreMeter && idle() && wantsPitchCapture() && pitchCaptureStream){
+        if(pitchCaptureState==="armed")pitchCaptureSource?.connect(pitchCaptureAnalyser);
+        void microphoneCheck.start();
+      }
+      syncMicrophoneActivity();refreshTimingRouteHelp();button.disabled=close.disabled=false;
+    }
   }
 
   function refreshTimingRouteHelp(){
@@ -9021,9 +9149,10 @@
         selector.value=preferred;
       }
       const devices = allDevices.filter(device => device.kind === "audioinput");
-      const selected = readMicrophoneChoice();
+      const selected = readMicrophoneChoice(!pitchCaptureStream && takeState==="off" ? allDevices : null);
       const defaultInput = devices.find(device => device.deviceId === "default");
       const options = [new Option(defaultInput?.label || "System default", "")];
+      options[0].dataset.systemLabel=options[0].textContent;
       devices.filter(device => device.deviceId && !["default", "communications"].includes(device.deviceId))
         .forEach((device, index) => options.push(new Option(device.label || `Microphone ${index + 1}`, device.deviceId)));
       if (selected && !options.some(option => option.value === selected)) {
@@ -9031,6 +9160,7 @@
       }
       elements.takeMicrophone.replaceChildren(...options);
       elements.takeMicrophone.value = selected;
+      displayInputRoute();
       microphoneCheck?.syncSelector(elements.takeMicrophone);refreshTimingRouteHelp();
       return allDevices;
     } catch {
@@ -9049,21 +9179,39 @@
   }
 
   function microphoneFailureMessage(error, retryAction = "try again") {
-    if (error?.name === "RawAudioUnavailableError" || error?.name === "NativeStationError") return error.message;
+    if (["RawAudioUnavailableError","InputRouteMismatchError","NativeStationError"].includes(error?.name)) return error.message;
     if (error?.name === "OverconstrainedError" && ["echoCancellation", "noiseSuppression", "autoGainControl"].includes(error.constraint))
       return "This input cannot disable voice processing. Choose an unprocessed microphone input.";
-    if (error?.name === "NotAllowedError") return `Microphone blocked. Allow access in browser settings, then ${retryAction}.`;
+    if (error?.name === "MicPromptTimeout") return "No answer from the microphone permission prompt. Check permissions, then retry.";
+    if (["NotAllowedError","SecurityError"].includes(error?.name)) return `Microphone blocked. Allow access in browser settings, then ${retryAction}.`;
     if (["NotFoundError", "OverconstrainedError"].includes(error?.name)) return "Microphone unavailable. Choose another input or reconnect it.";
     if (["NotReadableError", "AbortError"].includes(error?.name)) return "Microphone could not start. Choose another input or check the device.";
     if (error?.message === "No microphone samples arrived") return "No microphone audio arrived. Choose another input or reconnect it.";
     return "Microphone could not start. Check its connection and browser permissions.";
   }
 
+  function reportMicrophoneFailure(error, retryAction) {
+    const message=microphoneFailureMessage(error,retryAction);
+    const kind=window.MeleteMicrophoneCheck.failureKind(error);
+    lastMicFailure={message,kind};
+    noteAudioEvent("input-error",{kind,code:error?.name || "Error"});
+    return message;
+  }
+
   async function ensureMicrophoneInput({ waitForAudio = true } = {}) {
+    const owner = micOwnershipEpoch;
+    const requireForeground = () => {
+      if (owner !== micOwnershipEpoch || !pitchCapturePageActive || document.hidden)
+        throw new DOMException("This tab yielded the microphone", "AbortError");
+    };
+    requireForeground();
     engine.ensureAudio();
     if (engine.native) {
       if (pitchCaptureSource?.nativeCapture && pitchInputIsLive()) return;
       const input = await engine.native.microphone();
+      if (owner !== micOwnershipEpoch || !pitchCapturePageActive || document.hidden) {
+        input.stream?.getAudioTracks().forEach(t => t.stop()); requireForeground();
+      }
       pitchCaptureStream = input.stream;
       pitchCaptureContext = input.context;
       pitchCaptureSource = input.source;
@@ -9087,9 +9235,11 @@
     // gesture. Play resumes both contexts before live pitch sampling starts.
     if (waitForAudio) await resumed;
     else void resumed.catch(() => {});
+    requireForeground();
     const deviceId = readMicrophoneChoice();
     if (pitchCaptureStream?.getAudioTracks()[0]?.readyState === "live" && pitchCaptureSource
-      && microphoneStreamDeviceId === deviceId) {
+      && microphoneStreamDeviceId === deviceId &&
+      !window.MeleteMicrophoneCheck.inputRoute(timingDevices,deviceId,pitchCaptureStream.getAudioTracks()[0]).different) {
       window.MeleteMicrophoneCheck.verifyRawInput(pitchCaptureStream);
       syncMicrophoneActivity();
       return;
@@ -9097,16 +9247,35 @@
     if (!microphoneRequest) {
       microphoneRequest = (async () => {
         releaseMicrophoneInput();
-        const stream = await window.MeleteMicrophoneCheck.mediaDevicesFor(window).getUserMedia(
-          window.MeleteMicrophoneCheck.rawAudioConstraints(deviceId));
-        const profile = window.MeleteMicrophoneCheck.verifyRawInput(stream);
-        noteAudioEvent("input-processing", profile);
+        noteAudioEvent("input-requested");
+        const mic=window.MeleteMicrophoneCheck, devices=mic.mediaDevicesFor(window);
+        let selected=deviceId;
+        if(deviceId && devices?.enumerateDevices){
+          try{if(localStorage.getItem("choir-practice:microphone:v1:ipad")===deviceId)selected=readMicrophoneChoice(await devices.enumerateDevices());}catch{}
+        }
+        let stream,profile;
+        try{
+          for(let attempt=0;attempt<2;attempt++){
+            requireForeground();
+            stream=await mic.requestStream(devices,mic.rawAudioConstraints(selected));
+            requireForeground();
+            profile=mic.verifyRawInput(stream);
+            const all=await refreshMicrophoneChoices() || [];
+            requireForeground();
+            selected=readMicrophoneChoice(all);
+            try{mic.verifyInputRoute(all,selected,stream.getAudioTracks()[0]);break;}
+            catch(error){if(attempt || !selected)throw error;stream.getAudioTracks().forEach(t=>t.stop());}
+          }
+        }catch(error){stream?.getAudioTracks().forEach(t=>t.stop());throw error;}
+        if(lastMicFailure && takeNotice===lastMicFailure.message)takeNotice="";
+        lastMicFailure=null;micOpenedHere=true;
+        noteAudioEvent("input-processing",{...profile,inputChoice:selected?"explicit":"system-default",reportedInput:mic.reportedInput(stream.getAudioTracks()[0]?.label)});
         stream.getAudioTracks().forEach(track => {
           try { if ("contentHint" in track) track.contentHint = "music"; } catch {}
         });
         try { pitchCaptureSource?.disconnect(); } catch {}
         pitchCaptureStream = stream;
-        microphoneStreamDeviceId = deviceId;
+        microphoneStreamDeviceId = selected;
         pitchCaptureSource = pitchCaptureContext.createMediaStreamSource(stream);
         pitchCaptureAnalyser = pitchCaptureContext.createAnalyser();
         pitchCaptureAnalyser.fftSize = PITCH_CAPTURE_BUFFER_SIZE;
@@ -9119,6 +9288,7 @@
           const active = pitchCaptureState !== "off" || takeState !== "off" || microphoneCheck?.active;
           if(!active){releaseMicrophoneInput();void refreshMicrophoneChoices();return;}
           const message = `Microphone disconnected: ${stream.getAudioTracks()[0].label || "input"}. Choose another input or reconnect it.`;
+          lastMicFailure={kind:"device",message};
           if (microphoneCheck?.active) microphoneCheck.fail(message);
           releaseMicrophoneInput();
           void stopTakeRecording(message, true, {discardShortTail: false});
@@ -9134,7 +9304,7 @@
         });
         syncMicrophoneActivity();
         void refreshMicrophoneChoices();
-      })().finally(() => { microphoneRequest = null; });
+      })().finally(() => { microphoneRequest = null; syncMicSelectorLock(); });
     }
     await microphoneRequest;
   }
@@ -9171,32 +9341,44 @@
   async function restorePitchCapture() {
     if (conductorMode) return;
     updatePitchCaptureAppearance();
-    if (!micSessionActive || !wantsPitchCapture() || !pitchCapturePageActive || document.hidden) return;
+    const epoch=micOwnershipEpoch;
+    const eligible=()=>epoch===micOwnershipEpoch && micSessionActive && wantsPitchCapture() && pitchCapturePageActive && !document.hidden;
+    if (!eligible() || pitchCaptureState!=="off") return;
     // A collection reload remembers the switch, not an open microphone. An
     // active handoff may reuse a grant; it never opens a permission prompt.
     try {
-      const permitted = engine?.native ||
-        (await window.MeleteMicrophoneCheck.microphoneNavigator(window).permissions?.query({name:'microphone'}))?.state==='granted';
-      if (permitted) {
-        await loadTakeLibrary();const spec=recordingLoopSpec();if(spec)await checkTakeSpace(spec);
-        if(wantsPitchCapture() && pitchCapturePageActive && !document.hidden && takeState==="off")void armMicrophone();
-      }
-    } catch { /* A browser without permission queries can arm on the next Play. */ }
+      let permission;
+      try { permission=(await window.MeleteMicrophoneCheck.microphoneNavigator(window).permissions?.query({name:'microphone'}))?.state; } catch {}
+      if (!engine?.native && !(permission==="granted" || (!permission && micOpenedHere && !["permission","pending"].includes(lastMicFailure?.kind)))) return;
+      if(takeState==="stopping")await takeStopPromise;
+      if(microphoneRequest)await microphoneRequest.catch(()=>{});
+      if(!eligible() || takeState!=="off" || pitchCaptureState!=="off")return;
+      await loadTakeLibrary();const spec=recordingLoopSpec();if(spec)await checkTakeSpace(spec);
+      if(eligible() && takeState==="off")await armMicrophone({recover:true});
+    } catch { /* Explicit Play remains available if device or storage checks fail. */ }
   }
 
-  async function armMicrophone() {
+  async function armMicrophone({recover=false}={}) {
     if (!ready || !wantsPitchCapture() || !pitchCapturePageActive || document.hidden
       || pitchCaptureState !== "off") return;
     pitchCaptureState = "requesting";
+    const generation=singArmGeneration;
+    const current=()=>generation===singArmGeneration && wantsPitchCapture() && pitchCapturePageActive && !document.hidden;
     microphoneCheck?.paint("requesting", "Waiting for microphone...");
     updatePitchCaptureAppearance();
     try {
-      await ensureMicrophoneInput({waitForAudio: false});
-      if (!wantsPitchCapture() || !pitchCapturePageActive || document.hidden) { syncMicrophoneActivity(); return; }
+      for (let attempt=0;current();attempt++) {
+        try {await ensureMicrophoneInput({waitForAudio:false});break;}
+        catch(error) {
+          if(!recover || !current() || attempt>=2 || !["NotReadableError","AbortError"].includes(error?.name))throw error;
+          await new Promise(resolve=>setTimeout(resolve,attempt===0?180:600));
+        }
+      }
+      if (!current()) { syncMicrophoneActivity(); return; }
       activateCachedPitchCapture({quiet: true});
     } catch (error) {
-      if (!wantsPitchCapture() || !pitchCapturePageActive || document.hidden) return;
-      const message = microphoneFailureMessage(error);
+      if (!current()) return;
+      const message = reportMicrophoneFailure(error);
       disablePitchCapture(false, {preservePreference: true, reason: message});
       takeNotice = message;
       showTakePanel();
@@ -9247,7 +9429,8 @@
       ...spec, captureStart: spec.start, start: spec.entry ?? spec.start,
       fingerprint: pitchTraceFingerprint(part), part, line, latency, measures: sequence.measures, division: sequence.division});
     if(result) {const c=currentCalibration();result.timing=c ? {source:"acoustic",seconds:c.seconds,measuredAt:c.measuredAt,
-      spreadMs:c.spreadMs,residualMs:c.residualMs} : {source:"estimated",seconds:latency};}
+      spreadMs:c.spreadMs,residualMs:c.residualMs} : timingHolds.get(wiredHoldKey()) ?
+      {source:"unverified",reason:"wired-delay-changed"} : {source:"estimated",seconds:latency};}
     return result;
   }
 
@@ -9264,6 +9447,7 @@
     if (!compDescriptors.has(cacheKey)) {
       const reference = takePitchReference({start: 0, end: sequence.endTick, rate}, part, line);
       reference.latency = 0;
+      if(window.MeleteTakePitch.ungraded(reference))delete reference.timing;
       compDescriptors.set(cacheKey, {song: takeSongKey(), label: `${trackLabel(part, line)} \u00b7 ${Math.round(rate * 100)}%`, reference});
     }
     return compDescriptors.get(cacheKey);
@@ -9478,6 +9662,7 @@
   async function scoreNextTake() {
     if (takeScoring || !pitchCapturePageActive || document.hidden) return;
     const take = allTakes().find(item => !window.MeleteStation.archived(item) && !item.active && !item.unsaved && item.frames > 0
+      && !window.MeleteTakePitch.ungraded(item.pitchReference)
       && (item.finalized || window.MeleteRecording.scoreableCheckpoint(item))
       && (!window.MeleteTakePitch.currentScore(item.pitchScore)
         || (item.pitchReference?.fingerprint === pitchTraceFingerprint(item.pitchReference?.part) && !window.MeleteTakePitch.readContour(item))
@@ -9524,6 +9709,7 @@
   const archivedTakeScores = new WeakMap();
   function wholeSongTakeScore(take) {
     const ref = take.pitchReference;
+    if(window.MeleteTakePitch.ungraded(ref))return null;
     let score = take.pitchScore;
     if (!ref || !score) return score;
     const pitch = window.MeleteTakePitch;
@@ -9571,7 +9757,8 @@
           + "Headphones are recommended for reliable pitch scores: speakers can make the detector follow the backing instead of your voice."};
     }
     let text = "Pitch unavailable", reason = "No saved part reference for this take. Choose a practice part before recording. Existing audio is unchanged.";
-    if (take.active || take.unsaved) { text = "Pitch after saving"; reason = "Each saved loop is analysed locally while the next one records."; }
+    if (window.MeleteTakePitch.ungraded(take.pitchReference)) {text="Ungraded";reason=ungradedTimingText;}
+    else if (take.active || take.unsaved) { text = "Pitch after saving"; reason = "Each saved loop is analysed locally while the next one records."; }
     else if (window.MeleteTakePitch.validReference(take.pitchReference)) {
       if (pitch && pitch.expectedSeconds === 0) { text = "No sung notes"; reason = "Only written rests in this recording."; }
       else if (takeScoreFailures.has(take.id)) reason = takeScoreFailures.get(take.id);
@@ -9656,6 +9843,11 @@
       await takeStore.purgeDeleted(takeSongKey());
       const library = await takeStore.usage();
       let records = library.filter(record => record.song === takeSongKey());
+      for(let i=0;i<records.length;i++){
+        const record=records[i];
+        if(window.MeleteTakePitch.repairUngraded(record)!==record)
+          records[i]=await takeStore.repairUngraded(record.id) || record;
+      }
       const silent = new Set(await takeStore.discardSilent(takeSongKey(), records));
       if (silent.size) {
         records = records.filter(record => !silent.has(record.id));
@@ -9793,6 +9985,7 @@
 
   const takeCleanAudio = new Map();
   async function takeBlob(take) {
+    if(window.MeleteTakePitch.ungraded(take.pitchReference))return rawTakeBlob(take);
     const key = JSON.stringify([take.id,take.frames,take.updatedAt,take.pitchReference?.latency,take.pitchContour?.analysisVersion,window.MeleteTakeCleanup.VERSION]);
     if (takeCleanAudio.has(key)) return takeCleanAudio.get(key).promise;
     const entry = {bytes: Math.max(0,take.frames||0)*2, promise:null};
@@ -9842,7 +10035,7 @@
     const buffer = await engine.context.decodeAudioData(await blob.arrayBuffer());
     return {id: take.id, singerId:window.MeleteStation.sourceSinger(take)?.id, label: `Take ${take.number || "..."}`, ref, buffer, blob,
       loudnessKey:JSON.stringify(["take",take.id,take.frames,take.updatedAt,ref.latency,take.pitchContour?.analysisVersion,window.MeleteTakeCleanup.VERSION]),
-      frames: shiftedReviewFrames(window.MeleteTakePitch.readContour(take) || [],take),
+      frames: window.MeleteTakePitch.ungraded(ref)?[]:shiftedReviewFrames(window.MeleteTakePitch.readContour(take) || [],take),
       track: ref.part, rate: ref.rate, start: engine.secondsAtTick(captureStart),
       end: engine.secondsAtTick(ref.end), latency:ref.latency+window.MeleteStation.advanceMs(take)/1000};
   }
@@ -10162,7 +10355,8 @@
     try {
       const audible = engine.takeLayers.get(id);
       const blob = audible?.blob || await takeBlob(take);
-      let frames = window.MeleteTakePitch.readContour(take);
+      const ungraded=window.MeleteTakePitch.ungraded(ref);
+      let frames = ungraded?[]:window.MeleteTakePitch.readContour(take);
       const wav = !audible?.buffer || !frames ? await blob.arrayBuffer() : null;
       if (generation !== takePreviewGeneration || takeState !== "off") return;
       engine.ensureAudio();
@@ -10183,7 +10377,7 @@
         if (generation !== takePreviewGeneration || takeState !== "off") return;
         frames = result.frames;
       }
-      if (!take.unsaved && (result || !window.MeleteTakePitch.currentScore(take.pitchScore)
+      if (!ungraded && !take.unsaved && (result || !window.MeleteTakePitch.currentScore(take.pitchScore)
         || !window.MeleteTakePitch.hasPitchBand(take.pitchScore))) {
         result ||= {...window.MeleteTakePitch.scoreFrames(frames, ref, take.frames / take.sampleRate), frames};
         try { await saveTakeAnalysis(take, result); }
@@ -10356,8 +10550,8 @@
       : takeState === "stopping" ? "Saving..." : active ? "Recording"
         : pending ? "Unsaved audio" : takeScoring ? "Scoring..." : "";
     elements.takePanel.classList.toggle("has-recording", active);
-    elements.takeMicrophone.disabled = active || pitchCaptureState !== "off" || Boolean(microphoneCheck?.active);
-    elements.checkMicrophone.disabled = !ready || !pitchCaptureSupported() || pitchCaptureState !== "off" || takeState !== "off";
+    syncMicSelectorLock();
+    elements.checkMicrophone.disabled = !ready;
     let status = takeNotice || (spec ? `${spec.label} · ${formatTime(spec.seconds * 1000)}${spec.mode === "loop" ? " per pass" : ""}` : "Move playhead to record");
     if (maximumSeconds > window.MeleteRecording.MAX_LOOP_SECONDS) status = "Choose a loop of 5 minutes or less";
     if (takeState === "requesting") status = "Preparing recording...";
@@ -10446,14 +10640,14 @@
       row.querySelector(".take-segments").textContent = "1";
       const range = `${takeBoundaryLabel(bounds.start)}-${takeBoundaryLabel(bounds.end)}`;
       row.querySelector(".take-row-label").title = [comparison, `Take ${take.number || "..."} · ${take.part} · ${range}`].filter(Boolean).join(". ");
-      const warning = take.unsaved ? "Unsaved audio; download or retry saving" : take.gap ? "Audio gap" : take.peak >= 0.999 ? "Clipping" : take.peak < 0.001 && take.seconds > 1 ? "Very quiet" : "";
+      const warning = take.unsaved ? "Unsaved audio; download or retry saving" : window.MeleteTakePitch.ungraded(take.pitchReference) ? ungradedTimingText : take.gap ? "Audio gap" : take.peak >= 0.999 ? "Clipping" : take.peak < 0.001 && take.seconds > 1 ? "Very quiet" : "";
       const indicator = row.querySelector(".take-warning");
       indicator.hidden = !warning;
       indicator.title = warning;
       indicator.setAttribute("aria-label", warning);
       const pitch = takePitchLabel(take);
       window.MeleteTakeControls.distributionButton(row, `Take ${take.number || "…"} · ${take.part}`,
-        take.pitchReference && (take.pitchContour || Number.isFinite(take.pitchScore?.meanAbsCents))
+        take.pitchReference && !window.MeleteTakePitch.ungraded(take.pitchReference) && (take.pitchContour || Number.isFinite(take.pitchScore?.meanAbsCents))
           ? () => ({ref:take.pitchReference, frames:window.MeleteTakePitch.readContour(take)}) : null);
       const detail = row.querySelector(".take-detail");
       detail.querySelector(".take-tracked strong").textContent = pitch.tracked;
@@ -10611,6 +10805,7 @@
       if (generation !== takeRequestGeneration) return;
       await ensureMicrophoneInput();
       await refreshMicrophoneChoices();
+      if(!engine.native)window.MeleteMicrophoneCheck.verifyInputRoute(timingDevices,readMicrophoneChoice(),pitchCaptureStream?.getAudioTracks()[0]);
       if (generation !== takeRequestGeneration) { syncMicrophoneActivity(); return; }
       let journal, punch;
       const initialAudio = [];
@@ -10648,6 +10843,13 @@
       if (engine.native) spec.captureProfile.backend = "WASAPI exclusive";
       spec.pitchReference = takePitchReference(spec,part,line);
       if (spec.initial) spec.initial.pitchReference = takePitchReference({...spec, ...spec.initial},part,line);
+      if(window.MeleteTakePitch.ungraded(spec.pitchReference)){
+        spec.pitchReference.version=window.MeleteTakePitch.UNGRADED_VERSION;
+        if(spec.initial?.pitchReference)spec.initial.pitchReference.version=window.MeleteTakePitch.UNGRADED_VERSION;
+        delete spec.captureChain;
+        pendingCaptureTrace=null;
+        showToast("Recording audio only. Measure timing to enable pitch grades on future takes.");
+      }
       journal = new window.MeleteRecording.TakeJournal(takeStore, takeSongKey(), spec, pitchCaptureContext.sampleRate, {
         onSaved: record => {
           takeLibrary.set(record.id, record);
@@ -10677,7 +10879,7 @@
       }
       for (const block of initialAudio) journal.append(block.frame, block.samples);
       activateCachedPitchCapture({quiet: true});
-      if(!currentCalibration()){
+      if(!currentCalibration() && !window.MeleteTakePitch.ungraded(spec.pitchReference)){
         const key=timingKey() || "unknown";
         const output=engine?.context?.sinkId || "default";
         const labels=[pitchCaptureStream?.getAudioTracks()[0]?.label,timingDevices.find(d=>d.kind==="audiooutput"&&d.deviceId===output)?.label];
@@ -10703,8 +10905,9 @@
       if (generation !== takeRequestGeneration) return;
       console.error("Loop recording could not start", error);
       const message = error?.name === "QuotaExceededError" ? "Storage full. Delete unwanted takes before recording."
-        : !takeLibraryReady ? "Local storage unavailable. Enable site storage to record." : microphoneFailureMessage(error);
+        : !takeLibraryReady ? "Local storage unavailable. Enable site storage to record." : reportMicrophoneFailure(error);
       await stopTakeRecording(message, true);
+      if(lastMicFailure?.message===message)microphoneCheck?.fail(message);
       showTakePanel();
       showToast(takeNotice, "error");
     }
@@ -11635,6 +11838,7 @@
 
   function syncPlaybackButton() {
     syncRehearsalWake();
+    syncMicSelectorLock();
     const preparing = Boolean(engine?.preparing);
     stationMixEditor?.transportChanged();
     elements.playPause.disabled = !ready;
@@ -11728,6 +11932,7 @@
   window.addEventListener("blur", () => { cancelPitchAuditions(); cancelScoreScrub(); });
   window.addEventListener("pagehide", () => { cancelPitchAuditions(); cancelScoreScrub(); });
   window.addEventListener("pagehide", () => {
+    micOwnershipEpoch++;
     pitchCapturePageActive = false;
     referencePlayer?.activate(false);
     microphoneCheck?.close();
@@ -11796,30 +12001,128 @@
       },
     },
   });
+  const silentPassWarning = new window.MeleteMicrophoneCheck.SilentPassWarning();
+  const micSignalWarning = document.getElementById("micSignalWarning");
+  const micRecovery = document.getElementById("micRecoveryDialog");
+  const recoveryInput = document.getElementById("micRecoveryDevice");
+  const recoveryRetry = document.getElementById("micRecoveryRetry");
+  const recoveryBuiltin = document.getElementById("micRecoveryBuiltin"), recoveryRoute=document.getElementById("micRecoveryRoute");
+  const recoveryStatus = document.getElementById("micRecoveryState"), recoveryAdvice=document.getElementById("micRecoveryAdvice");
+  const recoveryMeter = document.getElementById("micRecoveryLevel"), recoveryDb=document.getElementById("micRecoveryDb");
+  let recoveryPending=false;
+
+  function recoveryLocked(){
+    return Boolean(engine?.playing || engine?.starting || takeState!=="off" || microphoneCheck?.calibrating);
+  }
+  function displayInputRoute(){
+    const option=elements.takeMicrophone?.options?.[0];
+    if(!option || option.value!=="" || engine?.native)return;
+    const actual=microphoneCheck?.active && microphoneCheck.inputLabel;
+    const name=actual && !elements.takeMicrophone.value ? "Default: "+actual : option.dataset.systemLabel || "System default";
+    if(option.textContent!==name)option.textContent=name;
+  }
+  function renderMicRecovery(){
+    if(!micRecovery.open || !microphoneCheck)return;
+    const state=microphoneCheck.dialog.dataset.state, message=microphoneCheck.message;
+    const platform=/iPhone|iPad|iPod/.test(navigator.userAgent) || navigator.platform==="MacIntel" && navigator.maxTouchPoints>1;
+    const kind=lastMicFailure?.message===message ? lastMicFailure.kind : null;
+    const [heading,advice]=window.MeleteMicrophoneCheck.inputAdvice(state,kind,message,
+      platform ? (navigator.standalone || matchMedia("(display-mode: standalone)").matches?"ipad-home":"apple-safari") : "");
+    if(recoveryStatus.textContent!==heading)recoveryStatus.textContent=heading;
+    if(recoveryAdvice.textContent!==advice)recoveryAdvice.textContent=advice;
+    const actual=microphoneCheck.active && microphoneCheck.inputLabel;
+    const label=actual?"Active input: "+actual:"";
+    if(recoveryRoute.textContent!==label)recoveryRoute.textContent=label;
+    recoveryRoute.hidden=!label;
+    const track=pitchCaptureStream?.getAudioTracks()[0];
+    if(track!==recoveryProcessingTrack){
+      recoveryProcessingTrack=track;
+      const el=document.getElementById("micRecoveryProcessing"),mic=window.MeleteMicrophoneCheck;
+      el.hidden=!track || !!engine?.native;el.textContent=el.hidden?"":mic.processingReadout(mic.captureProfile(track));
+    }
+    const db=Number(microphoneCheck.meter.getAttribute("aria-valuenow")), measured=["signal","quiet","silent","clipping","muted","listening"].includes(state);
+    recoveryMeter.value=measured?db:-60;
+    const level=measured?(db<=-60?"< -60 dBFS":db+" dBFS"):"Not measuring";
+    if(recoveryDb.textContent!==level)recoveryDb.textContent=level;
+    const locked=recoveryLocked(),busy=recoveryPending || Boolean(microphoneRequest) || state==="requesting";
+    recoveryRetry.disabled=locked || busy || !pitchCaptureSupported();
+    recoveryInput.disabled=locked || busy || Boolean(engine?.native);
+    const builtin=window.MeleteMicrophoneCheck.tabletBuiltin(timingDevices,navigator);
+    recoveryBuiltin.hidden=!builtin || Boolean(engine?.native) || elements.takeMicrophone.value===builtin.deviceId;
+    recoveryBuiltin.disabled=locked || busy;
+    document.getElementById("micRecoveryLock").hidden=!locked;
+    recoveryRetry.textContent=busy?"Connecting...":wantsPitchCapture()?"Retry microphone":"Enable Sing";
+  }
+  function copyRecoveryDevices(keep){
+    const value=keep?recoveryInput.value:elements.takeMicrophone.value;
+    recoveryInput.replaceChildren(...Array.from(elements.takeMicrophone.options,o=>o.cloneNode(true)));
+    recoveryInput.value=Array.from(recoveryInput.options).some(o=>o.value===value)?value:elements.takeMicrophone.value;
+  }
+  let recoveryProcessingTrack=null;
+  function openMicRecovery(){
+    if(micRecovery.open)return;
+    recoveryProcessingTrack=null;
+    copyRecoveryDevices(false);micRecovery.showModal();renderMicRecovery();
+    void refreshMicrophoneChoices().then(()=>{if(micRecovery.open){copyRecoveryDevices(true);renderMicRecovery();}});
+  }
+  function chooseMicInput(deviceId){
+    if(microphoneDeviceId!==deviceId){invalidateSessionTiming();breakRecordingChain();}
+    microphoneDeviceId=deviceId;
+    try{
+      const key="choir-practice:microphone:v1",builtin=window.MeleteMicrophoneCheck.tabletBuiltin(timingDevices,navigator);
+      localStorage.setItem(key,deviceId);
+      if(builtin && builtin.deviceId===deviceId)localStorage.setItem(key+":ipad",deviceId);
+      else localStorage.removeItem(key+":ipad");
+    }catch{}
+    elements.takeMicrophone.value=deviceId;
+    releaseMicrophoneInput();
+    if(timingDialog.open){
+      stopStereoTest();refreshTimingRouteHelp();
+      document.getElementById("timingCheckStatus").textContent="Recording input changed. Measure this input and output together before judging entrances.";
+    }
+    takeNotice="";renderTakePanel();
+  }
+  async function applyMicInput(deviceId,enable=false){
+    if(recoveryLocked() || recoveryPending || microphoneRequest || pitchCaptureState==="requesting")return;
+    recoveryPending=true;
+    try{
+      const wanted=wantsPitchCapture();
+      if(wanted)disablePitchCapture(false,{preservePreference:true});
+      if(!engine?.native)chooseMicInput(deviceId);
+      micSessionActive=true;lastMicFailure=null;pitchCaptureNotice=takeNotice="";
+      if(wanted)await armMicrophone();
+      else if(enable){if(micRecovery.open)micRecovery.close();await togglePitchCapture();}
+    }finally{recoveryPending=false;renderMicRecovery();}
+  }
+  recoveryRetry.addEventListener("click",()=>{if(!recoveryRetry.disabled)void applyMicInput(recoveryInput.value,true);});
+  recoveryBuiltin.addEventListener("click",()=>{
+    const builtin=window.MeleteMicrophoneCheck.tabletBuiltin(timingDevices,navigator);
+    if(!builtin || recoveryBuiltin.disabled || recoveryBuiltin.hidden)return;
+    recoveryInput.value=builtin.deviceId;
+    void applyMicInput(builtin.deviceId);
+  });
+  micRecovery.addEventListener("keydown",event=>event.stopPropagation());
+  document.getElementById("micSignalAction").addEventListener("click",openMicRecovery);
   microphoneCheck = new window.MeleteMicrophoneCheck.Check({
     dialog: document.getElementById("microphoneCheck"), trigger: elements.checkMicrophone,
-    inline: true, passive: true, select: elements.takeMicrophone,
+    inline: true, passive: true, select: elements.takeMicrophone,inspect:openMicRecovery,
+    onLevel: state => {
+      const recording = takeState === "recording" && engine?.playing;
+      const expected = recording && ["silent","muted"].includes(state) &&
+        pitchRestState(engine.tickAtSeconds(engine.currentSeconds())) === "sing";
+      const warn = silentPassWarning.sample(performance.now(),recording,expected,state);
+      if (micSignalWarning.hidden === warn) micSignalWarning.hidden = !warn;
+      displayInputRoute();
+      renderMicRecovery();
+    },
     acquire: async () => {
       await ensureMicrophoneInput({waitForAudio: false});
       return {source: pitchCaptureSource, context: pitchCaptureContext, track: pitchCaptureStream.getAudioTracks()[0]};
     },
     release: syncMicrophoneActivity,
-    busy: () => pitchCaptureState !== "off" || takeState !== "off" || Boolean(microphoneCheck?.calibrating || engine?.native),
-    failureMessage: microphoneFailureMessage,
-    choose: deviceId => {
-      if(microphoneDeviceId!==deviceId){invalidateSessionTiming();breakRecordingChain();}
-      microphoneDeviceId = deviceId;
-      try { localStorage.setItem("choir-practice:microphone:v1", deviceId); } catch {}
-      elements.takeMicrophone.value = deviceId;
-      releaseMicrophoneInput();
-      if(timingDialog.open){
-        stopStereoTest();refreshTimingRouteHelp();
-        document.getElementById("timingCheckStatus").textContent="Recording input changed. Measure this input and output together before judging entrances.";
-      }
-      takeNotice = "";
-      renderTakePanel();
-      if (wantsPitchCapture()) void armMicrophone();
-    },
+    busy: microphoneChoiceLocked,
+    failureMessage: reportMicrophoneFailure,
+    choose: deviceId => {void applyMicInput(deviceId);},
   });
   window.MeleteMicrophoneCheck.mediaDevicesFor(window)?.addEventListener?.("devicechange", async () => {
     const before=timingKey(),previousOutput=timingOutputDevice;
@@ -11837,6 +12140,9 @@
       before && before!==timingKey())) breakRecordingChain();
     if(!pitchCapturePageActive || document.hidden)return;
     noteAudioEvent("devices-changed");
+    if(!native && pitchCaptureState==="off" && (lastMicFailure?.kind==="device" || lastMicFailure?.kind==="busy")
+      && devices?.some(d=>d.kind==="audioinput" && (!microphoneDeviceId || d.deviceId===microphoneDeviceId)))
+      void restorePitchCapture();
     const preferred=savedOutput(), outputs=devices?.filter(d=>d.kind==="audiooutput" && d.deviceId);
     const outputChanged=preferred ? outputs?.length && !outputs.some(d=>d.deviceId===preferred)
       : previousOutput && timingOutputDevice && previousOutput!==timingOutputDevice;
@@ -11848,7 +12154,7 @@
     }
   });
   const timingDialog=document.getElementById("timingCheckDialog");
-  let outputTap=null,outputTapSource=null,outputPoll=0,outputDb=null;
+  let outputTap=null,outputTapSource=null,outputPoll=0,outputDb=null,timingMeterRun=null;
   const meterSamples=new Float32Array(2048);
   function stopOutputMeter(){
     clearTimeout(outputPoll);outputPoll=0;
@@ -11870,12 +12176,18 @@
       const power=meterSamples.reduce((sum,v)=>sum+v*v,0)/meterSamples.length;
       if(power>1e-9)outputDb=Math.round(10*Math.log10(power));
     }
-    document.getElementById("outputSignal").value=outputDb??-90;
-    document.getElementById("outputDb").textContent=outputDb===null?"Silent":outputDb+" dBFS";
+    if(timingMeterRun && !timingMeterRun.done && outputDb!==null)timingMeterRun.output=Math.max(timingMeterRun.output??-Infinity,outputDb);
+    const shown=timingMeterRun?.done?timingMeterRun.output:outputDb;
+    document.getElementById("outputSignal").value=shown??-90;
+    document.getElementById("outputDb").textContent=shown==null?"Silent":shown+" dBFS";
+    const inputDb=timingMeterRun?.peak?Math.round(20*Math.log10(timingMeterRun.peak)):null;
+    document.getElementById("timingReturnRow").hidden=Boolean(engine?.native);
+    document.getElementById("timingMicSignal").value=inputDb??-90;
+    document.getElementById("timingMicDb").textContent=inputDb!==null?inputDb+" dBFS":timingMeterRun?.sampled?"Silent":"Not sampled";
     outputPoll=setTimeout(sampleOutput,90);
   }
   timingDialog.addEventListener("close",()=>{
-    stopOutputMeter();
+    stopOutputMeter();timingMeterRun=null;
     if(!timingDialog.open)document.getElementById("openTimingCheck").before(elements.takeMicrophone);
   });
   document.addEventListener("visibilitychange",()=>{if(timingDialog.open)sampleOutput();});
@@ -11914,6 +12226,7 @@
   document.addEventListener("visibilitychange",()=>{if(document.hidden)stopStereoTest();});
   stereoButton.addEventListener("click",async()=>{
     if(stereoRun)return;
+    timingMeterRun=null;
     const nodes=[];stereoRun=nodes;stereoButton.disabled=true;
     try {
       if(engine.playing || takeState!=="off" || microphoneCheck.calibrating)throw Error("Pause playback before testing output.");
@@ -11949,6 +12262,7 @@
     const cal=currentCalibration(), last=!cal && !pitchCaptureStream && (sessionTiming?.result || lastTimingCheck());
     label.textContent=engine.playing || takeState!=="off" ? "Finish the current take and pause playback before measuring." :
       cal ? (cal.backend ? "Native WASAPI: " : "Measured ")+Math.round(cal.seconds*1000)+" ms; measured spread "+cal.spreadMs+" ms." :
+      timingHolds.get(wiredHoldKey()) ? "Previous timing is not in use. Recordings will be saved ungraded until this setup is measured again." :
       last ? "Last measurement: "+Math.round(last.seconds*1000)+" ms. "+(last===sessionTiming?.result?"This tab only. ":"")+"Recording rechecks the microphone and output before using it." :
       "Timing is unverified. Measure this setup before judging early or late entrances.";
     if(!timingDialog.open)timingDialog.showModal();sampleOutput();
@@ -12066,6 +12380,7 @@
     linkedPracticeState = null;
     relativeMix=null;relativeGuide=null;pendingMixReceipt=null;
     referencePlayer?.activate(false);
+    micOwnershipEpoch++;
     pitchCapturePageActive = false;
     microphoneCheck?.close();
     const stopped = stopTakeRecording("Stopped", true, {discardShortTail:false});
@@ -12122,7 +12437,8 @@
   document.addEventListener("visibilitychange", () => {
     syncRehearsalWake();
     if (document.hidden) {
-      void stopTakeRecording("Stopped: tab hidden", true);
+      micOwnershipEpoch++;
+      void stopTakeRecording("Stopped: tab hidden", true, {discardShortTail:false});
       disablePitchCapture(false, {preservePreference:true});
     }
     if (!document.hidden) restorePitchCapture();
@@ -12291,6 +12607,7 @@
     // temporary choice into a downloaded player's default mode.
     const conductorBootstrap = new RegExp(`<script\\b[^>]*\\bdata-(?:conductor|portable)-bootstrap(?:\\s|=|>)[\\s\\S]*?${scriptClose}`, "giu");
     source = source.replace(conductorBootstrap, "");
+    source = source.replace(new RegExp(`<script\\b[^>]*\\bid=["']melete-offline-install["'][^>]*>[\\s\\S]*?${scriptClose}`, "u"), "");
     const marker = new RegExp(`<script\\b[^>]*\\bid=["']portable-state["'][^>]*>[\\s\\S]*?${scriptClose}`, "iu");
     if (!marker.test(source)) throw new Error("Portable state marker is missing");
     const replacement = `<script id="portable-state" type="application/json">${jsonForEmbeddedScript(state)}${scriptClose}`;

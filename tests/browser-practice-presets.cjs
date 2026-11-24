@@ -38,7 +38,7 @@ async function run(context,origin,mobile) {
     assert.equal(await page.locator('#recordAudio').count(),0);
     await page.evaluate(()=>__qa.pitchResolution.prepare());
     const before=await storage();
-    await sing.click();assert.equal(await sing.getAttribute('data-state'),'armed');
+    await sing.click();await page.locator('#pitchCapture[data-state=armed]').waitFor({state:'attached'});
     assert.deepEqual(await storage(),before);assert.equal(await page.evaluate(()=>window.pcmStarts),0);
     await transport();await page.waitForFunction(()=>__qa.recording.state==='recording');
     await page.evaluate(()=>__qa.pitchResolution.input());await page.waitForFunction(()=>__qa.pitchResolution.snapshot().count>=8);

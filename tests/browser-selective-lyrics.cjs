@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-async function checkSelectiveLyrics(page, frame, {mobile = false, output, label = 'lyrics', splitWord, reload} = {}) {
+async function checkSelectiveLyrics(page, frame, {mobile = false, output, label = 'lyrics', splitWord, repeatedWord, reload} = {}) {
   const ready = () => frame.waitForFunction(() => !(window.__qa || window.__probe)?.busy
     && !document.querySelector('.score-render-snapshot') && document.querySelector('#score .lyric-toggle'));
   const settings = async () => {
@@ -31,6 +31,11 @@ async function checkSelectiveLyrics(page, frame, {mobile = false, output, label 
   if (await frame.locator('#barScore').isVisible()) await frame.locator('#scoreViewToggle').click();
   if (await frame.locator('#lyricEditing').getAttribute('aria-pressed') !== 'true') await frame.locator('#lyricEditing').click();
   await ready();await showScore();
+  const repeatedIds=async view=>frame.locator(view+' .lyric-toggle').evaluateAll((nodes,word)=>
+    [...new Set(nodes.filter(n=>n.querySelector('text')?.textContent===word && !n.classList.contains('is-lyric-hidden'))
+      .map(n=>n.dataset.lyricWords))].sort(),repeatedWord);
+  const notationIds=repeatedWord?await repeatedIds('#score'):[];
+  if(repeatedWord)assert.equal(notationIds.length,2,'both written syllables have their own visible word in Score');
   const first=frame.locator('#score .lyric-toggle').filter({visible:true}).first();
   const ids=await first.getAttribute('data-lyric-words'), selector=`.lyric-toggle[data-lyric-words="${ids}"]`;
   const before=await first.locator('text').boundingBox(),position=await frame.locator('#seek').inputValue();
@@ -52,6 +57,7 @@ async function checkSelectiveLyrics(page, frame, {mobile = false, output, label 
   if(editState!=='true') await frame.locator('#lyricEditing').click();
   await frame.locator('#scoreViewToggle').click();
   await frame.waitForFunction(()=>document.querySelector('#barScore .lyric-toggle'));
+  if(repeatedWord)assert.deepEqual(await repeatedIds('#barScore'),notationIds,'Pitchbar keeps the same two separate onsets');
   await showScore();
   const bar=frame.locator('#barScore .lyric-toggle').first();await bar.click();
   assert.equal(await bar.getAttribute('aria-pressed'),'true');

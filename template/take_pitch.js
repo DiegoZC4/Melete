@@ -7,6 +7,7 @@
   "use strict";
   // References stay immutable. Bump only analysis when detector behavior changes.
   const VERSION = 1;
+  const UNGRADED_VERSION = "ungraded-audio-v1";
   const ANALYSIS_VERSION = 2;
   const SCORING_VERSION = 10;
   const REST_POLICY_VERSION = 2;
@@ -177,8 +178,23 @@
       ? `${score.restVoicedSeconds.toFixed(2)} s voiced during entrance/release rests (${score.restObservedSeconds.toFixed(2)} s observed). Separate from pitch error.` : "";
   }
 
+  function ungraded(ref) { return ref?.timing?.source==="unverified" || ref?.version===UNGRADED_VERSION; }
+  function repairUngraded(take) {
+    const ref=take?.pitchReference;
+    if(!ungraded(ref) || !take.finalized || take.publication || take.deleteAfter ||
+      ref.version===UNGRADED_VERSION && !take.pitchScore && !take.checkpointPitch && !take.captureChain)return take;
+    // Older cached players treated v1 as scoreable. Invalidate derived grades,
+    // not original observations, recording dates, or PCM.
+    const next={...take,pitchReference:{...ref,version:UNGRADED_VERSION}};
+    if(take.pitchContour?.reference===JSON.stringify(ref))
+      next.pitchContour={...take.pitchContour,reference:JSON.stringify(next.pitchReference)};
+    delete next.pitchScore;delete next.checkpointPitch;delete next.captureChain;
+    return next;
+  }
+
   function validReference(ref) {
-    return ref?.version === VERSION && typeof ref.fingerprint === "string" && ref.fingerprint.length > 0
+    return (ref?.version === VERSION || ref?.version===UNGRADED_VERSION && ref.timing?.source==="unverified")
+      && typeof ref.fingerprint === "string" && ref.fingerprint.length > 0
       && Number.isInteger(ref.part) && Number.isFinite(ref.rate) && ref.rate > 0
       && Number.isFinite(ref.seconds) && ref.seconds > 0 && ref.seconds <= 3600
       && (ref.leadInSeconds === undefined || (Number.isFinite(ref.leadInSeconds)
@@ -259,6 +275,7 @@
   }
 
   function scoreFrames(frames, ref, duration) {
+    if(ungraded(ref))return null;
     const errors = [];
     let measured = 0, errorSum = 0, within50 = 0;
     const expected = eachPitchError(frames, ref, duration, (signed, weight) => {
@@ -504,7 +521,7 @@
 
   function recalibrateTake(take, chainId, measurement) {
     const ref = take.pitchReference;
-    if (!chainId || !take.finalized || take.active || take.unsaved || take.publication || take.deleteAfter ||
+    if (ungraded(ref) || !chainId || !take.finalized || take.active || take.unsaved || take.publication || take.deleteAfter ||
       !validReference(ref) || !Number.isFinite(measurement?.seconds) || measurement.seconds < 0 || measurement.seconds > .55 ||
       !Number.isFinite(measurement.measuredAt) || take.createdAt > measurement.measuredAt ||
       (ref.timing?.measuredAt ?? 0) >= measurement.measuredAt) return null;
@@ -548,7 +565,7 @@
   }
 
   function rebaseTake(take, reference, now = Date.now()) {
-    if (!take.finalized || take.active || take.unsaved || take.deleteAfter
+    if (ungraded(take.pitchReference) || !take.finalized || take.active || take.unsaved || take.deleteAfter
       || !sameTimeline(take.pitchReference, reference)) return null;
     if (JSON.stringify(take.pitchReference) === JSON.stringify(reference)) return take;
     if (take.previousReferenceFingerprints?.includes(reference.fingerprint)) return null;
@@ -742,10 +759,10 @@
       };`;
   }
 
-  return {VERSION, ANALYSIS_VERSION, SCORING_VERSION, REST_POLICY_VERSION, TIME_EPSILON, nonzeroNotes, mergeRanges, subtractRanges, containsTime,
+  return {VERSION, UNGRADED_VERSION, repairUngraded, ANALYSIS_VERSION, SCORING_VERSION, REST_POLICY_VERSION, TIME_EPSILON, nonzeroNotes, mergeRanges, subtractRanges, containsTime,
     restPolicyValid, trimReference, cleanRestFrames, playbackRestReference, restStats, restLabel,
     octaveError, connects, errorDistribution, DISTRIBUTION_LIMIT, currentScore, BEST_COVERAGE_WINDOW, DOMINANCE_CENTS_MARGIN, DOMINANCE_COVERAGE_MARGIN,
-    reference, validReference, validScore, hasMedian, hasPitchBand, scoreFrames, reviewTimeline, analyse, packContour, packLiveContour, readContour,
+    reference, validReference, ungraded, validScore, hasMedian, hasPitchBand, scoreFrames, reviewTimeline, analyse, packContour, packLiveContour, readContour,
     stopNoiseCut, muteStopTail,
     samePassage, sameTimeline, rebaseTake, recalibrateTake, takeBounds, measureAddress, comparisonKey, SORT_COLUMNS, takeSort, nextTakeSort, compareParts, compareTakes, dominatedBy, bestIds, source, workerSource};
 });

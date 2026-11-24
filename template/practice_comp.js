@@ -70,6 +70,7 @@
   // A complete recording of this track's passage, scored or not.
   function matches(take, descriptor) {
     const r = take.pitchReference, target = descriptor.reference;
+    if(pitch.ungraded(r))return false;
     if ((take.trackSlot || null) !== (descriptor.slot || null)) return false;
     if (!take.complete || !take.finalized || take.active || take.unsaved || take.gap || take.deleteAfter
       || !pitch.validReference(r) || !Number.isFinite(take.origin) || r.fingerprint !== target.fingerprint

@@ -157,7 +157,7 @@ async function checkStation(newContext, origin, html, {output, label, mobile, er
     assert.equal(await stage(page), 'Scratchpad', 'an imported Final remains reviewable without arming it');
 
     await page.locator('#pitchCapture').click();
-    assert.equal(await page.locator('#pitchCapture').getAttribute('data-state'),'armed');
+    await page.locator('#pitchCapture[data-state=armed]').waitFor({state:'attached'});
     await input.fill('demoz');
     await page.getByRole('option', {name: 'Alto, DemoZ', exact:true}).click();
     await page.evaluate(() => __qa.refreshComp());

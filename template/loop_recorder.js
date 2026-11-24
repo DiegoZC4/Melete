@@ -12,7 +12,7 @@
       && now - record.updatedAt >= MAX_LOOP_SECONDS * 1000;
   }
   function silentCandidate(record) {
-    return record.finalized && !record.publication && !record.favorite && !record.deleteAfter
+    return !getPitch().ungraded(record.pitchReference) && record.finalized && !record.publication && !record.favorite && !record.deleteAfter
       && (record.frames === 0 || record.peak === 0)
       && (record.storedFrames ?? record.frames) === record.frames;
   }
@@ -927,6 +927,7 @@
 
     updateRestReference(take, reference) {
       const pitch = getPitch();
+      if(pitch.ungraded(take.pitchReference))return Promise.resolve(null);
       if (!pitch.restPolicyValid(reference)) throw new Error("Missing rest timing");
       return this.transaction(["takes"], "readwrite", (tx, done) => {
         const takes = tx.objectStore("takes");
@@ -964,7 +965,18 @@
       });
     }
 
+    repairUngraded(id) {
+      return this.transaction(["takes"],"readwrite",(tx,done)=>{
+        const takes=tx.objectStore("takes");
+        takes.get(id).onsuccess=e=>{
+          const record=e.target.result,next=getPitch().repairUngraded(record);
+          if(next!==record)takes.put(next);
+          done(next);
+        };
+      });
+    }
     pitchScore(id, frames, reference, result, contour, checkpointAt = null) {
+      if(getPitch().ungraded(reference))return Promise.resolve(null);
       return this.transaction(["takes"], "readwrite", (tx, done) => {
         const takes = tx.objectStore("takes");
         takes.get(id).onsuccess = event => {
@@ -1258,6 +1270,7 @@
       }
       const record = {...entry.record, frames: length, sampleRate, pitchReference: ref};
       const pitchContour = pitch.packLiveContour(frames, record);
+      if(pitch.ungraded(ref))return {pitchContour};
       const cleaned = pitch.readContour({...record, pitchContour});
       const stopNoiseFrom = entry.trimStopNoise ? pitch.stopNoiseCut(entry.take.pcm.subarray(0, length), sampleRate, cleaned, ref.latency) : null;
       return {pitchContour, pitchScore: pitch.scoreFrames(cleaned, ref, length / sampleRate),

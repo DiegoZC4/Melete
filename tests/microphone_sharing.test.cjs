@@ -21,8 +21,9 @@ function fixture() {
   const c = vm.createContext({
     ready:true, conductorMode: false, rehearsalReview:null, stationReview:null, reviewMix:null, pitchCaptureState: 'off', takeState: 'off', microphoneRequest: null,
     singEnabled:false,singArmGeneration:0,compPanel:null,practicePartIndex:0,mixerParts:[{}],takeNotice:'',recordingLoopSpec:()=>null,loadTakeLibrary:async()=>{},
-    retainRecordingInput:false, preparingCapture:null, pitchCapturePageActive: true, micSessionActive:true, pitchCaptureNotice: '',
-    microphoneDeviceId: '', microphoneStreamDeviceId: '', microphoneCheck: null, latestDeviceRefresh:null,
+    retainRecordingInput:false, preparingCapture:null, pitchCapturePageActive: true, micSessionActive:true, micOpenedHere:false, micOwnershipEpoch:0, DOMException, setTimeout, pitchCaptureNotice: '',
+    microphoneDeviceId: '', microphoneStreamDeviceId: '', microphoneCheck: null, latestDeviceRefresh:null,lastMicFailure:null,
+    timingDevices:[],
     pitchCaptureContext: null, pitchCaptureStream: null, pitchCaptureSource: null,
     pitchCaptureAnalyser: null, pitchCaptureWorker: null, pitchCaptureBuffer: null, playing: false,
     PITCH_CAPTURE_BUFFER_SIZE: 4096, Float32Array, console,
@@ -42,18 +43,57 @@ function fixture() {
   c.window.navigator = c.navigator;
   c.window.MeleteMicrophoneCheck = require('../template/microphone_check.js');
   for (const name of ['wantsPitchCapture', 'nativeInputNeedsRetry','readMicrophoneChoice', 'refreshMicrophoneChoices', 'updateMicrophoneChoices', 'releaseMicrophoneInput',
-    'microphoneFailureMessage', 'syncMicrophoneActivity', 'ensureMicrophoneInput', 'disablePitchCapture',
+    'microphoneFailureMessage','reportMicrophoneFailure','microphoneChoiceLocked','syncMicSelectorLock','displayInputRoute', 'syncMicrophoneActivity', 'ensureMicrophoneInput', 'disablePitchCapture',
     'restorePitchCapture', 'armMicrophone','activateCachedPitchCapture','togglePitchCapture']) vm.runInContext(source(name), c);
   return {c, track, audio, constraints, notices, stops, stored, listeners,
     requests: () => requests, permit: (input = stream) => resolveRequest(input)};
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('return after foreground changes waits for a previous save and retries a busy mic without starting transport', async () => {
+  const f=fixture(),c=f.c;c.singEnabled=c.micOpenedHere=true;
+  c.navigator.permissions={query:async()=>{throw Error('unsupported');}};
+  let finish, streams=0; c.takeState='stopping'; c.takeStopPromise=new Promise(ok=>finish=ok);
+  c.navigator.mediaDevices.getUserMedia=async()=>{
+    if(++streams===1)throw new DOMException('Device still releasing','NotReadableError');
+    return {getAudioTracks:()=>[f.track]};
+  };
+  const back=c.restorePitchCapture();await tick();assert.equal(streams,0);
+  c.takeState='off';finish();await back;
+  assert.equal(streams,2);assert.equal(c.pitchCaptureState,'armed');assert.equal(c.engine.playing,false);
+  assert.deepEqual(f.stops,[]);
+  c.disablePitchCapture(false);await c.restorePitchCapture();assert.equal(streams,2,'explicit Off wins');
+});
+
+test('a late grant from the previous tab visit is stopped even if visible again', async () => {
+  const f=fixture(),c=f.c;c.singEnabled=true;
+  const pending=c.ensureMicrophoneInput({waitForAudio:false});await tick();
+  c.micOwnershipEpoch++;f.permit();await assert.rejects(pending,{name:'AbortError'});
+  assert.equal(f.track.readyState,'ended');assert.equal(c.pitchCaptureStream,null);
+});
+
+test('revocation wins over a prior successful session: no passive permission prompts', async () => {
+  const f=fixture(),c=f.c;c.singEnabled=c.micOpenedHere=true;
+  for(const state of ['denied','prompt']){c.navigator.permissions={query:async()=>({state})};await c.restorePitchCapture();}
+  assert.equal(f.requests(),0);
+});
+
+test('the input selector unlocks when playback stops with Sing still armed', () => {
+  const {c}=fixture(), select=c.elements.takeMicrophone;
+  c.pitchCaptureState='armed';c.singEnabled=true;
+  for(const phase of ['preparing','playing']) {
+    c.engine[phase]=true;c.syncMicSelectorLock();assert.equal(select.disabled,true);
+    c.engine[phase]=false;c.syncMicSelectorLock();assert.equal(select.disabled,false);
+  }
+  c.takeState='stopping';c.syncMicSelectorLock();assert.equal(select.disabled,true);
+  c.takeState='off';c.syncMicSelectorLock();assert.equal(select.disabled,false);
+});
+
 test('Rec can reuse a disabled granted input while listening and releases it when the song is hidden', async () => {
   const f = fixture(), c = f.c;
   c.singEnabled = true;
   const first = c.armMicrophone();
-  f.permit(); await first;
+  await tick();f.permit(); await first;
   assert.equal(f.track.enabled,true);
   c.disablePitchCapture(false);
   assert.equal(f.track.enabled,false);
@@ -91,6 +131,27 @@ test('mic check and capture share one raw selected input request', async () => {
   assert.equal(f.constraints[0].audio.deviceId.exact, 'chosen-device');
   for (const key of ['echoCancellation','noiseSuppression','autoGainControl']) assert.equal(f.constraints[0].audio[key].exact, false);
   assert.notEqual(f.c.pitchCaptureContext, f.c.engine.context); assert.equal(f.track.enabled, true);
+});
+test('the installed iPad keeps the operating system category, retries the exact mic only once, and stops any substituted USB input',async()=>{
+  for(const recovers of [true,false]){
+    const f=fixture(),c=f.c, nav=c.navigator,states=[],tracks=[];
+    const devices=[{kind:'audioinput',label:'iPad Microphone',deviceId:'tablet'},
+      {kind:'audioinput',label:'USB Audio',deviceId:'adapter'},{kind:'audiooutput',deviceId:'default',label:'Default - USB Audio'}];
+    nav.standalone=true;nav.audioSession={type:'auto'};c.takeState='requesting';
+    f.stored.set('choir-practice:microphone:v1','tablet');
+    nav.mediaDevices.enumerateDevices=c.refreshMicrophoneChoices=async()=>devices;
+    nav.mediaDevices.getUserMedia=async opts=>{
+      assert.equal(opts.audio.deviceId.exact,'tablet');
+      const device=devices[states.length && recovers?0:1];
+      states.push(nav.audioSession.type);
+      const track={...f.track,label:device.label,getSettings:()=>({deviceId:device.deviceId})};
+      tracks.push(track);return {getAudioTracks:()=>[track]};
+    };
+    if(recovers){await c.ensureMicrophoneInput();assert.equal(c.pitchCaptureStream.getAudioTracks()[0],tracks[1]);c.releaseMicrophoneInput();}
+    else{await assert.rejects(c.ensureMicrophoneInput(),{name:'InputRouteMismatchError'});assert.equal(c.pitchCaptureStream,null);}
+    assert.deepEqual(states,['auto','auto']);
+    assert.ok(tracks.every(t=>t.readyState==='ended'));assert.equal(nav.audioSession.type,'auto');
+  }
 });
 test('Sing retries an unavailable native input with one press',async()=>{
   const f=fixture(), c=f.c;
@@ -166,6 +227,7 @@ test('a hidden collection frame stays off the microphone until it is shown with 
   frame.inert = false; page.pageshow(); await tick();
   assert.equal(f.c.pitchCapturePageActive, true);
   assert.equal(f.requests(), 1, 'the shown song still restores Sing');
+  f.permit();await tick();
   f.c.window.frameElement = null;
   assert.equal(vm.runInContext(initial, f.c), true, 'a standalone page starts active');
 });

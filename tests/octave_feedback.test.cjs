@@ -22,6 +22,9 @@ test('live and review colors agree on octave equivalents without forgiving anoth
     assert.equal(c.expectedPitchErrorCents(0, 6900 + octave * 1200), 0);
     assert.equal(c.pitchTraceColor(octave * 1200), 'rgb(0 255 0)');
     assert.equal(c.pitchTraceColor(octave * 1200 + 50), 'rgb(255 0 0)');
+    for (const sign of [-1, 1]) for (const [cents, percent] of [[20,25],[30,50],[40,75]]) {
+      assert.equal(c.pitchTraceColor(octave*1200+sign*cents), `color-mix(in oklab, lime, red ${percent}%)`);
+    }
   }
   c.expectedPitchAt = () => [[0, 0, 1, 69], [0, 0, 1, 65]];
   assert.equal(c.expectedPitchErrorCents(0, 5700), 0, 'All Div compares pitch classes before choosing the closest target');

@@ -7,7 +7,9 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "test": "node --test tests/*.test.cjs",
-    "test:browser": "node tests/browser-smoke.cjs"
+    "test:browser": "node tests/browser-smoke.cjs",
+    "test:compat": "node tests/browser-compatibility.cjs",
+    "test:offline": "node tests/browser-offline-home.cjs"
   },
   "devDependencies": { "playwright": "1.64.1" }
 }

@@ -18,25 +18,17 @@ const sharedNotationTools = (() => {
   }
 
   function repeatedLyrics(lyrics, notes = [], division = 960) {
-    const hidden = new Set(), runs = new Map(), spans = singingSpans(notes, division);
-    const finish = (run) => {
-      if (run?.length >= 2) run.slice(1).forEach((lyric) => hidden.add(lyric));
-    };
+    const hidden = new Set(), previous = new Map(), spans = singingSpans(notes, division);
     for (const lyric of lyrics) {
       const text = String(lyric[3] || "").trim().replace(/\s+/gu, " ");
       if (!text) continue;
       const key = `${lyric[0]}:${lyric[2]}`;
-      const run = runs.get(key), span = spans.get(lyric[0])?.findLast((s) => s.start <= lyric[1]);
-      if (run?.text === text && (run.span === span || (backing.has(text.toLowerCase()) && run.span?.phrase === span?.phrase))) run.push(lyric);
-      else {
-        finish(run);
-        const next = [lyric];
-        next.text = text;
-        next.span = span;
-        runs.set(key, next);
-      }
+      if (!backing.has(text.toLowerCase())) { previous.delete(key); continue; }
+      const phrase = spans.get(lyric[0])?.findLast(s => s.start <= lyric[1])?.phrase;
+      const last = previous.get(key);
+      if (last?.text === text && last.phrase === phrase) hidden.add(lyric);
+      previous.set(key, {text, phrase});
     }
-    runs.forEach(finish);
     return hidden;
   }
 

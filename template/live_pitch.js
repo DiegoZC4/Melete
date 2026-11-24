@@ -37,19 +37,28 @@
       };`;
   }
   class Channel {
-    constructor(worker, accept, fail) {
+    static fromSource(source, accept, fail) {
+      const url = URL.createObjectURL(new Blob([source], {type: "text/javascript"}));
+      try { return new Channel(new Worker(url), accept, fail, url); }
+      catch (error) { URL.revokeObjectURL(url); throw error; }
+    }
+    constructor(worker, accept, fail, url = null) {
       this.worker = worker;
+      this.url = url;
       this.pending = null;
       this.generation = 0;
       worker.onmessage = ({data}) => {
+        this.releaseSource();
         const job = this.pending;
         this.pending = null;
         if (!job || job.generation !== this.generation) return;
         if (data.error) fail(new Error(data.error));
         else accept(data.result, job.metadata, data.cost);
       };
-      worker.onerror = event => { this.pending = null; fail(new Error(event.message || "Pitch worker failed")); };
+      worker.onerror = event => { this.releaseSource(); this.pending = null; fail(new Error(event.message || "Pitch worker failed")); };
     }
+    // WebKit may not have read the blob yet when the Worker constructor returns.
+    releaseSource() { if (this.url) { URL.revokeObjectURL(this.url); this.url = null; } }
     submit(input, options, metadata) {
       if (this.pending) return false;
       this.pending = {generation: this.generation, metadata};
@@ -59,7 +68,7 @@
       return true;
     }
     invalidate() { this.generation += 1; }
-    close() { this.invalidate(); this.pending = null; this.worker.terminate(); }
+    close() { this.invalidate(); this.pending = null; this.worker.terminate(); this.releaseSource(); }
   }
   return {candidate, workerSource, Channel};
 });

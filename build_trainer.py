@@ -66,7 +66,6 @@ METADATA_MARKER = '<script id="build-metadata" type="application/json"></script>
 APP_MARKER = '<script src="./app.js" data-inline></script>'
 LICENSE_MARKER = "<!-- THIRD_PARTY_NOTICES -->"
 REPEATED_LYRIC_ATTRIBUTE = "data-choir-repeated-lyric"
-REPEATED_LYRIC_MINIMUM = 2
 LYRIC_BREATH = json.loads((TEMPLATE_DIR / "lyric_breath.json").read_text(encoding="utf-8"))
 
 REQUIRED_TEMPLATE_MARKERS = (
@@ -595,11 +594,11 @@ def hyphenate_lyric_syllables(xml_text: str) -> tuple[str, int]:
 
 
 def annotate_repeated_lyrics(xml_text: str) -> tuple[str, int]:
-    """Mark unchanged syllables without rewriting MusicXML.
+    """Mark repeated backing syllables without rewriting MusicXML.
 
     Runs are tracked independently per staff, voice and verse. A short breath
     does not repeat a backing syllable; words and longer absences cue re-entry.
-    Compact Lyrics mode keeps only the first syllable of a run.
+    Written words at different onsets are distinct singing cues, even at unison.
     The lexical edit preserves the score's declaration, doctype, comments,
     whitespace, and unrelated source spelling.
     """
@@ -633,17 +632,12 @@ def annotate_repeated_lyrics(xml_text: str) -> tuple[str, int]:
 
     duplicate_ordinals: set[int] = set()
     lyric_ordinal = 0
-
-    def finish_run(run: list[int]) -> None:
-        if len(run) >= REPEATED_LYRIC_MINIMUM:
-            duplicate_ordinals.update(run[1:])
+    backing = set(LYRIC_BREATH["backingSyllables"])
 
     for part in (element for element in root.iter() if local_name(element.tag) == "part"):
         previous_by_verse: dict[tuple[str, ...], str] = {}
-        runs: dict[tuple[str, ...], list[int]] = {}
         rest_lengths: dict[tuple[str, str], Fraction | float] = {}
         divisions = Fraction(0)
-        backing = set(LYRIC_BREATH["backingSyllables"])
         for note in part.iter():
             tag = local_name(note.tag)
             if tag == "divisions":
@@ -655,11 +649,10 @@ def annotate_repeated_lyrics(xml_text: str) -> tuple[str, int]:
             if "rest" in fields:
                 duration = Fraction(fields["duration"]) / divisions if divisions > 0 and fields.get("duration") else float("inf")
                 rest_lengths[lane] = rest_lengths.get(lane, 0) + duration
-                for key in list(runs):
-                    if key[:2] == lane and (rest_lengths[lane] > LYRIC_BREATH["maxRestQuarters"]
-                                            or previous_by_verse[key].lower() not in backing):
-                        finish_run(runs.pop(key))
-                        del previous_by_verse[key]
+                if rest_lengths[lane] > LYRIC_BREATH["maxRestQuarters"]:
+                    for key in list(previous_by_verse):
+                        if key[:2] == lane:
+                            del previous_by_verse[key]
             elif "grace" not in fields:
                 rest_lengths.pop(lane, None)
             for lyric in (child for child in note if local_name(child.tag) == "lyric"):
@@ -675,14 +668,13 @@ def annotate_repeated_lyrics(xml_text: str) -> tuple[str, int]:
                         lyric.attrib.get("number", "1").strip(),
                         lyric.attrib.get("name", "").strip(),
                     )
-                    if previous_by_verse.get(verse) != text:
-                        finish_run(runs.get(verse, []))
-                        runs[verse] = []
+                    if text.lower() in backing:
+                        if previous_by_verse.get(verse) == text:
+                            duplicate_ordinals.add(lyric_ordinal)
                         previous_by_verse[verse] = text
-                    runs[verse].append(lyric_ordinal)
+                    else:
+                        previous_by_verse.pop(verse, None)
                 lyric_ordinal += 1
-        for run in runs.values():
-            finish_run(run)
 
     annotated: list[str] = []
     cursor = 0

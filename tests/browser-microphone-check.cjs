@@ -42,12 +42,16 @@ async function checkMicrophone(frame, page, {output,label}) {
   });
   try {
     assert.equal(await frame.evaluate(()=>micCheckTest.requests),0,'no permission request before explicit check');
+    await frame.locator('#checkMicrophone').click();
+    const recovery=frame.locator('#micRecoveryDialog'),dismiss=()=>recovery.getByRole('button',{name:'Close microphone settings'}).click();
+    assert.ok(await recovery.isVisible());assert.equal(await frame.evaluate(()=>micCheckTest.requests),0,'inspecting a meter never starts the mic');
+    await dismiss();
     await open();await state('signal');
     assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).recording.microphone),true);
     assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).recording.pitch),'armed');
     const box=await dialog.boundingBox(),viewport=page.viewportSize();
     assert.ok(box.x>=0&&box.y>=0&&box.x+box.width<=viewport.width&&box.y+box.height<=viewport.height);
-    assert.equal(await frame.locator('#takeMicrophone').isEnabled(),false);
+    assert.equal(await frame.locator('#takeMicrophone').isEnabled(),true,'the input is selectable while idle with Sing armed');
     await page.screenshot({path:path.join(output,`mic-check-${label}.png`)});
     await frame.evaluate(()=>micCheckTest.streams.at(-1).gain.gain.value=.003);await state('quiet');
     await frame.evaluate(()=>micCheckTest.streams.at(-1).gain.gain.value=0);await state('silent');
@@ -63,7 +67,8 @@ async function checkMicrophone(frame, page, {output,label}) {
     await open();await state('signal');
     assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).recording.microphone), true, 'paused Sing monitors the input');
     assert.match(await frame.locator('#pitchCapture').getAttribute('data-help'), /records audio and pitch/i);
-    assert.equal(await frame.locator('#takeMicrophone').isEnabled(),false,'Sing owns input until turned off');
+    assert.equal(await frame.locator('#takeMicrophone').isEnabled(),true,'a paused singer can switch inputs without disarming first');
+    assert.equal(await frame.locator('#checkMicrophone').isEnabled(),true,'a silent armed meter still opens settings');
     await close();
     assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).recording.microphone),false);
 
@@ -75,8 +80,11 @@ async function checkMicrophone(frame, page, {output,label}) {
       /^Microphone blocked\. Allow access in browser settings, then try again\./);
     assert.equal(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth),true,'inline error stays within its grid cell');
     await page.screenshot({path:path.join(output,`mic-blocked-${label}.png`)});
+    await frame.locator('#checkMicrophone').click();
+    assert.match(await frame.locator('#micRecoveryState').textContent(),/access blocked/);
     await frame.evaluate(()=>micCheckTest.mode='signal');
-    await open();await state('signal');
+    await frame.locator('#micRecoveryRetry').click();await state('signal');
+    if(await recovery.isVisible())await dismiss();
     await close();
 
     await endInput(); // The previous disabled grant can otherwise be reused without a prompt.

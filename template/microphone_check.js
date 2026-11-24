@@ -18,6 +18,108 @@
   }
   const mediaDevicesFor = view => microphoneNavigator(view).mediaDevices;
 
+  function tabletBuiltin(devices, nav) {
+    if (!(nav && (/iPad/i.test(nav.userAgent) || nav.platform==="MacIntel" && nav.maxTouchPoints>1))) return null;
+    const matches=devices.filter(d=>d.kind==="audioinput" && d.deviceId && !["default","communications"].includes(d.deviceId)
+      && /^ipad (?:microphone|mic)$/i.test((d.label || "").trim()));
+    return matches.length===1 ? matches[0] : null;
+  }
+  // Only a previously explicit, known built-in choice can follow an ID rotation.
+  function resolveInputChoice(selected, pinned, builtin) {
+    return selected && selected===pinned && builtin ? builtin.deviceId : selected;
+  }
+  function reportedInput(label) {
+    const name=(label || "").trim();
+    return !name?"unknown":/^ipad (?:microphone|mic)$/i.test(name)?"ipad-mic":/\busb\b/i.test(name)?"usb":"other";
+  }
+
+  function inputRoute(devices, selected, track) {
+    const inputs=(devices || []).filter(d=>d.kind==="audioinput");
+    const named=id=>inputs.find(d=>d.deviceId===id && id && !["default","communications"].includes(id));
+    const raw=track?.getSettings?.().deviceId || "", label=track?.label?.trim() || "";
+    const wanted=named(physicalEndpoint(inputs,"audioinput",selected));
+    const reported=named(raw && physicalEndpoint(inputs,"audioinput",raw));
+    const matches=inputs.filter(d=>named(d.deviceId) && label && d.label?.trim()===label);
+    const byLabel=matches.length===1?matches[0]:null;
+    const explicit=!!selected && !["default","communications"].includes(selected);
+    const different=!!(reported && byLabel && reported.deviceId!==byLabel.deviceId ||
+      explicit && (byLabel && selected!==byLabel.deviceId || reported && selected!==reported.deviceId ||
+        raw && !["default","communications"].includes(raw) && raw!==selected && !byLabel));
+    const id=different?"":reported?.deviceId || byLabel?.deviceId || raw;
+    return {id,different,selected:explicit?wanted?.label?.trim() || "Selected microphone":"System default",
+      track:label,reported:reported?.label?.trim() || "",verified:!!(id && (reported || byLabel) && (!explicit || id===selected))};
+  }
+  function verifyInputRoute(devices, selected, track) {
+    const route=inputRoute(devices,selected,track);
+    if(route.different){
+      const error=new Error("The microphone route changed. Selected: "+route.selected+"; live track: "+
+        (route.track || "unidentified")+"; device reported by the browser: "+(route.reported || "different input")+
+        ". Choose the intended microphone and retry. No calibration was saved.");
+      error.name="InputRouteMismatchError";throw error;
+    }
+    return route;
+  }
+
+  // Do not set navigator.audioSession.type: on a wired iPad that can silently
+  // change the selected input and leave the duplex route buffered by ~0.8 s.
+  function wiredTabletSetup(view,devices,selected) {
+    if(!microphoneNavigator(view)?.standalone || !selected)return false;
+    const input=devices.find(d=>d.kind==="audioinput" && d.deviceId===selected);
+    const output=devices.find(d=>d.kind==="audiooutput" && d.deviceId==="default");
+    return reportedInput(input?.label)==="ipad-mic" && /\b(?:USB Audio|wired headphones)\b/i.test(output?.label || "");
+  }
+
+  function failureKind(error) {
+    if (error?.name === "MicPromptTimeout") return "pending";
+    if (error?.name === "NotAllowedError" || error?.name === "SecurityError") return "permission";
+    if (error?.name === "RawAudioUnavailableError" || error?.name === "OverconstrainedError" &&
+        processingKeys.includes(error.constraint)) return "processing";
+    if (["NotFoundError","OverconstrainedError","InputRouteMismatchError"].includes(error?.name)) return "device";
+    if (["NotReadableError","AbortError"].includes(error?.name)) return "busy";
+    if (error?.message === "No microphone samples arrived") return "frames";
+    return "error";
+  }
+
+  function inputAdvice(state, kind, reason, platform = "") {
+    const permissions = platform === "ipad-home" ? "If iPadOS asks, tap Allow. In Settings > Privacy & Security > Microphone, allow Melete if listed. Return here and retry."
+      : platform === "apple-safari" ? "In Safari, open the Page Menu > Website Settings > Microphone. Choose Ask or Allow, then retry."
+      : "Open this site's permissions in the address bar and allow the microphone. Check the operating system's microphone permission too, then retry.";
+    if (state === "error" || kind && state === "idle") {
+      if (kind === "permission") return ["Microphone access blocked",permissions];
+      if (kind === "pending") return ["Microphone request unanswered",permissions];
+      if (kind === "frames") return ["No audio frames received","Select another input or reconnect it, then retry. No take can start without audio frames."];
+      if (kind === "device") return ["Selected microphone unavailable","Reconnect it or choose an available input below, then retry."];
+      if (kind === "busy") return ["Microphone could not start","Close any other app using this input, or choose another microphone and retry."];
+      if (kind === "processing") return ["Input applies voice processing","Choose an input that supports unprocessed audio. Melete will not silently enable speech processing."];
+      return ["Input unavailable",reason || "Check the input connection and retry."];
+    }
+    if (state === "requesting") return ["Waiting for microphone access",permissions];
+    if (state === "clipping") return ["Input is clipping","The mic is receiving sound. Lower its input gain or move farther away; this is not a permission error."];
+    if (state === "muted") return ["Input muted","Unmute the microphone. If the route changed, pause and select the input you intend to use."];
+    if (state === "silent" || state === "quiet") return [state==="silent"?"No input signal":"Very quiet input","Speak into the selected mic and watch the level. With a headphone splitter, try the built-in microphone or unplug the splitter to compare."];
+    if (state === "signal") return ["Input detected","The selected microphone is delivering a signal."];
+    if (state === "listening") return ["Listening","Speak or sing briefly to check the level."];
+    return ["Microphone idle","Use Sing to enable the microphone. Opening this panel does not record."];
+  }
+
+  // A browser can leave a permission prompt unresolved indefinitely. A late grant
+  // belongs to the expired request, not to the singer's next recording attempt.
+  function requestStream(devices, constraints, timeoutMs = 20000) {
+    return new Promise((resolve,reject)=>{
+      let expired=false;
+      const timer=setTimeout(()=>{
+        expired=true;const error=new Error("Microphone request unanswered");error.name="MicPromptTimeout";reject(error);
+      },timeoutMs);
+      let attempt;
+      try {attempt=devices.getUserMedia(constraints);} catch(error){clearTimeout(timer);reject(error);return;}
+      Promise.resolve(attempt).then(stream=>{
+        clearTimeout(timer);
+        if(expired){(stream.getTracks?.() || stream.getAudioTracks()).forEach(track=>track.stop());return;}
+        resolve(stream);
+      },error=>{clearTimeout(timer);if(!expired)reject(error);});
+    });
+  }
+
   const processingKeys = ["echoCancellation", "noiseSuppression", "autoGainControl"];
   function rawAudioConstraints(deviceId = "") {
     return {audio: {...(deviceId ? {deviceId: {exact: deviceId}} : {}),
@@ -29,6 +131,11 @@
     return {version: 1, policy: "unprocessed", ...Object.fromEntries(processingKeys.map(key =>
       [key, typeof settings[key] === "boolean" || typeof settings[key] === "string" ? settings[key] : null])),
       sampleRate: settings.sampleRate ?? null, channelCount: settings.channelCount ?? null};
+  }
+  function processingReadout(profile) {
+    const labels=["Echo cancellation","Noise suppression","Auto gain"];
+    return processingKeys.map((key,i)=>labels[i]+": "+(profile[key]===false?"off":
+      profile[key]===true || typeof profile[key]==="string"?"on":"not reported")).join("; ")+".";
   }
   function verifyRawInput(stream) {
     const tracks = stream.getAudioTracks(), profile = captureProfile(tracks[0]);
@@ -73,9 +180,20 @@
   const labels = {listening: "Listening...", silent: "No signal", quiet: "Quiet input",
     signal: "Input detected", clipping: "Clipping", muted: "Input muted"};
 
+  class SilentPassWarning {
+    sample(now, recording, expected, state) {
+      if (!recording || !["silent","muted"].includes(state)) { this.elapsed=0;this.at=null;return false; }
+      if (!expected) { this.at=null;return false; }
+      // Accumulate only measured singing time, never a rest, breath or background-tab interval.
+      this.elapsed=(this.elapsed||0)+(this.at==null?0:Math.min(200,Math.max(0,now-this.at)));
+      this.at=now;
+      return this.elapsed>=2500;
+    }
+  }
+
   class Check {
-    constructor({dialog, trigger, acquire, release, choose, busy, failureMessage, refresh, inline = false, select, passive = false}) {
-      Object.assign(this, {dialog, trigger, acquire, release, choose, busy, failureMessage, refresh, inline, passive});
+    constructor({dialog, trigger, acquire, release, choose, busy, failureMessage, refresh, inline = false, select, passive = false, onLevel, inspect}) {
+      Object.assign(this, {dialog, trigger, acquire, release, choose, busy, failureMessage, refresh, inline, passive, onLevel, inspect});
       this.select = select || dialog.querySelector("select");
       this.status = dialog.querySelector("[role=status]");
       this.meter = dialog.querySelector("[role=meter]");
@@ -86,7 +204,7 @@
       this.generation = 0;
       this.active = false;
       trigger.addEventListener("click", () => {
-        if (this.passive) return;
+        if (this.passive) {this.inspect?.();return;}
         if (this.inline) {
           if (this.busy()) return;
           if (this.active) { this.close(); return; }
@@ -99,6 +217,7 @@
       this.select.addEventListener("change", () => {
         if (this.busy() || this.requesting) return;
         const selected = this.select.value;
+        if (this.passive) {this.choose(selected);return;}
         const restart = !this.passive && (!this.inline || this.active || this.dialog.dataset.state === "error");
         this.stop();
         this.choose(selected);
@@ -112,10 +231,11 @@
         this.select.value = original.value;
       }
       this.select.disabled = this.busy() || this.requesting;
-      this.select.title = this.busy() ? "Stop Sing and recording to change microphone" : "Microphone input";
+      this.select.title = this.busy() ? "Input cannot change during playback, recording, or setup" : "Microphone input";
     }
     paint(state, text = labels[state], db = -60, percent = 0) {
       this.dialog.dataset.state = state;
+      this.message = text;
       const visible = this.inline && state === "error" ? "Input unavailable"
         : this.inline && state === "requesting" ? "Connecting..." : text;
       if (this.status.textContent !== visible) this.status.textContent = visible;
@@ -124,9 +244,10 @@
       this.fill.style.transform = `scaleX(${percent / 100})`;
       this.readout.textContent = this.inline && ["idle", "error", "requesting"].includes(state) ? ""
         : db <= -60 ? "< -60 dBFS" : `${db.toFixed(0)} dBFS`;
+      this.onLevel?.(state,db);
       if (this.inline) {
         if (this.passive) {
-          this.trigger.title = [this.inputLabel, text].filter(Boolean).join("; ");
+          this.trigger.title = [this.inputLabel, text, this.inspect && "Open microphone settings"].filter(Boolean).join("; ");
           return;
         }
         const action = this.active ? "Stop microphone check" : state === "error" ? "Retry microphone check" : "Test microphone input";
@@ -177,8 +298,8 @@
         if (generation !== this.generation) { this.release(); return; }
         this.requesting = false;
         this.select.disabled = this.busy();
-        this.inputLabel = track.label || "Microphone";
-        if (this.device) this.device.textContent = this.inputLabel;
+        this.inputLabel = (track.label || "").trim();
+        if (this.device) this.device.textContent = this.inputLabel || "Microphone";
         this.source = source;
         this.analyser = context.createAnalyser();
         this.analyser.fftSize = 2048;
@@ -211,13 +332,24 @@
   }
   // Long, tapered sweeps buy processing gain without changing device volume.
   function timingChirp(rate, descending=false, phase=0) {
-    const duration=.144, data=new Float32Array(Math.round(duration*rate));
+    const duration=.192, data=new Float32Array(Math.round(duration*rate));
     const from=descending?3000:900, to=descending?900:3000;
-    for(let i=0;i<data.length;i++){const t=i/rate;data[i]=.10*Math.sin(Math.PI*i/data.length)**2*
+    for(let i=0;i<data.length;i++){const t=i/rate, ramp=Math.min(1,t/.022,(duration-t)/.022);data[i]=.10*Math.sin(Math.PI*.5*ramp)**2*
       Math.sin(phase+2*Math.PI*(from*t+.5*(to-from)/duration*t*t));}
     return data;
   }
-  function chirpReadings(samples,rate,starts,directions=[]) {
+  // Wake a newly opened duplex output at lower amplitude than the probes.
+  // This tone does not resemble a sweep and is never used to estimate latency.
+  function timingPrimer(rate){
+    const a=new Float32Array(Math.round(.18*rate));
+    for(let i=0;i<a.length;i++)a[i]=.045*Math.sin(Math.PI*i/a.length)**2*Math.sin(2*Math.PI*440*i/rate);
+    return a;
+  }
+  // Keep the latest admissible return entirely before the next probe, including its tail.
+  const maxRoundTrip=1.5;
+  const timingPlan=Object.freeze({offsets:Object.freeze([.35,2.28,4.43,6.44]),
+    directions:Object.freeze([false,true,false,true]),maxDelay:maxRoundTrip,tail:maxRoundTrip+.192+.18});
+  function chirpReadings(samples,rate,starts,directions=[],maxDelay=.55) {
     const hz=8000, input=new Float32Array(Math.floor(samples.length*hz/rate));
     let previous=0;
     for(let i=0;i<input.length;i++){
@@ -225,11 +357,11 @@
       let sum=0;for(let j=lo;j<hi;j++)sum+=samples[j]||0;
       const mean=sum/(hi-lo);input[i]=mean-previous;previous=mean;
     }
-    return starts.map((time,k)=>{
+    const readings=starts.map((time,k)=>{
       const sin=timingChirp(hz,directions[k]), cos=timingChirp(hz,directions[k],Math.PI/2);
-      const energy=sin.reduce((s,v)=>s+v*v,0), first=Math.round(time*hz);
-      const n=Math.min(Math.round(.55*hz)+1,input.length-first-sin.length+1);
-      if(first<0||n<2)return {accepted:false,reason:"capture too short"};
+      const energy=sin.reduce((s,v)=>s+v*v,0), origin=Math.round(time*hz), first=Math.max(0,origin);
+      const n=Math.min(origin+Math.round(maxDelay*hz)+1,input.length-sin.length+1)-first;
+      if(n<2)return {audible:false,accepted:false,reason:"capture too short"};
       const scores=new Float32Array(n);let power=0,best=0,second=0;
       for(let i=0;i<sin.length;i++)power+=input[first+i]**2;
       for(let j=0;j<n;j++){
@@ -241,10 +373,58 @@
       for(let j=0;j<n;j++)if(Math.abs(j-best)>hz*.012)second=Math.max(second,scores[j]);
       const floor=new Float32Array(scores).sort()[Math.floor(n/2)], peak=scores[best];
       const distinct=peak>second*1.45, audible=peak>.12 && peak>6*floor;
-      return {seconds:best/hz,peak,accepted:audible && distinct,
+      return {seconds:(first-origin+best)/hz,peak,floor,second,audible,accepted:audible && distinct,
         reason:!audible?"chirp not distinguishable from noise":!distinct?"ambiguous echo":""};
     });
+    return readings;
   }
+  // Phase-coded probes tolerate the weak, filtered leakage from a wired earcup.
+  // Each independently graded return must beat both the code noise floor and competing echoes.
+  const wiredCodes=(()=>{
+    const count=511,chip=.0015,hz=8000,width=12;
+    function pattern(key){
+      let s=(0x9e3779b9^Math.imul(key+1,0x85ebca6b))>>>0;
+      return Array.from({length:count},()=>{s^=s<<13;s^=s>>>17;s^=s<<5;return (s>>>31)?1:-1;});
+    }
+    const carrier=key=>key%2?2030:1710;
+    function signal(rate,key){
+      const bits=pattern(key),n=Math.round(rate*count*chip),wave=new Float32Array(n);
+      for(let i=0;i<n;i++){
+        const t=i/rate,x=t/chip,j=Math.min(count-1,Math.floor(x)),h=Math.min(1,(x-j)*3);
+        const v=(bits[j]-(bits[j-1]||0))*(.5-.5*Math.cos(h*Math.PI))+(bits[j-1]||0);
+        const env=Math.min(1,t/.009,(n-i)/rate/.009);
+        wave[i]=.085*env*v*Math.sin(2*Math.PI*carrier(key)*t);
+      }
+      return wave;
+    }
+    function read(pcm,rate,origin,key,range=1.55){
+      const bits=pattern(key),base=Math.round(origin*rate);
+      const n=Math.min(Math.floor((range+count*chip)*hz),Math.floor((pcm.length-base)*hz/rate));
+      if(base<0||n<=count*width)return {audible:false,accepted:false,reason:"capture too short"};
+      const re=new Float64Array(n+1),im=new Float64Array(n+1),f=2*Math.PI*carrier(key)/hz;
+      for(let i=0;i<n;i++){
+        const a=base+Math.floor(i*rate/hz),b=base+Math.floor((i+1)*rate/hz);
+        let v=0;for(let j=a;j<b;j++)v+=pcm[j]||0;v/=Math.max(1,b-a);
+        re[i+1]=re[i]+v*Math.cos(f*i);im[i+1]=im[i]+v*Math.sin(f*i);
+      }
+      const score=new Float32Array(n-count*width+1);
+      for(let lag=0;lag<score.length;lag++){
+        let a=0,b=0,p=0;
+        for(let j=0;j<count;j++){
+          const i=lag+j*width+4,x=re[i+8]-re[i],y=im[i+8]-im[i];
+          a+=bits[j]*x;b+=bits[j]*y;p+=x*x+y*y;
+        }
+        score[lag]=p>1e-15?Math.hypot(a,b)/Math.sqrt(p*count):0;
+      }
+      let best=0;for(let i=1;i<score.length;i++)if(score[i]>score[best])best=i;
+      let other=0,otherAt=0;for(let i=0;i<score.length;i++)if(Math.abs(i-best)>hz*.012&&score[i]>other){other=score[i];otherAt=i;}
+      const peak=score[best],audible=peak>5.1/Math.sqrt(count),distinct=peak>1.5*other;
+      return {seconds:best/hz,audible,accepted:audible&&distinct,peak,second:other,secondMs:otherAt/8,
+        reason:!audible?"code not distinguishable from noise":!distinct?"ambiguous echo":""};
+    }
+    return {signal,read};
+  })();
+  const wiredTimingPlan=Object.freeze({offsets:Object.freeze([.35,2.96,5.73,8.42]),maxDelay:1.5,tail:2.55});
   function measuredLatency(samples,rate,starts) {
     const peaks=chirpReadings(samples,rate,starts).filter(p=>p.accepted).map(p=>p.seconds);
     if(peaks.length<2)return null;
@@ -265,6 +445,24 @@
       return {seconds:peaks[1],spreadMs:Math.round((peaks[2]-peaks[0])*1000),residualMs,measuredAt:now};
     }
     return {seconds:peaks[1],spreadMs:Math.round((peaks[2]-peaks[0])*1000),measuredAt:now};
+  }
+  function bufferedReturns(readings){
+    const clear=readings.filter(r=>r.accepted).map(r=>r.seconds);
+    // This only triggers reacquisition. Never use two returns as a calibration.
+    return clear.length>=2 && Math.min(...clear)>.55 && Math.max(...clear)-Math.min(...clear)<=.035;
+  }
+  // A negative witness survives a reload without deleting the historical fit.
+  // If storage is unavailable the current document must still reject stale timing.
+  function timingHolds(storage){
+    const prefix="melete:unverified-route:v1:", cache=new Map();
+    return {
+      get(route){if(!route)return null;
+        if(!cache.has(route)){let v=null;try{v=storage()?.getItem(prefix+route)||null;}catch{}cache.set(route,v);}
+        return cache.get(route);},
+      set(route,token){if(!route)return;cache.set(route,token);
+        try{if(token)storage()?.setItem(prefix+route,token);else storage()?.removeItem(prefix+route);}catch{}},
+      changed(key){if(key===null)cache.clear();else if(key.startsWith(prefix))cache.delete(key.slice(prefix.length));}
+    };
   }
   // A group ID can rotate on reload. Use it only to join the default alias to
   // an unambiguous physical device in this enumeration, never as a saved ID.
@@ -316,7 +514,7 @@
       a.latency.every((v,i)=>v===b.latency[i] || Number.isFinite(v) && Number.isFinite(b.latency[i]) && Math.abs(v-b.latency[i])<=.012);
   }
   function freshCalibration(r,now=Date.now(),profile=null){
-    if(!r || !Number.isFinite(r.seconds) || r.seconds<0 || r.seconds>.55 ||
+    if(!r || !Number.isFinite(r.seconds) || r.seconds<0 || r.seconds>maxRoundTrip ||
       !Number.isFinite(r.spreadMs) || r.spreadMs<0 || r.spreadMs>12 ||
       !Number.isFinite(r.measuredAt) || now<r.measuredAt)return null;
     if(r.profile || profile)return Number.isFinite(r.residualMs) && Math.abs(r.residualMs)<=12 &&
@@ -373,7 +571,7 @@
       }
     };
   }
-  return {Level, Check, rehearsalWakeLock, mediaDevicesFor, microphoneNavigator, rawAudioConstraints,captureProfile,verifyRawInput,
-    timingChirp, measuredLatency, calibration,chirpReadings,fitChirps,timingRouteKey,timingHint,isQc35II,
+  return {Level, Check, SilentPassWarning, failureKind, inputAdvice, requestStream, tabletBuiltin, resolveInputChoice, reportedInput, inputRoute, verifyInputRoute, wiredTabletSetup, rehearsalWakeLock, mediaDevicesFor, microphoneNavigator, rawAudioConstraints,captureProfile,verifyRawInput,
+    timingChirp,timingPrimer,timingPlan,wiredCodes,wiredTimingPlan,processingReadout,measuredLatency, calibration,chirpReadings,fitChirps,bufferedReturns,timingHolds,timingRouteKey,timingHint,isQc35II,
     physicalEndpoint,timingProfile,sameProfile,freshCalibration,watchClocks,clockDivergence,passClock,sampleScoreTime,deviceEvents,deviceEvent};
 });

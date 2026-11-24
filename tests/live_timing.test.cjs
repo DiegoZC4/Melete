@@ -6,6 +6,24 @@ const path = require('node:path');
 const {Channel,candidate} = require('../template/live_pitch.js');
 const app = fs.readFileSync(path.join(__dirname,'../template/app.js'),'utf8');
 
+test('worker script URL survives asynchronous startup, and is released exactly once on every exit',()=>{
+  for(const outcome of ['message','error','close','constructor failure']){
+    const revoked=[];
+    const context=vm.createContext({Blob,URL:{createObjectURL:()=>'blob:test',revokeObjectURL:u=>revoked.push(u)},
+      Worker:class{constructor(){if(outcome==='constructor failure')throw Error('cannot start');}terminate(){}}});
+    vm.runInContext(fs.readFileSync(path.join(__dirname,'../template/live_pitch.js'),'utf8'),context);
+    const start=()=>context.MeleteLivePitch.Channel.fromSource('',()=>{},()=>{});
+    if(outcome==='constructor failure')assert.throws(start,/cannot start/);
+    else {
+      const channel=start();assert.deepEqual(revoked,[],'constructor is not a load acknowledgement');
+      if(outcome==='message')channel.worker.onmessage({data:{}});
+      if(outcome==='error')channel.worker.onerror({message:'cannot load'});
+      channel.close();
+    }
+    assert.deepEqual(revoked,['blob:test']);
+  }
+});
+
 test('pitch worker allows one job, transfers a copy, and retains capture-time metadata',()=>{
   const posts=[], results=[], worker={postMessage:(...args)=>posts.push(args),terminate(){}};
   const channel=new Channel(worker,(...args)=>results.push(args),error=>{throw error;});

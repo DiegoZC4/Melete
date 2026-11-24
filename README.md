@@ -61,6 +61,32 @@ py -3 build_trainer.py "C:\Music\My Song.mscz"
 The command prints the output path, normally
 `<score folder>/my-song-practice-web/dist/index.html`. Open **that HTML file** in
 a browser. It is the only file singers need, not the whole generated folder.
+
+**Offline iPad/Home Screen use:** For a hosted player, first run
+`python3 offline_player.py path/to/dist/index.html --output-dir hosted`.
+Serve the matching `hosted/index.html`, `hosted/release.json` and `hosted/melete-offline.js` together in
+their own HTTPS directory. A single downloadable HTML file is not by itself an
+offline installation of a web address.
+
+Open the existing Home Screen icon once while online. The app verifies its copy
+silently, including all songs and embedded score assets. For confirmation, use
+the settings help on the download control. A failed check shows **Retry offline**.
+With Wi-Fi off, you can reopen the icon, switch songs, record, score and replay
+local takes. Sign-in, uploads and fetching new cloud data still require internet.
+To check a rehearsal setup, sing a phrase through the actual input and confirm
+the take plays and has nonzero tracking after reopening. Do not delete the app or
+clear site data to update it: that can remove recordings.
+
+Opening the icon online checks the small release manifest. An already-open
+practice session is never reloaded; an offline, slow or incomplete update falls
+back to the last verified player. No background polling or Google login is needed.
+For an opt-in Windows station, `tools/local_station/Register-PlayerUpdates.ps1`
+registers the same manifest with the installed HTML updater. Supply `-Python`
+(the path to pythonw.exe), `-Player`, `-Manifest` (HTTPS), and `-User` (the
+station operator). It runs with that user's ordinary rights at logon, system
+resume and network connection, never on a timer. Remove just that subscription
+with `Unregister-ScheduledTask -TaskName 'Melete verified offline player'`.
+
 Keep your score and generated project **outside this repository**.
 
 To try a small synthetic example without MuseScore or your own score:

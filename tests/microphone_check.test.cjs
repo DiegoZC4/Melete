@@ -199,6 +199,95 @@ test('three quiet chirps recover an acoustic delay and reject silence or inconsi
   assert.equal(calibration(capture([.135,null,.135]),rate,starts),null);
   assert.equal(calibration(capture([.135,.136,.175]),rate,starts),null);
 });
+test('a wired adapter cannot borrow the selected built-in microphone identity or calibration',()=>{
+  const {inputRoute,verifyInputRoute}=require('../template/microphone_check.js');
+  const names=['iPad Microphone','USB Audio'],devices=names.map((label,i)=>({kind:'audioinput',deviceId:'in'+i,label}));
+  const track=(i,label)=>({label,getSettings:()=>({deviceId:i})});
+  for(const tr of [track('in1',names[1]),track('in1',names[0]),track('in0',names[1])]){
+    assert.throws(()=>verifyInputRoute(devices,'in0',tr),{name:'InputRouteMismatchError'});
+    assert.equal(inputRoute(devices,'in0',tr).id,'');
+  }
+  for(const tr of [track('',names[0]),track('in0',names[0])]){
+    assert.equal(verifyInputRoute(devices,'in0',tr).verified,true);
+    assert.equal(verifyInputRoute(devices,'in0',tr).id,'in0');
+  }
+  assert.equal(verifyInputRoute(devices,'',track('in1',names[1])).id,'in1');
+  assert.equal(verifyInputRoute([], '',track('','')).verified,false);
+});
+test('only the installed wired iPad uses a separate warmup; the audio session category is never forced',()=>{
+  const {wiredTabletSetup}=require('../template/microphone_check.js'), session=Object.freeze({type:'auto'});
+  const builtin='tablet', input={kind:'audioinput',deviceId:builtin,label:'iPad Microphone'};
+  const devices=[input,{kind:'audiooutput',deviceId:'default',label:'Default - USB Audio'}];
+  const view={navigator:{standalone:true,audioSession:session}};
+  assert.equal(wiredTabletSetup(view,devices,'some-other-input'),false);
+  assert.equal(wiredTabletSetup(view,devices,builtin),true);
+  view.navigator.standalone=false;assert.equal(wiredTabletSetup(view,devices,builtin),false);
+  view.navigator.standalone=true;devices[1].label='Bluetooth';assert.equal(wiredTabletSetup(view,devices,builtin),false);
+});
+test('the fourth late iPad return is captured; unrelated peaks, ambiguous echoes, and a late outlier cannot calibrate',()=>{
+  const {timingChirp,timingPlan:p,chirpReadings,fitChirps}=require('../template/microphone_check.js');
+  const rate=16000, starts=p.offsets.map(t=>t-p.offsets[0]-.015);
+  // Also exercise a mic worklet that started 15 ms after the first scheduled probe.
+  const capture=(kind,delays)=>{
+    const data=new Float32Array(Math.ceil((starts.at(-1)+p.tail)*rate));
+    for(const [i,delay] of delays.entries()){
+      if(delay===null)continue;
+      const at=Math.round((starts[i]+delay)*rate),chirp=timingChirp(rate,p.directions[i]);
+      if(kind==='click'){data[at]=.126;continue;}
+      for(let j=0;j<chirp.length;j++){data[at+j]+=chirp[j];if(kind==='echo')data[at+j+rate*.04]+=chirp[j];}
+    }
+    return data;
+  };
+  const read=(data,max=p.maxDelay)=>chirpReadings(data,rate,starts,p.directions,max);
+  for(const dt of [.082,.866,1.49]){
+    const pcm=capture('direct',[dt,dt+.001,dt,dt+.001]), r=read(pcm), fit=fitChirps(r);
+    assert.ok(r.every(v=>v.accepted&&v.audible)&&Math.abs(fit.seconds-dt)<.002);
+    assert.ok(Math.abs(fit.residualMs)<=2);
+    if(dt>.55)assert.equal(fitChirps(read(pcm,.55)),null);
+  }
+  const echo=read(capture('echo',Array(4).fill(.866)));
+  assert.ok(echo.every(x=>x.audible&&!x.accepted));assert.equal(fitChirps(echo),null);
+  assert.equal(fitChirps(read(capture('direct',[.866,.866,.866,.92]))),null);
+  assert.equal(fitChirps(read(capture('direct',[.866,.866,.866,null]))),null);
+  assert.ok(read(capture('click',Array(4).fill(.866))).every(x=>!x.audible));
+});
+test('wired codes independently identify four weak returns without favoring an 82 ms lag',()=>{
+  const {wiredCodes:code,wiredTimingPlan:p,fitChirps}=require('../template/microphone_check.js');
+  const rate=16000, test=(delay,{echo=false,missing=-1,swapped=false}={})=>{
+    let random=9242;
+    const pcm=Float32Array.from({length:Math.ceil((p.offsets.at(-1)+p.tail)*rate)},(_,i)=>{
+      random=(Math.imul(random,1664525)+1013904223)>>>0;
+      return .00008*(random/2**32-.5)+.00009*Math.sin(i*2*Math.PI*327/rate);
+    });
+    for(let i=0;i<4;i++){
+      const a=code.signal(rate,swapped?(i+1)%4:i);
+      assert.ok(a.every(x=>Math.abs(x)<=.086));
+      if(i===missing)continue;
+      const d=Math.round((p.offsets[i]+delay[i])*rate);
+      for(let j=0;j<a.length;j++){
+        const x=(a[j]+(a[j-1]||0))*.0007;pcm[d+j]+=x;
+        if(echo)pcm[d+Math.round(rate*.067)+j]+=x;
+      }
+    }
+    return p.offsets.map((t,i)=>code.read(pcm,rate,t,i,p.maxDelay));
+  };
+  for(const dt of [.081,.313,.822,1.485]){
+    const rows=test([dt,dt+.002,dt,dt-.002]);
+    assert.ok(rows.every(r=>r.accepted));assert.ok(Math.abs(fitChirps(rows).seconds-dt)<.002);
+  }
+  for(const opt of [{echo:true},{missing:3},{swapped:true}])assert.equal(fitChirps(test(Array(4).fill(.82),opt)),null);
+  assert.equal(fitChirps(test([.082,.08,.082,.132])),null);
+  assert.equal(code.read(new Float32Array(8),rate,0,1).accepted,false);
+});
+test('consistent slow physical returns justify one fresh route, not a two-chirp calibration',()=>{
+  const {bufferedReturns,fitChirps}=require('../template/microphone_check.js');
+  const rows=(...ms)=>ms.map(n=>({accepted:n!==null,seconds:(n||0)/1000}));
+  assert.ok(bufferedReturns(rows(816,804,null,805)));
+  assert.ok(bufferedReturns(rows(null,null,781,770)));
+  for(const ms of [[null,null,null,766],[77,76,null,null],[80,804,null,805],[610,910,null,null]])
+    assert.equal(bufferedReturns(rows(...ms)),false);
+  assert.equal(fitChirps(rows(null,null,781,770)),null);
+});
 test('a delayed transport callback cannot shift the recorded audio or the detector frame',()=>{
   const {passClock,sampleScoreTime}=require('../template/microphone_check.js');
   for(const speed of [.75,1,1.25])for(const delay of [0,.027,.180]){

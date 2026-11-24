@@ -1138,6 +1138,7 @@
         restored: async () => { signature = ""; await adapter.reload(); await refresh(); }});
     }
     function standalone(take) {
+      if(root.MeleteTakePitch.ungraded(take.pitchReference))return !take.active && take.frames>0;
       return ready && !take.active && take.frames > 0 && !used.has(take.id) && !garbage.has(take.id)
         && !compVoices.has(singerVoice(stations.sourceSinger(take),take.pitchReference));
     }

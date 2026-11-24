@@ -1,3 +1,91 @@
+# Practice across tabs (2026-11-23)
+
+- The Home Screen app checks a small release manifest on navigation. A verified
+  new document can open on the first visit; slow or broken releases leave the
+  cached copy usable. Windows stations can subscribe to the same manifest on
+  login, wake and network reconnect without a polling process or new listener.
+
+- Healthy offline storage never adds a playbar label. A verified new player
+  is available on the next navigation without closing other tabs, interrupting
+  a take or clearing site data. A broken download leaves the last good copy.
+- Live and saved intonation contours blend from green through gold to red in
+  OKLab, between 10 and 50 cents of error. The visual change does not rescore
+  takes. These colors and offline behavior do not depend on a Google account.
+- An armed, previously permitted microphone yields on tab switch and returns
+  when Melete is visible again. An interrupted take is saved; coming back
+  does not start playback or another recording. An unavailable chosen input
+  is not silently swapped for a different device.
+
+# Microphone recovery (2026-11-23)
+
+- The wired iPad Home Screen stopwatch verifies the live microphone and leaves
+  the system's audio-session category alone. It uses four individually coded
+  sounds and checks the full 0-1500 ms range. A consistent long delay triggers
+  one route reopen; a confirmed long result affects this session only. A
+  weak or ambiguous fourth return is not a new calibration. Ordinary Safari,
+  Bluetooth and other recording routes do not use the new coded sounds.
+- If the wired iPad returns clear evidence of a large delay and the retry
+  cannot verify timing, the previous short correction is no longer trusted.
+  Sing still saves the original audio as a separate, ungraded take. It does
+  not overwrite a comp or penalize the singer. A fresh verified measurement
+  enables grading for new takes; it does not retroactively grade that take.
+
+- The meter shows the actual open input, distinguishes unreported processing
+  from processing confirmed off, and can restore an explicitly chosen iPad
+  mic without changing the headphone output. A silent USB input is not
+  automatically assumed to be a headphone accessory.
+- The browser stopwatch warms the duplex route before sampling its two
+  clocks. Four longer sweeps stay at the same peak volume; only three
+  consistent returns and an independent fourth check can save a correction.
+
+- Tap the input meter or the missing-signal warning to see the actual input
+  state. A denied or unanswered prompt, an unavailable device, a flat input
+  and clipping each have different guidance. Opening the panel does not
+  request permission, start recording or stop a take.
+- While paused, choose a replacement input and retry from the panel. During
+  a take it is read-only. Unanswered requests time out and release late
+  grants. The local audio diagnostic log now retains request and error types.
+
+# Offline rehearsal (local, 2026-11-22)
+
+- Prepare the existing Home Screen app once online. The full player is
+  verified silently; check the download control's settings help for its status.
+  A failed check shows **Retry offline** in Tools. An interrupted update
+  does not replace the last good copy or clear recordings.
+- A flat microphone during expected singing now raises a warning outside the
+  settings panel. Rests do not count and recording continues when input returns.
+- On a fresh collection launch, a remembered Sing setting says **Mic on Play**
+  until the microphone actually opens. No new permission is requested merely
+  by opening the app.
+
+# Cross-browser recording (local, 2026-11-22)
+
+- Fixed a WebKit startup race that could turn Sing off with “Pitch tracking
+  unavailable.” The pitch worker now keeps its script until the browser has
+  read it; failures and cancellation release it too.
+- Added a Firefox, Chromium and WebKit recording gate for both songs in a
+  freshly built collection. A take must have audible samples and tracked pitch,
+  survive a reload, play with the MIDI muted, and download as a WAV.
+
+# Repeated lyric attacks (local, 2026-11-22)
+
+- Score and Pitchbar now keep each separately written word, even if the pitch
+  and text repeat. Compact lyrics still abbreviate runs of backing syllables
+  such as `mm`, `oo` and `dm`. Old display markers are recomputed on rebuild.
+- This restores both bass parts' second "down" in The Seed m19 and B1's
+  second "hold" in m20. Ties, audio, printed scores, and personal lyric masks
+  are unchanged.
+
+# Installed iPad playbar (local, 2026-11-22)
+
+- The sticky player header is opaque. Only the installed iPad player reserves
+  32 additional points above its controls for the native status-bar blur.
+  Regular Safari, phones, desktop, and true fullscreen keep their normal spacing.
+- On a physical iPad the original screenshot showed the blur over Play and Seek
+  but the web-only capture did not. In the on-device preview, the seek center
+  moved from 23 to 55 points below the web viewport. This does not hide or
+  change the system microphone indicator.
+
 # Tablet settings and choir player (2026-11-22)
 
 - Touch devices use the available viewport, not a phone-width settings strip.

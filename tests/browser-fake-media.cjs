@@ -37,6 +37,14 @@ async function stabilizeFakeMedia(surface, {virtualOutput = false} = {}) {
     if (!virtualOutput) return;
     // The acoustic cable goes straight into a MediaStream, not an OS speaker.
     const outputs = new WeakMap();
+    const hardwareLatency=Object.getOwnPropertyDescriptor(AudioContext.prototype,'outputLatency')?.get;
+    if(hardwareLatency)Object.defineProperty(AudioContext.prototype,'outputLatency',{
+      configurable:true,get(){
+        // The sample-timed cable models its own delay. Chromium's physical
+        // sink can report 0 then 14 ms on wake even though it isn't in this path.
+        return outputs.get(this)?.startsWith('cable-output-')?0:hardwareLatency.call(this);
+      }
+    });
     Object.defineProperty(AudioContext.prototype, 'sinkId', {configurable:true,
       get() {return outputs.get(this)||'';}});
     AudioContext.prototype.setSinkId = async function(id) {

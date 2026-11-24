@@ -172,6 +172,7 @@
     save.setAttribute("aria-label", save.title);
     save.addEventListener("click", saveCollection);
     download.replaceWith(save);
+    window.MeleteOfflinePlayer?.mount(child);
     paint(player);
   }
   function deactivate() {
@@ -351,6 +352,7 @@
       const exportedSongs = [];
       for (const [index, song] of songs.entries()) exportedSongs.push({...song, portableState: await songState(index)});
       const outputDocument = new DOMParser().parseFromString(source, "text/html");
+      outputDocument.getElementById("melete-offline-install")?.remove();
       outputDocument.getElementById("melete-collection-data").textContent = scriptJson({...bundle, songs: exportedSongs});
       const blob = new Blob(["<!doctype html>\n" + outputDocument.documentElement.outerHTML], {type: "text/html;charset=utf-8"});
       if (handle) {

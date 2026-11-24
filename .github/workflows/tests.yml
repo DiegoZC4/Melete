@@ -51,3 +51,30 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
+
+  recording-compatibility:
+    if: github.event_name != 'workflow_dispatch' || inputs.browser_suite == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [firefox, webkit, chromium]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+      - run: npm run test:compat -- ${{ matrix.engine }}
+      - run: npm run test:offline -- ${{ matrix.engine }}
+      - run: node tests/browser-display-identity.cjs
+        env:
+          QA_DISPLAY_BROWSER: ${{ matrix.engine }}
+      - if: matrix.engine == 'chromium'
+        run: node tests/browser-tab-handoff.cjs
