@@ -31,7 +31,7 @@ async function freshCopy() {
   const ctl=new AbortController();
   let timer=setTimeout(()=>ctl.abort(),900);
   try {
-    const response=await fetch(new URL("release.json",scope),{cache:"no-store",credentials:"omit",redirect:"error",signal:ctl.signal});
+    const response=await fetch(new URL("release.json",scope),{cache:"no-store",credentials:"same-origin",redirect:"error",signal:ctl.signal});
     if (!response.ok) return;
     const info=await response.json();
     if (info?.schema!==1 || info.kind!=="melete-player" || info.player!=="index.html" ||

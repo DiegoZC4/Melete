@@ -54,7 +54,8 @@ jobs:
 
   recording-compatibility:
     if: github.event_name != 'workflow_dispatch' || inputs.browser_suite == 'full'
-    runs-on: ubuntu-latest
+    # Test Safari's media stack on macOS, not the Linux GStreamer WebKit port.
+    runs-on: ${{ matrix.engine == 'webkit' && 'macos-latest' || 'ubuntu-latest' }}
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -71,10 +72,22 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps ${{ matrix.engine }}
+      - name: Start a virtual sound card for Firefox capture and playback
+        if: matrix.engine == 'firefox'
+        run: |
+          sudo apt-get install -y pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=melete_ci
+          pactl set-default-sink melete_ci
+          pactl set-default-source melete_ci.monitor
       - run: npm run test:compat -- ${{ matrix.engine }}
       - run: npm run test:offline -- ${{ matrix.engine }}
       - run: node tests/browser-display-identity.cjs
         env:
           QA_DISPLAY_BROWSER: ${{ matrix.engine }}
-      - if: matrix.engine == 'chromium'
+      # Use macOS for the real, unmanaged Chrome focus test, like the rehearsal
+      # browser. The Linux Chromium job still exercises recording and offline updates.
+      - if: matrix.engine == 'webkit'
+        run: npx playwright install chromium
+      - if: matrix.engine == 'webkit'
         run: node tests/browser-tab-handoff.cjs

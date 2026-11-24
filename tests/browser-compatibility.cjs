@@ -179,7 +179,9 @@ async function checkInputErrors(frame,start,tablet) {
     assert.equal(await sing.getAttribute('data-state'),'recording','recovery must not interrupt the pass');
     await frame.locator('#playPause').click();await section(frame,'practice');
   } finally {
-    if(await sing.getAttribute('aria-pressed')==='true')await sing.click();
+    const dialog=frame.locator('#micRecoveryDialog');
+    if(await dialog.isVisible())await dialog.getByRole('button',{name:'Close microphone settings'}).click();
+    if(await sing.getAttribute('aria-pressed')==='true'){await section(frame,'practice');await sing.click();}
     await frame.evaluate(async()=>{qaBadInput.restore();await Promise.all(qaBadInput.contexts.map(c=>c.close()));delete window.qaBadInput;});
   }
 }
