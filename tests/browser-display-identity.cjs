@@ -33,15 +33,20 @@ async function check(browser,url,song,user){
       if(!window.displayQA?.libraryReady()||!window.displayQA.descriptor())return false;
       const a=window.displayQA,ref=a.descriptor().reference;
       const [from,end,[pitch]]=ref.notes.find(([s,e])=>e-s>.6);
-      const frames=Array.from({length:35},(_,i)=>({start:from+.05+i*.014,end:from+.05+(i+1)*.014,
-        cents:pitch*100+[0,20,30,40,60][Math.floor(i/7)]}));
+      const errors=[10,30,50,75,99,100];
+      const frames=Array.from({length:6*errors.length},(_,i)=>({start:from+.05+i*.014,end:from+.05+(i+1)*.014,
+        cents:pitch*100+errors[Math.floor(i/6)]}));
       a.patchReview({id:'identity-fixture',track:ref.part,ref,frames,start:0,end:ref.seconds,rate:1,
         ranges:[[from,end]],seams:[],label:'Synthetic contour'},true);
       const edges=[...document.querySelectorAll('#barScore .take-pitch-trace-edge[data-take-id="identity-fixture"]')];
-      return edges.length?[...new Set(edges.map(window.qaStrokePixel))].sort():false;
+      return edges.length?[...new Set(edges.map(window.qaStrokePixel))]:false;
     },null,{polling:100,timeout:15000});
     const palette=await pixels.jsonValue();await pixels.dispose();
-    assert.deepEqual(palette,['rgb(0, 255, 0)','rgb(160, 213, 0)','rgb(208, 168, 0)','rgb(237, 115, 0)','rgb(255, 0, 0)']);
+    assert.deepEqual(palette.slice(0,4),['rgb(0, 255, 0)','rgb(160, 213, 0)','rgb(208, 168, 0)','rgb(237, 115, 0)']);
+    assert.equal(palette.length,6,'the last cent below red must remain distinct in a saved take');
+    const nearRed=palette[4].match(/^rgb\((\d+), (\d+), 0\)$/);
+    assert.ok(nearRed && +nearRed[1]>=250 && +nearRed[2]>0 && +nearRed[2]<32,'99 cents is nearly but not fully red: '+palette[4]);
+    assert.equal(palette[5],'rgb(255, 0, 0)','100 cents is solid red');
     return palette;
   }finally{await ctx.close();}
 }

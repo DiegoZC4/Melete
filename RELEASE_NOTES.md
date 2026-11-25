@@ -1,3 +1,10 @@
+# Choir contour colors (2026-11-25)
+
+- Live and saved pitch contours stay green through 10 cents, reach amber at
+  50 cents, and reach solid red at one semitone (100 cents). Both use the same
+  OKLab ramp in either direction. The within-50-cents percentage, mean and
+  median still use the original measurements; no rescoring is needed.
+
 # Practice across tabs (2026-11-23)
 
 - The Home Screen app checks a small release manifest on navigation. A verified

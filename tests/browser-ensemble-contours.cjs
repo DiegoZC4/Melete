@@ -24,7 +24,7 @@ async function checkEnsembleContours(page, frame, {output, label}) {
       const frames = Array.from({length:Math.ceil(length/80)},(_,i) => {
         const start = i/100, end = Math.min((i+1)/100,length/sampleRate);
         const note = ref.notes.find(n => n[0] <= start && n[1] > start);
-        return {start,end,cents:note ? note[2][0]*100+(index===1?100:index===0&&i%100>=50?30:5) : null};
+        return {start,end,cents:note ? note[2][0]*100+(index===1?100:index===0&&i%100>=50?50:5) : null};
       });
       await q.takeStore.pitchScore(id,length,ref,MeleteTakePitch.scoreFrames(frames,ref,ref.seconds),MeleteTakePitch.packContour(frames,take));
       await q.reloadTakes(); await q.refreshComp();
@@ -55,7 +55,7 @@ async function checkEnsembleContours(page, frame, {output, label}) {
   }),tracks);
   assert.ok(grades[0].colors.includes('rgb(0 255 0)'),JSON.stringify(grades));
   const middle=frame.locator('#barScore .take-pitch-trace-edge[stroke="color-mix(in oklab, lime, red 50%)"]').first();
-  assert.equal(await middle.evaluate(strokePixel),'rgb(208, 168, 0)','saved 30-cent section has the OKLab midpoint');
+  assert.equal(await middle.evaluate(strokePixel),'rgb(208, 168, 0)','saved 50-cent section has the OKLab midpoint');
   assert.ok(grades[1].colors.includes('rgb(255 0 0)'),JSON.stringify(grades));
   assert.ok(!grades[1].colors.includes('rgb(0 255 0)'), 'a wrong note is not accepted from a different visible part');
   await hear(tracks[0].id).click();

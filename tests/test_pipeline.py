@@ -446,8 +446,6 @@ const partDivisi = [];
 const divisiSpanAt = () => null;
 const divisiLineFor = () => 0;
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
-const PITCH_TRACE_GREEN_TOLERANCE_CENTS = 10;
-const PITCH_TRACE_RED_CENTS = 50;
 const window = {{MeleteTakePitch: require({json.dumps(str(ROOT / 'template' / 'take_pitch.js'))})}};
 {helpers}
 console.log(JSON.stringify({{
@@ -480,8 +478,8 @@ console.log(JSON.stringify({{
             [
                 "rgb(0 255 0)",
                 "rgb(0 255 0)",
+                "color-mix(in oklab, lime, red 25%)",
                 "color-mix(in oklab, lime, red 50%)",
-                "rgb(255 0 0)",
                 "rgb(255 0 0)",
             ],
         )

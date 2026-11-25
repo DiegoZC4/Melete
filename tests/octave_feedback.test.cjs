@@ -15,15 +15,17 @@ test('live and review colors agree on octave equivalents without forgiving anoth
   const c = vm.createContext({window: {MeleteTakePitch: pitch}, practicePartIndex: 0, practiceDivisi:[null],
     pitchRestState: () => 'sing',
     liveTraceVisible: () => false,
-    expectedPitchAt: () => [[0, 0, 1, 69]], clamp: (v, a, b) => Math.max(a, Math.min(b, v)),
-    PITCH_TRACE_GREEN_TOLERANCE_CENTS: 10, PITCH_TRACE_RED_CENTS: 50});
+    expectedPitchAt: () => [[0, 0, 1, 69]], clamp: (v, a, b) => Math.max(a, Math.min(b, v))});
   for (const fn of ['expectedPitchErrorCents', 'pitchTraceColor']) vm.runInContext(source(fn), c);
   for (const octave of [-2, -1, 0, 1, 2]) {
     assert.equal(c.expectedPitchErrorCents(0, 6900 + octave * 1200), 0);
-    assert.equal(c.pitchTraceColor(octave * 1200), 'rgb(0 255 0)');
-    assert.equal(c.pitchTraceColor(octave * 1200 + 50), 'rgb(255 0 0)');
-    for (const sign of [-1, 1]) for (const [cents, percent] of [[20,25],[30,50],[40,75]]) {
-      assert.equal(c.pitchTraceColor(octave*1200+sign*cents), `color-mix(in oklab, lime, red ${percent}%)`);
+    for (const sign of [-1, 1]) {
+      const color = cents => c.pitchTraceColor(octave * 1200 + sign * cents);
+      for (const cents of [0, 10]) assert.equal(color(cents), 'rgb(0 255 0)');
+      for (const [cents, percent] of [[10.1,1],[30,25],[50,50],[55,55],[75,75],[95,95],[99.9,99]]) {
+        assert.equal(color(cents), `color-mix(in oklab, lime, red ${percent}%)`);
+      }
+      for (const cents of [100, 101, 600]) assert.equal(color(cents), 'rgb(255 0 0)');
     }
   }
   c.expectedPitchAt = () => [[0, 0, 1, 69], [0, 0, 1, 65]];

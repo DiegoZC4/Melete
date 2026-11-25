@@ -352,7 +352,8 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     assert.equal(await frame.locator('#compRows .comp-review[aria-pressed="true"]').count(),1);
     const finalPhrase=await checkFinalPhrase(frame,page,probe,output,label);
     const octaves=[];
-    for(const offset of [-12,12,-11,12.3]) {
+    for(const [offset,expected] of [[-12,'rgb(0, 255, 0)'],[12,'rgb(0, 255, 0)'],
+      [-11,'rgb(255, 0, 0)'],[12.3,'rgb(160, 213, 0)'],[12.5,'rgb(208, 168, 0)']]) {
       await frame.evaluate(({probe,offset})=>window[probe].pitchResolution.seedOctave(offset),{probe,offset});
       await frame.waitForFunction(probe=>!window[probe].busy&&window[probe].pitchResolution.octaveSnapshot()?.edges.length,probe);
       const view=await frame.evaluate(probe=>window[probe].pitchResolution.octaveSnapshot(),probe);
@@ -360,7 +361,6 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
       assert.ok(view.min<=view.pitch+offset&&view.max>=view.pitch+offset,'pitchbar expands enough to display the actual register');
       assert.ok(view.edges.every(e=>Math.abs(e.y-view.actualY)<.01),'trace is drawn at actual pitch, not on the target octave');
       assert.ok(Math.abs(view.actualY-view.targetY)>30,'the sung octave remains visibly distinct');
-      const expected=offset===-11?'rgb(255, 0, 0)':offset===12.3?'rgb(208, 168, 0)':'rgb(0, 255, 0)';
       assert.ok(view.edges.every(e=>e.paint===expected),'actual live SVG paint for '+offset);
       octaves.push(view);
       if(output)await page.screenshot({path:path.join(output,`octave-${label}-${offset}.png`)});

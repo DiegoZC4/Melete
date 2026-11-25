@@ -60,8 +60,6 @@
   const PITCH_TRACE_STORAGE_VERSION = 3;
   const PITCH_TRACE_BINS_PER_QUARTER = 64;
   const PITCH_TRACE_SAVE_DELAY_MS = 850;
-  const PITCH_TRACE_GREEN_TOLERANCE_CENTS = 10;
-  const PITCH_TRACE_RED_CENTS = 50;
   const STAFF_TRACE_CENTS_PER_STEP = 50;
   const LYRIC_FONT_SIZE = 14;
   const PORTABLE_STATE_VERSION = 1;
@@ -7379,15 +7377,15 @@
   function pitchTraceColor(errorCents) {
     if (errorCents === "preparation") return "var(--muted)";
     if (!Number.isFinite(errorCents)) return "rgb(255 0 0)";
-    const distance = clamp(
-      (Math.abs(window.MeleteTakePitch.octaveError(errorCents)) - PITCH_TRACE_GREEN_TOLERANCE_CENTS) /
-        (PITCH_TRACE_RED_CENTS - PITCH_TRACE_GREEN_TOLERANCE_CENTS),
-      0,
-      1,
-    );
-    if (distance === 0) return "rgb(0 255 0)";
-    if (distance === 1) return "rgb(255 0 0)";
-    return `color-mix(in oklab, lime, red ${+(distance * 100).toFixed(2)}%)`;
+    const cents = Math.abs(window.MeleteTakePitch.octaveError(errorCents));
+    const green = 10, amber = 50, red = 100;
+    if (cents <= green) return "rgb(0 255 0)";
+    if (cents >= red) return "rgb(255 0 0)";
+    const percent = cents <= amber
+      ? 50 * (cents - green) / (amber - green)
+      : 50 + 50 * (cents - amber) / (red - amber);
+    // Saved traces group edges by color. Bound the palette without rounding a near miss to an endpoint.
+    return `color-mix(in oklab, lime, red ${clamp(Math.round(percent), 1, 99)}%)`;
   }
 
   function pitchTraceBinTicks() {
@@ -10308,9 +10306,7 @@
       return system.pointAtPitch ? system.pointAtPitch(tick, cents, line, review.track)
         : {x: system.xAtTick(tick), y: system.yAtPitch(cents / 100), track: review.track,
           error: tick < 0 ? "preparation" : expectedPitchErrorCents(tick, frame.cents, line, review.track)};
-    // Bound paint nodes by a small color palette, not detector sample count.
-    // Coordinates and grades retain their original precision.
-    }, error => grey ? "var(--muted)" : pitchTraceColor(Number.isFinite(error) ? Math.round(Math.abs(error) / 2) * 2 : error), {rate: review.rate});
+    }, error => grey ? "var(--muted)" : pitchTraceColor(error), {rate: review.rate});
     if (!paths.edges) return;
     const ensemble = !system.pointAtPitch && visibleChannels.size > 1;
     const label = `${trackLabel(review.track, review.ref.line ?? null)}: ${review.label || "Recording"}`;
