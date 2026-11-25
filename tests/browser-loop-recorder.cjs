@@ -1,4 +1,4 @@
-const {toggleRecording, startRecording, stopRecording} = require('./browser-sing.cjs');
+const {toggleRecording, startRecording, stopRecording, enableSing} = require('./browser-sing.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -91,7 +91,7 @@ const recordingProbe = `
     takes: allTakes().sort((a, b) => a.createdAt - b.createdAt || (a.number || 0) - (b.number || 0))
       .map(take=>({...take, ...(take.gap ? {captureGaps:window.__captureGapHistory} : {})})),
     bytes: takeJournal?.buffer.takes.reduce((n, take) => n + take.pcm.byteLength, 0) || 0,
-    microphone: pitchCaptureStream?.getAudioTracks()[0]?.enabled || false,
+    microphone: pitchCaptureStream?.getAudioTracks()[0]?.enabled || false, microphonePending: !!microphoneRequest,
     gaps: window.__captureGapHistory, pitch: pitchCaptureState}; },
 `;
 
@@ -480,27 +480,29 @@ async function checkLoopRecorder(page, origin, settled, {mobile, output, tempora
     window.realGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('Test denial', 'NotAllowedError'); };
   });
-  await toggleRecording(page);
-  await page.waitForFunction(() => __qa.recording.state === 'off'
+  // Sing requests input while paused. Let that denial finish before retrying
+  // with Play; a combined Sing+Play helper can leave a second request in flight.
+  await enableSing(page);
+  await page.waitForFunction(() => !__qa.recording.microphonePending && __qa.recording.state === 'off'
     && __qa.recording.notice === 'Microphone blocked. Allow access in browser settings, then try again.');
   assert.equal(await page.evaluate(() => __qa.engine.playing), false);
+  const cancel = page.locator('#pitchCapture');
+  assert.equal(await cancel.getAttribute('aria-pressed'), 'true', 'a permission denial preserves the Sing preference');
   await page.evaluate(() => {
     navigator.mediaDevices.getUserMedia = constraints => new Promise(resolve => {
       window.grantLateMicrophone = async () => resolve(await realGetUserMedia(constraints));
     });
   });
-  await toggleRecording(page);
-  await page.waitForFunction(() => Boolean(window.grantLateMicrophone));
-  // Capture may still be preparing while the browser permission prompt is up.
-  // Cancel via Sing itself, not the helper which infers a transport action.
-  const cancel=page.locator('#pitchCapture');
+  await page.locator('#playPause').click();
+  await page.waitForFunction(() => !!window.grantLateMicrophone && __qa.recording.state === 'requesting');
   assert.equal(await cancel.getAttribute('aria-busy'),'true',JSON.stringify(await page.evaluate(()=>({
     state:__qa.recording.state, pitch:__qa.recording.pitch, notice:__qa.recording.notice,
     sing:document.getElementById('pitchCapture').outerHTML,playing:__qa.engine.playing}))));
   if(await page.locator('#settingsToggle').getAttribute('aria-expanded')!=='true')await page.locator('#settingsToggle').click();
   await cancel.click();
+  assert.equal(await cancel.getAttribute('aria-pressed'), 'false', 'Sing can cancel the pending retry');
   await page.evaluate(() => grantLateMicrophone());
-  await page.waitForFunction(() => __qa.recording.state === 'off');
+  await page.waitForFunction(() => !__qa.recording.microphonePending && __qa.recording.state === 'off');
   assert.equal((await page.evaluate(() => __qa.recording)).microphone, false, 'late permission cannot restart a canceled take');
   assert.equal((await page.evaluate(() => __qa.recording)).takes.length, 0);
   await page.evaluate(() => { navigator.mediaDevices.getUserMedia = realGetUserMedia; });
