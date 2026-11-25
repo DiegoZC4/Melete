@@ -1,5 +1,12 @@
 # Choir contour colors (2026-11-25)
 
+- A contour edge is no longer a solid chip sampled from its
+  last frame. A flat-to-sharp glide across one target passes through green;
+  a written-note change switches the observed grades at the boundary. The
+  brighter ramp passes through chartreuse (#a4ea00, 25 cents), gold (#f8bb00,
+  50 cents) and orange (#ff7829, 77 cents) on either side of the note.
+  The regression rasterizes a real 2.6px selected-take stroke. The example
+  uses synthetic frames, not anyone's recording.
 - Live and saved pitch contours stay green through 10 cents, reach amber at
   50 cents, and reach solid red at one semitone (100 cents). Both use the same
   OKLab ramp in either direction. The within-50-cents percentage, mean and

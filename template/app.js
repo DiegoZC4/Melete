@@ -7375,17 +7375,7 @@
   }
 
   function pitchTraceColor(errorCents) {
-    if (errorCents === "preparation") return "var(--muted)";
-    if (!Number.isFinite(errorCents)) return "rgb(255 0 0)";
-    const cents = Math.abs(window.MeleteTakePitch.octaveError(errorCents));
-    const green = 10, amber = 50, red = 100;
-    if (cents <= green) return "rgb(0 255 0)";
-    if (cents >= red) return "rgb(255 0 0)";
-    const percent = cents <= amber
-      ? 50 * (cents - green) / (amber - green)
-      : 50 + 50 * (cents - amber) / (red - amber);
-    // Saved traces group edges by color. Bound the palette without rounding a near miss to an endpoint.
-    return `color-mix(in oklab, lime, red ${clamp(Math.round(percent), 1, 99)}%)`;
+    return window.MeleteTakeRender.color(errorCents);
   }
 
   function pitchTraceBinTicks() {
@@ -7664,19 +7654,20 @@
     const fromSeconds = engine.secondsAtTick(fromTick);
     const toSeconds = engine.secondsAtTick(toTick);
     if (!window.MeleteTakeRender.connects(fromSeconds, fromCents, toSeconds, toCents)) return;
-    let x1, y1, x2, y2, error;
+    const errorAt = (t,c) => t < 0 ? "preparation" : expectedPitchErrorCents(t,c,line);
+    let a,b;
     if (system.pointAtPitch) {
-      const a = system.pointAtPitch(fromTick, fromCents, line), b = system.pointAtPitch(toTick, toCents, line);
+      a = system.pointAtPitch(fromTick, fromCents, line); b = system.pointAtPitch(toTick, toCents, line);
       if (!a || !b || a.track !== b.track) return;
-      ({x:x1, y:y1} = a); ({x:x2, y:y2, error} = b);
     } else {
       const startPitch = fromCents / 100, endPitch = toCents / 100;
       if (Math.min(startPitch, endPitch) < system.minPitch || Math.max(startPitch, endPitch) > system.maxPitch) return;
-      x1 = system.xAtTick(fromTick); y1 = system.yAtPitch(startPitch);
-      x2 = system.xAtTick(toTick); y2 = system.yAtPitch(endPitch);
-      error = expectedPitchErrorCents(toTick, toCents, line);
+      a = {x:system.xAtTick(fromTick),y:system.yAtPitch(startPitch),error:errorAt(fromTick,fromCents)};
+      b = {x:system.xAtTick(toTick),y:system.yAtPitch(endPitch),error:errorAt(toTick,toCents)};
     }
-    const traceColor = toTick < 0 ? "var(--muted)" : pitchTraceColor(error);
+    Object.assign(a,{tick:fromTick,cents:fromCents}); Object.assign(b,{tick:toTick,cents:toCents});
+    if (fromTick < 0) a.error = "preparation";
+    if (toTick < 0) b.error = "preparation";
     const edge = createSvgElement("g", {
       class: "bar-pitch-trace-edge",
       "data-line": line,
@@ -7684,7 +7675,10 @@
       "data-to-bin": toBin,
       "aria-hidden": "true",
     });
-    edge.append(createSvgElement("line", { class: "bar-pitch-trace", x1, y1, x2, y2, stroke: traceColor }));
+    const stops = window.MeleteTakeRender.edgeStops(a,b,pitchTraceColor,errorAt);
+    const steep = b.x <= a.x || Math.abs(b.y-a.y)>b.x-a.x;
+    const stroke = window.MeleteTakeRender.svgPaint(edge,createSvgElement,a.x,steep?a.y:0,b.x,steep?b.y:0,stops);
+    edge.append(createSvgElement("line", { class: "bar-pitch-trace", x1:a.x, y1:a.y, x2:b.x, y2:b.y, stroke }));
     system.traceLayer.append(edge);
     system.traceEdges.set(key, edge);
     [fromBin, toBin].forEach((bin) => {
@@ -10291,6 +10285,8 @@
 
   function renderTakeTrace(system, review = takeReview, grey = false) {
     if (!review) return;
+    const line = review.ref.line ?? null;
+    const errorAt = (tick,cents) => tick < 0 ? "preparation" : expectedPitchErrorCents(tick,cents,line,review.track);
     const [from, to] = window.MeleteTakeRender.frameRange(review.frames,
       (engine.secondsAtTick(system.startTick) - review.start) / review.rate,
       (engine.secondsAtTick(system.endTick) - review.start) / review.rate);
@@ -10299,14 +10295,13 @@
       if (pendingCaptureTrace && review.id === `comp:${pendingCaptureTrace.key}`
         && seconds >= pendingCaptureTrace.from && seconds <= (pendingCaptureTrace.to ?? engine.currentSeconds())) return null;
       const tick = engine.tickAtSeconds(seconds);
-      const line = review.ref.line ?? null;
       if (pitchRestState(tick, review.track, line) === "discard") return null;
       const cents = frame.cents + (review.octave || 0) * 1200;
       if (!system.pointAtPitch && (cents < system.minPitch * 100 || cents > system.maxPitch * 100)) return null;
-      return system.pointAtPitch ? system.pointAtPitch(tick, cents, line, review.track)
-        : {x: system.xAtTick(tick), y: system.yAtPitch(cents / 100), track: review.track,
-          error: tick < 0 ? "preparation" : expectedPitchErrorCents(tick, frame.cents, line, review.track)};
-    }, error => grey ? "var(--muted)" : pitchTraceColor(error), {rate: review.rate});
+      const p = system.pointAtPitch ? system.pointAtPitch(tick, cents, line, review.track)
+        : {x:system.xAtTick(tick),y:system.yAtPitch(cents/100),track:review.track,error:errorAt(tick,frame.cents)};
+      return p && {...p,tick,cents:frame.cents,error:grey || tick < 0 ? "preparation" : p.error};
+    }, pitchTraceColor, {rate:review.rate,errorAt});
     if (!paths.edges) return;
     const ensemble = !system.pointAtPitch && visibleChannels.size > 1;
     const label = `${trackLabel(review.track, review.ref.line ?? null)}: ${review.label || "Recording"}`;
@@ -10314,9 +10309,12 @@
       "data-take-id": review.id, "data-track": review.track, "data-line": review.ref.line ?? "",
       "data-selected": String(review.id === takeReview?.id), "data-ensemble": String(ensemble)});
     const title = createSvgElement("title"); title.textContent = label; group.append(title);
-    for (const [stroke, d] of paths.colors) group.append(createSvgElement("path", {
+    const paintPath = (stroke,d) => group.append(createSvgElement("path", {
       class: "bar-pitch-trace-edge take-pitch-trace-edge bar-pitch-trace", d, stroke,
       "data-take-id": review.id, "data-reference": String(grey), opacity: grey ? .65 : 1, "aria-hidden": "true"}));
+    for (const [stroke,d] of paths.colors) paintPath(stroke,d);
+    for (const {x1,y1,x2,y2,d,stops} of paths.ramps)
+      paintPath(window.MeleteTakeRender.svgPaint(group,createSvgElement,x1,y1,x2,y2,stops),d);
     if (ensemble) {
       group.append(createSvgElement("path", {class: "take-pitch-trace-hit", d: paths.halo}));
       let press = null;

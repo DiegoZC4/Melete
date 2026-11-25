@@ -355,7 +355,7 @@ console.log(JSON.stringify([
         self.assertIn("detector.minVolumeAbsolute = 0", (ROOT / "template" / "vocal_pitch.js").read_text())
         self.assertNotIn(".findPitch(", app)
         self.assertNotIn("adaptiveNoise", app)
-        self.assertIn('if (!Number.isFinite(errorCents)) return "rgb(255 0 0)"', app)
+        self.assertIn('return window.MeleteTakeRender.color(errorCents)', app)
         self.assertNotIn("if (!traceColor) continue", app)
         self.assertNotIn("--pitch-trace-neutral", styles)
         self.assertIn(".bar-reattack-line", styles)
@@ -446,7 +446,8 @@ const partDivisi = [];
 const divisiSpanAt = () => null;
 const divisiLineFor = () => 0;
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
-const window = {{MeleteTakePitch: require({json.dumps(str(ROOT / 'template' / 'take_pitch.js'))})}};
+const window = {{MeleteTakePitch: require({json.dumps(str(ROOT / 'template' / 'take_pitch.js'))}),
+  MeleteTakeRender: require({json.dumps(str(ROOT / 'template' / 'take_render.js'))})}};
 {helpers}
 console.log(JSON.stringify({{
   beforeFirst: expectedPitchErrorCents(0, 6000),
@@ -478,8 +479,8 @@ console.log(JSON.stringify({{
             [
                 "rgb(0 255 0)",
                 "rgb(0 255 0)",
-                "color-mix(in oklab, lime, red 25%)",
-                "color-mix(in oklab, lime, red 50%)",
+                "#bae200",
+                "#f8bb00",
                 "rgb(255 0 0)",
             ],
         )

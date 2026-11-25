@@ -1719,7 +1719,7 @@ svg.is-auditioning-score { cursor: grabbing; }
 .bar-lyric-text { fill: var(--muted); font: italic var(--bar-lyric-font-size, 14px)/1 Georgia, serif; }
 #barScore.is-rescaling .bar-pitch-trace-layer { display: none; }
 .bar-pitch-trace { fill: none; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.bar-pitch-trace { stroke-width: 2.2; }
+.bar-pitch-trace { stroke-width: 2.6; }
 .take-pitch-trace-group[data-ensemble="true"][data-selected="true"] .bar-pitch-trace { stroke-width: 2.8; }
 .take-pitch-trace-group[data-ensemble="true"]:hover .bar-pitch-trace { stroke-width: 3.2; }
 .take-pitch-trace-hit { fill: none; stroke: transparent; stroke-width: 10; pointer-events: stroke; vector-effect: non-scaling-stroke; }

@@ -59,7 +59,13 @@ to test an actual release candidate instead of the generated two-song fixture.
 An engine test does not verify an iPad's physical microphone route.
 
 `node tests/browser-display-identity.cjs` builds two synthetic scores and checks
-the actual painted contour pixels and badge visibility across login states.
+both held colors and the pixels *between* two pitch observations across login
+states. Two red observations on opposite sides of one held note must cross green;
+the same errors on two different written notes must not invent a green crossing.
+The badge check remains independent of login. Set `CONTOUR_FIGURE` to a PNG
+path for an optional synthetic before/after illustration on the Autumn collection.
+The ramp follows the [W3C guidance on interpolation spaces](https://www.w3.org/TR/css-color-4/#interpolation-space);
+test the thin line, not just swatches ([Kovesi on fine-scale color contrast](https://arxiv.org/abs/1509.03700)).
 `node tests/browser-tab-handoff.cjs` switches two genuine Chromium tabs with
 fake microphones and checks release, reacquisition and interrupted-take saving.
 Both run in CI without private scores, accounts, or local DevHub services.

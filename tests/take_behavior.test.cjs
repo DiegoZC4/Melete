@@ -43,7 +43,7 @@ test('average cents uses only detected singing intersected with written notes, c
 });
 
 test('initial and long written rests are red, while count-in stays preparation',()=>{
-  const context=vm.createContext({window:{MeleteTakePitch:pitch},sequence:{notes:[],endTick:40},
+  const context=vm.createContext({window:{MeleteTakePitch:pitch,MeleteTakeRender:require('../template/take_render.js')},sequence:{notes:[],endTick:40},
     partDivisi:[{spans:[{start:14,end:16,pitches:[60]},{start:30,end:32,pitches:[60]}]}],
     practicePartIndex:0,practiceDivisi:[null],engine:{secondsAtTick:t=>t},
     restTraceSource:null,restTraceReferences:new Map(),pitchTraceOriginTick:()=>-4,

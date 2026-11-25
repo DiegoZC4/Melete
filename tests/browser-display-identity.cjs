@@ -3,11 +3,12 @@
 const assert=require('node:assert/strict');
 const browsers=require(require.resolve('playwright',{paths:[process.env.GUI_QA_NODE_MODULES||__dirname]}));
 const {active}=require('./browser-compatibility.cjs');
+const {snapshotEdge,rasterEdge,compareFigure}=require('./browser-contour-ink.cjs');
 const {strokePixel}=require('./browser-stroke-pixel.cjs');
 async function check(browser,url,song,user){
   const ctx=await browser.newContext({viewport:{width:1500,height:950}});
   try{
-    await ctx.addInitScript({content:'window.qaStrokePixel='+strokePixel.toString()+';'});
+    await ctx.addInitScript({content:'window.qaTraceSvg='+snapshotEdge.toString()+';window.qaSolidInk='+strokePixel.toString()+';'});
     await ctx.addInitScript(()=>Object.defineProperty(window,'MeleteCompPanel',{configurable:true,set(panel){
       const create=panel.create;panel.create=a=>{window.displayQA=a;return create(a);};
       Object.defineProperty(window,'MeleteCompPanel',{value:panel,configurable:true});
@@ -29,25 +30,41 @@ async function check(browser,url,song,user){
     // Wait until the actual song has finished its initial scale/layout pass.
     // Sample this temporary fixture in the same turn as the renderer, before
     // the ordinary saved-take selection can replace it.
-    const pixels=await f.waitForFunction(()=>{
+    const fixture=await f.waitForFunction(()=>{
       if(!window.displayQA?.libraryReady()||!window.displayQA.descriptor())return false;
       const a=window.displayQA,ref=a.descriptor().reference;
       const [from,end,[pitch]]=ref.notes.find(([s,e])=>e-s>.6);
-      const errors=[10,30,50,75,99,100];
-      const frames=Array.from({length:6*errors.length},(_,i)=>({start:from+.05+i*.014,end:from+.05+(i+1)*.014,
-        cents:pitch*100+errors[Math.floor(i/6)]}));
-      a.patchReview({id:'identity-fixture',track:ref.part,ref,frames,start:0,end:ref.seconds,rate:1,
+      const show=frames=>a.patchReview({id:'identity-fixture',track:ref.part,ref,frames,start:0,end:ref.seconds,rate:1,
         ranges:[[from,end]],seams:[],label:'Synthetic contour'},true);
-      const edges=[...document.querySelectorAll('#barScore .take-pitch-trace-edge[data-take-id="identity-fixture"]')];
-      return edges.length?[...new Set(edges.map(window.qaStrokePixel))]:false;
+      const selector='#barScore .take-pitch-trace-edge[data-take-id="identity-fixture"]';
+      // Keep the previous near-red boundary check, independent of the new glide.
+      show([10,25,50,77,99,100].flatMap((e,i)=>[e,e,null].map((v,j)=>({
+        start:from+.03+i*.075+j*.015,end:from+.04+i*.075+j*.015,cents:v===null?null:pitch*100+v}))));
+      const flat=[...document.querySelectorAll(selector)].map(window.qaSolidInk);
+      // Two red observations, one flat and one sharp of the SAME sustained note.
+      // The old renderer painted this entire connected edge solid red.
+      const frames=[-100,100].map((e,i)=>({start:from+.08+i*.20,end:from+.09+i*.20,cents:pitch*100+e}));
+      show(frames);
+      const path=document.querySelector(selector);
+      if(!path)return false;
+      return {...window.qaTraceSvg(path),flat};
     },null,{polling:100,timeout:15000});
-    const palette=await pixels.jsonValue();await pixels.dispose();
-    assert.deepEqual(palette.slice(0,4),['rgb(0, 255, 0)','rgb(160, 213, 0)','rgb(208, 168, 0)','rgb(237, 115, 0)']);
-    assert.equal(palette.length,6,'the last cent below red must remain distinct in a saved take');
-    const nearRed=palette[4].match(/^rgb\((\d+), (\d+), 0\)$/);
-    assert.ok(nearRed && +nearRed[1]>=250 && +nearRed[2]>0 && +nearRed[2]<32,'99 cents is nearly but not fully red: '+palette[4]);
-    assert.equal(palette[5],'rgb(255, 0, 0)','100 cents is solid red');
-    return palette;
+    const probe=await fixture.jsonValue();await fixture.dispose();
+    assert.deepEqual(probe.flat.slice(0,4),['rgb(0, 255, 0)','rgb(164, 234, 0)','rgb(248, 187, 0)','rgb(255, 120, 41)']);
+    assert.equal(probe.flat.length,6);assert.notEqual(probe.flat[4],probe.flat[5],'99 cents is not full red');
+    assert.equal(probe.flat[5],'rgb(255, 0, 0)');
+    const {bands,colors}=await f.evaluate(rasterEdge,probe);
+    assert.ok(bands>=5,'the native-size 2.6px stroke must visibly cross all five hue families; got '+bands);
+    const expected=[[255,0,0],[255,84,29],[255,146,43],[248,187,0],[205,218,0],[164,234,0],[0,255,0]];
+    for(let i=0;i<colors.length;i++) {
+      const rgb=expected[Math.min(i,colors.length-1-i)];
+      assert.ok(rgb.every((v,k)=>Math.abs(v-colors[i][k])<16),JSON.stringify({i,rgb,paint:colors[i]}));
+    }
+    if(process.env.CONTOUR_FIGURE&&!user&&song.id==='autumn') {
+      await f.evaluate(compareFigure);
+      await f.locator('#contour-test-figure').screenshot({path:process.env.CONTOUR_FIGURE});
+    }
+    return colors;
   }finally{await ctx.close();}
 }
 (async()=>{
@@ -56,7 +73,7 @@ async function check(browser,url,song,user){
   async function run(url,songs){for(const song of songs){
     const anon=await check(browser,url,song,null);
     assert.deepEqual(await check(browser,url,song,{id:'qa',name:'Fixture Singer'}),anon);
-    console.log(engine+' '+song.title+': identical signed-out and signed-in paint and badge-free toolbar: '+anon.join('; '));
+    console.log(engine+' '+song.title+': signed-out/in contour pixels match; both sides of the red-to-green crossing and badge-free toolbar verified.');
   }}
   try {
     if(process.argv[2]) await run(process.argv[2],[{id:'autumn',title:'Autumn',part:'B2'},{id:'the-seed',title:'The Seed',part:'B2'}]);

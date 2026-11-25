@@ -12,7 +12,7 @@ function source(name) {
 }
 
 test('live and review colors agree on octave equivalents without forgiving another pitch class', () => {
-  const c = vm.createContext({window: {MeleteTakePitch: pitch}, practicePartIndex: 0, practiceDivisi:[null],
+  const c = vm.createContext({window: {MeleteTakePitch: pitch,MeleteTakeRender:require('../template/take_render.js')}, practicePartIndex: 0, practiceDivisi:[null],
     pitchRestState: () => 'sing',
     liveTraceVisible: () => false,
     expectedPitchAt: () => [[0, 0, 1, 69]], clamp: (v, a, b) => Math.max(a, Math.min(b, v))});
@@ -22,9 +22,10 @@ test('live and review colors agree on octave equivalents without forgiving anoth
     for (const sign of [-1, 1]) {
       const color = cents => c.pitchTraceColor(octave * 1200 + sign * cents);
       for (const cents of [0, 10]) assert.equal(color(cents), 'rgb(0 255 0)');
-      for (const [cents, percent] of [[10.1,1],[30,25],[50,50],[55,55],[75,75],[95,95],[99.9,99]]) {
-        assert.equal(color(cents), `color-mix(in oklab, lime, red ${percent}%)`);
-      }
+      for (const [cents, ink] of [[25,'#a4ea00'],[35,'#cdda00'],[50,'#f8bb00'],[67,'#ff922b'],[88,'#ff541d']])
+        assert.equal(color(cents),ink);
+      assert.equal(new Set(Array.from({length:181},(_,i)=>color(10+i/2))).size,181);
+      assert.notEqual(color(10.1),color(10)); assert.notEqual(color(99.9),color(100));
       for (const cents of [100, 101, 600]) assert.equal(color(cents), 'rgb(255 0 0)');
     }
   }

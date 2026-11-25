@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const {strokePixel}=require('./browser-stroke-pixel.cjs');
+const {snapshotEdge,rasterEdge}=require('./browser-contour-ink.cjs');
 
 // This instrumentation exists only in isolated QA builds. A quiet synthetic
 // input exercises the actual analyser/Pitchy path without recording the user.
@@ -135,7 +136,10 @@ const pitchTraceProbe = `pitchResolution: {
     const note=sequence.notes.find(n=>n[0]===0&&n[2]-n[1]>=sequence.division/2);
     const first=pitchTraceBinAtTick(note[1])+1,last=Math.min(pitchTraceBinAtTick(note[2])-1,first+12);
     const lane=pitchTraceLane(0,{create:true});
-    for(let bin=first;bin<=last;bin++){lane.pitches[bin]=Math.round((note[3]+offset)*100);pitchTraceCount++;}
+    for(let bin=first;bin<=last;bin++){
+      const detune=offset==='crossing'?(bin<(first+last)/2?-1:1):offset;
+      lane.pitches[bin]=Math.round((note[3]+detune)*100);pitchTraceCount++;
+    }
     this.octaveTarget={first,last,pitch:note[3],offset,tick:pitchTraceTickAtBin(first)};
     updatePitchTraceIncrementally(new Map([[0,new Set(Array.from({length:last-first+1},(_,i)=>first+i))]]));
   },
@@ -353,7 +357,7 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
     const finalPhrase=await checkFinalPhrase(frame,page,probe,output,label);
     const octaves=[];
     for(const [offset,expected] of [[-12,'rgb(0, 255, 0)'],[12,'rgb(0, 255, 0)'],
-      [-11,'rgb(255, 0, 0)'],[12.3,'rgb(160, 213, 0)'],[12.5,'rgb(208, 168, 0)']]) {
+      [-11,'rgb(255, 0, 0)'],[12.25,'rgb(164, 234, 0)'],[12.5,'rgb(248, 187, 0)']]) {
       await frame.evaluate(({probe,offset})=>window[probe].pitchResolution.seedOctave(offset),{probe,offset});
       await frame.waitForFunction(probe=>!window[probe].busy&&window[probe].pitchResolution.octaveSnapshot()?.edges.length,probe);
       const view=await frame.evaluate(probe=>window[probe].pitchResolution.octaveSnapshot(),probe);
@@ -365,6 +369,11 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
       octaves.push(view);
       if(output)await page.screenshot({path:path.join(output,`octave-${label}-${offset}.png`)});
     }
+    await frame.evaluate(name=>window[name].pitchResolution.seedOctave('crossing'),probe);
+    const crossing=frame.locator('#barScore .bar-pitch-trace-edge line[stroke^="url("]').first();
+    const witness=await crossing.evaluate(snapshotEdge);
+    const {bands,colors}=await frame.evaluate(rasterEdge,witness);
+    assert.ok(bands>=5 && colors[6][1]>245 && colors[6][0]<16,'a live sharp/flat crossing must visibly pass through green');
     const oldTrace=await frame.evaluate(name=>window[name].pitchResolution.seedOldMovingOnset(),probe);
     frame=await reload();
     const cleaned=await frame.evaluate(name=>window[name].pitchResolution.oldMovingOnsetSnapshot(),probe);
