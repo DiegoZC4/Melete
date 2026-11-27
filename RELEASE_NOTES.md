@@ -1,3 +1,26 @@
+# Finding recorded takes (2026-11-26, local)
+
+- The Record table offers a switch above the rows whenever the other timing
+  mode has recordings, even if both MIDI and Ref have takes. Switching changes
+  the backing tempo, not the saved audio. No login is needed.
+- The local library maintenance page can copy a retained personal comp edit
+  to an independent private track. This does not rewind Undo, change the
+  current comp, or add to practice minutes. A missing source aborts the copy.
+  This is a local build, not a website or station deployment.
+
+# Hosted reference recordings (2026-11-25, local)
+
+- Cache original stereo MP3s by hash independently of the GUI. A slow or
+  corrupt new recording cannot strand a singer with a working offline copy.
+  Download defaults to self-contained MIDI practice. Including the originals
+  is an explicit per-download choice; the Windows station still includes them.
+- At normal speed the reference plays from its decoded stereo buffer without
+  requiring the pitch-preserving time-stretch worklet.
+- When a reference includes a performance map, MIDI, click, loops and the
+  playhead follow its bar and configured group downbeats, with steady written
+  subdivisions unless a note was explicitly pinned in review. Ref off restores written tempo at the
+  same score position. Written and rubato takes keep their own scoring clocks.
+
 # Choir contour colors (2026-11-25)
 
 - A contour edge is no longer a solid chip sampled from its

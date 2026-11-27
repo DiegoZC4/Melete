@@ -242,6 +242,7 @@ async function checkLocalTakeFailures(page, origin, settled, {mobile, temporary,
   // Both failures leave the recorder off; wait for this check's own result.
   await page.waitForFunction(() => unavailableChecks > 0 && __qa.recording.state === 'off'
     && __qa.recording.notice.startsWith('Local storage unavailable'));
+  assert.match(await page.evaluate(()=>__qa.recording.notice),/reopen/i,'a closed database does not imply a permission denial');
   assert.equal(await page.evaluate(() => quotaGumCalls), 0, 'unavailable storage never silently records in RAM only');
   assert.equal((await page.evaluate(() => __qa.recording)).takes.length, recovered.takes.length);
   await page.evaluate(() => {
@@ -282,6 +283,7 @@ async function checkLocalTakeFailures(page, origin, settled, {mobile, temporary,
   await openTakes(page);
   await toggleRecording(page);
   await page.waitForFunction(() => __qa.recording.state === 'off' && __qa.recording.notice.startsWith('Local storage unavailable.'));
+  assert.match(await page.evaluate(()=>__qa.recording.notice),/allow site storage/i,'an actual denial has an actionable permission message');
   assert.equal((await page.evaluate(() => __qa.recording)).microphone, false);
   // Explicitly leave capture mode to listen without writable storage.
   await page.locator('#pitchCapture').click();

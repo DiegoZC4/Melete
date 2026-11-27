@@ -8,7 +8,7 @@ function readCollection(html) {
   const bundle = JSON.parse(match[2]);
   const inflater = html.match(/<script id="melete-collection-inflater">([\s\S]*?)<\/script>/)[1];
   const assets = Object.fromEntries(Object.entries(bundle.assets).map(([key, value]) =>
-    [key, value === null ? inflater : zlib.inflateSync(Buffer.from(value, 'base64')).toString('utf8')]));
+    [key, value === null ? inflater : value?.mp3 ? JSON.stringify(value) : zlib.inflateSync(Buffer.from(value, 'base64')).toString('utf8')]));
   return {bundle, assets, songs:bundle.songs.map(song => ({...song, html:song.chunks.map(key => assets[key]).join('')}))};
 }
 

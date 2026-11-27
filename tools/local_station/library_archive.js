@@ -16,9 +16,10 @@
     }
     return db;
   }
-  async function snapshot(db) {
+  async function snapshot(db, {recordingsOnly=false, metadataOnly=false}={}) {
     const tx = db.transaction(names), finish = done(tx), stores = {};
     await Promise.all(names.map(async name => {
+      if (metadataOnly && name === 'chunks') { stores.chunks=[]; return; }
       const store = tx.objectStore(name);
       const [keys, values] = await Promise.all([request(store.getAllKeys()), request(store.getAll())]);
       stores[name] = keys.map((key, i) => [key, values[i]]);
@@ -30,9 +31,10 @@
     const preferences = {};
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (/^(melete:|choir-practice:)/.test(key)) preferences[key] = localStorage.getItem(key);
+      if (recordingsOnly ? key.startsWith('melete:take-octaves:') || key === 'melete:cloud:local-only:v1'
+        : /^(melete:|choir-practice:)/.test(key)) preferences[key] = localStorage.getItem(key);
     }
-    return {stores, preferences};
+    return {stores, preferences, ...(metadataOnly ? {diagnostic:true} : {})};
   }
   function pack({stores, preferences = {}, diagnostic = false}) {
     const buffers = []; let offset = 0;
@@ -117,7 +119,9 @@
     for(const [,c] of comps) if(c.revisionOf && oldKeys.has(c.revisionOf)) c.revisionOf=oldKeys.get(c.revisionOf);
     const takes=source.stores.takes.map(([key,t])=>[key,{...t,
       ...(t.pitchReference?{trackSlot:slot(t.song,t.pitchReference,t.trackSlot)}:{})}]);
-    const counters=source.stores.counters.map(([key,value])=>{
+    // The currently connected route belongs to the destination device and
+    // origin. Each recording already carries its own capture calibration.
+    const counters=source.stores.counters.filter(([key])=>key!=='active-timing-chain-v1').map(([key,value])=>{
       if(Array.isArray(key)&&key[0]==='comp-edit-history') {
         const remap=items=>(items||[]).map(e=>({...e,key:oldKeys.get(e.key)||e.key}));
         return [key,{...value,past:remap(value.past),future:remap(value.future)}];
@@ -140,6 +144,10 @@
     }
     const protectedTracks=new Set(JSON.parse(destination.preferences['melete:cloud:local-only:v1']||'[]'));
     for(const [,c] of destination.stores.comps) if(c.segments.length) protectedTracks.add(group(c.song,c.descriptor.reference,c.descriptor.slot));
+    const sourcePrivate=new Set(JSON.parse(source.preferences['melete:cloud:local-only:v1']||'[]'));
+    for(const [old, next] of groups) if(sourcePrivate.has(old)) {
+      const [song,part,line]=JSON.parse(old);protectedTracks.add(group(song,{part,line},next));
+    }
     const preferences={'melete:cloud:local-only:v1':JSON.stringify([...protectedTracks])};
     const octaveMap = value => {
       try {
@@ -194,7 +202,73 @@
       comps:data.stores.comps.map(([key, c]) => ({key, song:c.song, singer:c.descriptor?.station?.name,
         segments:c.segments?.length, sources:[...new Set((c.segments || []).map(s => s.takeId))]}))};
   }
-  const api = {names, open, snapshot, pack, unpack, hash, summary, equal, plan, apply};
+  function savedEdits(stores) {
+    const comps=new Map(stores.comps), takes=new Map(stores.takes), choices=[];
+    for (const [key,history] of stores.counters) {
+      if (!Array.isArray(key) || key[0]!=='comp-edit-history') continue;
+      for (const entry of history.past) for (const edit of entry.group || [entry]) {
+        const comp=comps.get(edit.key), segments=edit.after?.segments;
+        if (!comp || comp.publication || comp.descriptor.station || !segments?.length || equal(segments,comp.segments)) continue;
+        const parts=[...new Set(segments.map(s=>s.takeId))].map(id=>takes.get(id));
+        if (!parts.every(t=>t?.finalized && !t.deleteAfter && !t.publication)) continue;
+        choices.push({song:comp.song,key:comp.key,at:entry.at,label:comp.descriptor.label,
+          ref:Boolean(comp.descriptor.reference.scoreClock),numbers:parts.map(t=>t.number),segments});
+      }
+    }
+    return choices.sort((a,b)=>b.at-a.at);
+  }
+  // Fork a retained personal practice edit, never roll the current track back.
+  // The scorer binds each source to one slot, so the new track needs independent sources.
+  async function copySavedEdit(db, choice) {
+    const tx=db.transaction(names,'readwrite'), finish=done(tx);
+    const counters=tx.objectStore('counters'), takes=tx.objectStore('takes'), comps=tx.objectStore('comps'), chunks=tx.objectStore('chunks');
+    const receipt=['saved-edit-copy',choice.key,choice.at], privateKey='melete:cloud:local-only:v1';
+    let privateGroup;
+    try {
+      const previous=await request(counters.get(receipt));
+      if (previous) { await finish; return {...previous,alreadyCopied:true}; }
+      const comp=await request(comps.get(choice.key)), history=await request(counters.get(['comp-edit-history',choice.song]));
+      const entry=history?.past.find(e=>e.at===choice.at && (e.group||[e]).some(c=>c.key===choice.key));
+      const saved=(entry?.group||[entry]).find(c=>c?.key===choice.key)?.after;
+      if (!comp || comp.song!==choice.song || comp.publication || comp.descriptor.station || !saved?.segments?.length ||
+          !equal(saved.segments,choice.segments)) throw Error('This saved edit is no longer available. Nothing changed.');
+      const uuid=crypto.randomUUID(), slot='recovered:'+uuid, descriptor={...comp.descriptor,slot};
+      const key=JSON.stringify([...JSON.parse(comp.key).slice(0,8),slot]), ids=new Map();
+      for (const id of new Set(saved.segments.map(s=>s.takeId))) {
+        const t=await request(takes.get(id));
+        if (!t?.finalized || !t.complete || t.deleteAfter || t.publication || t.song!==comp.song ||
+            t.trackSlot!==comp.descriptor.slot || t.pitchReference?.fingerprint!==descriptor.reference.fingerprint)
+          throw Error('A source is unavailable for this edit. Nothing changed.');
+        const newId=crypto.randomUUID(), rows=await request(chunks.getAll(IDBKeyRange.bound([id,0],[id,Number.MAX_SAFE_INTEGER])));
+        let offset=0;
+        for (const row of rows) {
+          if (row.takeId!==id || row.offset!==offset || !(row.pcm instanceof Int16Array) || !row.pcm.length)
+            throw Error('Full source audio is no longer retained. Nothing changed.');
+          offset+=row.pcm.length;
+        }
+        if (!offset || offset!==t.frames) throw Error('Full source audio is no longer retained. Nothing changed.');
+        ids.set(id,newId);
+        takes.add({...t,id:newId,trackSlot:slot,recoveredFrom:id,practiceTimeFrames:t.frames});
+        for (const row of rows) chunks.add({...row,takeId:newId});
+      }
+      const segments=saved.segments.map(s=>({...s,takeId:ids.get(s.takeId)})), sourceIds=[...ids.values()];
+      comps.add({key,song:comp.song,descriptor,offerVersion:comp.offerVersion,trackVersion:comp.trackVersion,
+        revision:1,track:Boolean(saved.track),segments,undo:null,processed:sourceIds,adopted:sourceIds,freshAt:0,
+        firstTakeNumber:saved.firstTakeNumber,editedAt:choice.at,updatedAt:choice.at,historyManaged:true});
+      const result={key,sources:ids.size,segments:segments.length};
+      counters.add(result,receipt);
+      const groups=JSON.parse(localStorage.getItem(privateKey)||'[]');
+      privateGroup=JSON.stringify([comp.song,descriptor.reference.part,descriptor.reference.line??null,slot]);
+      localStorage.setItem(privateKey,JSON.stringify([...new Set([...groups,privateGroup])]));
+      await finish; return result;
+    } catch (error) {
+      try {tx.abort();} catch {}
+      await finish.catch(()=>{});
+      if (privateGroup) localStorage.setItem(privateKey,JSON.stringify(JSON.parse(localStorage.getItem(privateKey)||'[]').filter(g=>g!==privateGroup)));
+      throw error;
+    }
+  }
+  const api = {names, open, snapshot, pack, unpack, hash, summary, equal, plan, apply, savedEdits, copySavedEdit};
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.MeleteLibraryArchive = api;
 })(globalThis);

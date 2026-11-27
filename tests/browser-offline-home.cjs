@@ -17,17 +17,26 @@ async function run(engine,localDir) {
     }
     let doc=fs.readFileSync(path.join(dir,'index.html')),worker=fs.readFileSync(path.join(dir,'melete-offline.js'));
     const iconPath=path.join(dir,'apple-touch-icon.png'),icon=fs.existsSync(iconPath)?fs.readFileSync(iconPath):null;
+    const manifest=JSON.parse(fs.readFileSync(path.join(dir,'release.json'),'utf8'));
+    const digest=b=>require('node:crypto').createHash('sha256').update(b).digest('hex');
+    const media=new Map(),mediaRequests=[];
+    for(const ref of manifest.hosted?.media||[]){
+      assert.match(ref.mp3,/^[0-9a-f]{64}$/);
+      const name='media/'+ref.mp3+'.mp3',bytes=fs.readFileSync(path.join(dir,name));
+      assert.equal(bytes.length,ref.bytes);assert.equal(digest(bytes),ref.mp3);media.set(name,bytes);
+    }
     const songs=readCollection(doc.toString()).songs;
     const scope='/choir/', profile=path.join(tmp,'isolated-profile');
     let damagedDownload=true, brokenUpdate=false;
     const wrong=Buffer.from(doc); wrong[wrong.length-1]^=1;
     server=http.createServer((req,res)=>{
       const p=new URL(req.url,'http://localhost').pathname;
+      const item=p.startsWith(scope)?p.slice(scope.length):'',web={...(manifest.hosted||manifest),bytes:doc.length,sha256:digest(doc)};
+      if(media.has(item))mediaRequests.push(item);
       const content=p===scope||p===scope+'index.html'?[damagedDownload && p.endsWith('index.html')?wrong:doc,'text/html; charset=utf-8']:
         p===scope+'melete-offline.js'?[brokenUpdate?worker.toString().replace(/SHA = "[0-9a-f]{64}"/,'SHA = "'+'0'.repeat(64)+'"'):worker,'text/javascript']:
-        p===scope+'release.json'?[JSON.stringify({schema:1,kind:'melete-player',nativeProtocol:1,player:'index.html',
-          bytes:doc.length,sha256:require('node:crypto').createHash('sha256').update(doc).digest('hex')}),'application/json']:
-        p===scope+'apple-touch-icon.png'&&icon?[icon,'image/png']:null;
+        p===scope+'release.json'?[JSON.stringify(manifest.hosted?{...manifest,hosted:web}:web),'application/json']:
+        p===scope+'apple-touch-icon.png'&&icon?[icon,'image/png']:media.has(item)?[media.get(item),'audio/mpeg']:null;
       // HTTP cache must not be able to satisfy the off-network tests.
       res.writeHead(content?200:404,{'Content-Type':content?.[1]||'text/plain','Cache-Control':'no-store'});
       res.end(content?.[0]||'Not found');
@@ -72,6 +81,7 @@ async function run(engine,localDir) {
       return Promise.all(keys.map(async k=>(await (await caches.open(k)).keys()).map(r=>new URL(r.url).pathname)));
     });
     assert.deepEqual(cached,[[scope+'index.html']]);
+    assert.deepEqual(mediaRequests.slice().sort(),[...media.keys()].sort(),'download every declared MP3 exactly once');
     await page.evaluate(async()=>{
       localStorage.setItem('melete:qa-retention','prior-device-setting');
       await (await caches.open('independent-test-cache')).put('./keep',new Response('untouched'));
@@ -96,7 +106,6 @@ async function run(engine,localDir) {
     const sibling=await ctx.newPage();
     await sibling.goto(link,{waitUntil:'commit'});await ready(await active(sibling,target));
     const oldBuild=worker.toString().match(/BUILD = "([0-9a-f]{64})"/)[1];
-    const digest=b=>require('node:crypto').createHash('sha256').update(b).digest('hex');
     const next=digest('second:'+oldBuild),previous=digest(doc),bytes=doc.length;
     doc=Buffer.from(doc.toString().replace(oldBuild,next).replace('</head>','<meta name="qa-release" content="second"></head>'));
     worker=Buffer.from(worker.toString().replace(oldBuild,next).replace(previous,digest(doc)).replace('BYTES = '+bytes,'BYTES = '+doc.length));
@@ -109,6 +118,7 @@ async function run(engine,localDir) {
     assert.equal(await sibling.locator('meta[name=qa-release]').count(),0,'another open practice session is untouched');
     await page.reload({waitUntil:'commit'});first=await active(page,target);await ready(first);
     assert.equal(await page.locator('meta[name=qa-release]').getAttribute('content'),'second');
+    assert.equal(mediaRequests.length,media.size,'GUI updates must not fetch the same MP3s again');
     await sibling.close();
     await first.evaluate(audioRig,{synthetic:true,hz:220});await section(first,'practice');await enableSing(first);
     await first.locator('#microphoneCheck[data-state=signal]').waitFor({state:'attached'});

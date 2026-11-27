@@ -14,6 +14,7 @@ import hashlib
 import html
 from html.parser import HTMLParser
 import json
+import math
 import os
 import platform
 import re
@@ -898,9 +899,39 @@ def load_config(path: Path | None) -> dict[str, Any]:
                 raise BuildError('Embedded reference recording exceeds 25 MiB')
             if audio.suffix.lower() != '.mp3':
                 raise BuildError('Use an MP3 for the embedded reference recording')
-            value['referenceAudio'] = {**metadata, 'label': reference.get('label', 'Aligned reference recording'),
-                'mime':'audio/mpeg', 'data':base64.b64encode(audio.read_bytes()).decode('ascii')}
+            raw=audio.read_bytes()
+            if metadata.get('audioSha256') and sha256(raw)!=metadata['audioSha256']:
+                raise BuildError('Reference MP3 does not match its alignment sidecar')
+            value['referenceAudio'] = {**metadata, 'label': reference.get('label', 'Choir reference recording'),
+                'mime':'audio/mpeg', 'data':base64.b64encode(raw).decode('ascii')}
     return value
+
+
+def validate_reference(reference, playback):
+    if reference.get('timing')!={k:playback[k] for k in ('division','endTick','measures','tempos')}:
+        raise BuildError('Reference recording alignment is stale: score timing changed')
+    if 'performanceMap' not in reference:
+        return
+    m=reference['performanceMap']
+    points=m.get('points') if isinstance(m,dict) else None
+    if (not isinstance(points,list) or not 2<=len(points)<=100000
+            or not re.fullmatch(r'[a-f0-9]{64}',str(m.get('id','')))
+            or not all(isinstance(p,list) and len(p)==2 and all(isinstance(v,(int,float)) and math.isfinite(v) for v in p) for p in points)
+            or points[0]!=[0,0] or points[-1][0]!=playback['endTick']
+            or points[-1][1]!=reference.get('seconds')
+            or any(b[0]<=a[0] or b[1]<=a[1] for a,b in zip(points,points[1:]))):
+        raise BuildError('Invalid reference performance clock')
+    if 'audioSeconds' in reference:
+        audio = reference['audioSeconds']
+        release = max((n[2] for n in playback['notes']), default=0)
+        if (not isinstance(audio,(int,float)) or not math.isfinite(audio) or not 0 < audio <= reference['seconds']
+                or not 0 < release <= playback['endTick']):
+            raise BuildError('Invalid reference audio release')
+        a,b = next((a,b) for a,b in zip(points,points[1:]) if a[0] < release <= b[0])
+        if abs(audio-(a[1]+(release-a[0])*(b[1]-a[1])/(b[0]-a[0]))) > .001:
+            raise BuildError('Reference audio release does not match the final score note')
+    if reference.get('sourceSha256') and m['id']!=sha256((reference['sourceSha256']+json.dumps(points,separators=(',',':'))).encode()):
+        raise BuildError('Reference performance clock ID does not match its timing')
 
 
 def build_config(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -1866,9 +1897,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                       syllables=None if practice_roles else syllables_path)
         playback = read_json_object(playback_path, "playback data")
         if config.get('referenceAudio'):
-            expected = {key: playback[key] for key in ('division','endTick','measures','tempos')}
-            if config['referenceAudio'].get('timing') != expected:
-                raise BuildError('Reference recording alignment is stale: score timing changed')
+            validate_reference(config['referenceAudio'],playback)
         extracted = read_json_object(extractor_metadata_path, "score metadata")
         source_playback_hash = sha256(stable_json(playback).encode("utf-8"))
         reference_fingerprints = {}

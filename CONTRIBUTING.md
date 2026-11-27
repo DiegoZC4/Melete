@@ -58,6 +58,14 @@ score, and tests take-only replay. Pass a hosted directory after the engine
 to test an actual release candidate instead of the generated two-song fixture.
 An engine test does not verify an iPad's physical microphone route.
 
+`node tests/browser-hosted-references.cjs webkit` (also `firefox` or `chromium`)
+measures MP3 requests across GUI revisions, rejects corrupt or stalled new media,
+and plays both MIDI-only and recording-inclusive portable collections with
+networking disabled. It verifies both single-song export modes too. Its shared
+performance-clock fixture covers every note and click, the live audio source
+and cursor, switching Ref inside a loop, and independent saved takes. For the
+private choir data, run `node tests/browser-performance-clock.cjs /path/to/solstice-practice webkit`.
+
 `node tests/browser-display-identity.cjs` builds two synthetic scores and checks
 both held colors and the pixels *between* two pitch observations across login
 states. Two red observations on opposite sides of one held note must cross green;

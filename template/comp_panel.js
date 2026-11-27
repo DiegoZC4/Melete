@@ -86,7 +86,8 @@
     let slots = {};
     try { slots = JSON.parse(localStorage.getItem(slotKey) || "{}"); } catch {}
     if (!slots || typeof slots !== "object" || Array.isArray(slots)) slots = {};
-    const identity = d => JSON.stringify([d.reference.part, d.reference.line ?? null]);
+    const identity = d => JSON.stringify([d.reference.part, d.reference.line ?? null,...(d.reference.scoreClock?[d.reference.scoreClock]:[])]);
+    const matchesClock = ref=>adapter.matchesClock?.(ref)!==false;
     const stations = root.MeleteStation;
     // Only the station picker arms a named track. Reviewing another singer's
     // row, or loading without ?station, must never move recordings onto it.
@@ -420,19 +421,20 @@
     let lastRemoved = null, inlineUndo = null;
     function deletedTrackRow() {
       const edit = history.past.at(-1);
+      const stored = edit && saved.find(state => state.key === edit.key);
       if (!edit || edit.after.track || edit.after.segments.length ||
-          !(edit.before.track || edit.before.segments.length) || shown.includes(edit.key)) {
+          !(edit.before.track || edit.before.segments.length) || shown.includes(edit.key) ||
+          !stored || !matchesClock(stored.descriptor.reference)) {
         inlineUndo?.row.remove(); inlineUndo = null;
         return null;
       }
       if (inlineUndo?.revision !== history.revision) {
         inlineUndo?.row.remove(); inlineUndo = null;
-        const stored = saved.find(state => state.key === edit.key);
-        if (!stored) return null;
         const revision = history.revision;
+        // Undo is a history entry, not a playable comp. Reopening the table
+        // must not need a contour or source audio to position its placeholder.
         const record = lastRemoved?.key === edit.key && lastRemoved.revision === revision - 1
-          ? lastRemoved.record : sortRecord({state:{...stored,...edit.before,editedAt:null},
-            sources:new Map(adapter.takes().map(take => [take.id,take]))});
+          ? lastRemoved.record : sortMetadata({...stored,...edit.before,editedAt:null}, datedSources);
         const row = document.createElement("div");
         row.className = "take-row"; row.dataset.deletedComp = edit.key;
         row.dataset.recordingSource = "local";
@@ -511,12 +513,13 @@
       }
       if (followRequest) queueMicrotask(followReadySinger);
     }
-    function sortRecord(track) {
-      const {state, sources} = track;
+    function sortMetadata(state, sources) {
       return {...root.MeleteTakeControls.trackDates(state, sources), number: displayNumber(state,sources) ?? null,
-        part: label(state), singer: stations.trackSinger(state,sources)?.name || null,
-        segmentCount: statsFor(track).segmentCount,
-        pitchScore: statsFor(track)};
+        part: label(state), singer: stations.trackSinger(state,sources)?.name || null};
+    }
+    function sortRecord(track) {
+      const score = statsFor(track);
+      return {...sortMetadata(track.state, track.sources), segmentCount: score.segmentCount, pitchScore: score};
     }
     // A recording's descriptor follows the part, divisi line and speed chosen
     // under Practice; saved tracks at other speeds stay with that speed.
@@ -524,6 +527,7 @@
       const result = new Map(current ? [[model.key(current), current]] : []);
       for (const s of saved) {
         const r = s.descriptor.reference;
+        if(!matchesClock(r))continue;
         if (!(s.segments.length || s.track) || current && r.rate !== current.reference.rate) continue;
         if (s.publication) {result.set(s.key,s.descriptor);continue;}
         const base = adapter.descriptor(r.part, r.line ?? null);
@@ -536,7 +540,7 @@
       const seen = new Set();
       for (const take of takes) {
         const named = take.station, r = take.pitchReference;
-        if (!r || !take.complete || !take.finalized) continue;
+        if (!r || !matchesClock(r) || !take.complete || !take.finalized) continue;
         if (named ? !stations.stageLabel(named.stage) : !take.trackSlot?.startsWith("take@")) continue;
         const source = JSON.stringify([take.trackSlot, r.part, r.line, r.rate]);
         if (seen.has(source)) continue;
@@ -559,7 +563,7 @@
       history = await adapter.store.compHistory(adapter.song());
       const takes = adapter.takes();
       datedSources = new Map(takes.map(t => [t.id,t]));
-      recentPerformances = model.currentPerformances(saved, datedSources, rehearsalDay, dayOf);
+      recentPerformances = model.currentPerformances(saved.filter(s=>matchesClock(s.descriptor.reference)), datedSources, rehearsalDay, dayOf);
       const request = autoReview;
       if (request?.initial) {
         if (request !== autoReview) { dirty = true; return; }
@@ -592,7 +596,7 @@
         const cached = tracks.get(key);
         if (cached?.inputKey === inputKey(existing)) { next.set(key, cached); continue; }
         const before = JSON.stringify(existing || model.empty(descriptor));
-        const result = await model.reconcileAsync(descriptor, stored, eligible);
+        const result = await model.reconcileAsync(descriptor, stored.filter(s=>(s.descriptor.reference.scoreClock??null)===(descriptor.reference.scoreClock??null)), eligible);
         let state = result.state;
         replaced.push(...result.replaced.map(id => ({key, take:eligible.get(id)})));
         silent.push(...result.silent.map(id => eligible.get(id)));

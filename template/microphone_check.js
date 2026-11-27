@@ -89,6 +89,7 @@
       if (kind === "pending") return ["Microphone request unanswered",permissions];
       if (kind === "frames") return ["No audio frames received","Select another input or reconnect it, then retry. No take can start without audio frames."];
       if (kind === "device") return ["Selected microphone unavailable","Reconnect it or choose an available input below, then retry."];
+      if (kind === "interrupted") return ["Microphone interrupted","The active input stopped delivering audio. Check that it is unmuted, then retry."];
       if (kind === "busy") return ["Microphone could not start","Close any other app using this input, or choose another microphone and retry."];
       if (kind === "processing") return ["Input applies voice processing","Choose an input that supports unprocessed audio. Melete will not silently enable speech processing."];
       return ["Input unavailable",reason || "Check the input connection and retry."];

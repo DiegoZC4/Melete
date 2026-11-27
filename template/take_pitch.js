@@ -540,6 +540,7 @@
   }
 
   function samePassage(saved, current) {
+    if((saved?.scoreClock??null)!==(current?.scoreClock??null))return false;
     if (!validReference(saved) || !validReference(current) || saved.part !== current.part
       || saved.line !== current.line || saved.start !== current.start || saved.end !== current.end
       || Math.abs(saved.seconds - current.seconds) > 1e-5) return false;
@@ -551,6 +552,7 @@
 
   // Regrade corrections, not a different performance clock or voice assignment.
   function sameTimeline(saved, current) {
+    if((saved?.scoreClock??null)!==(current?.scoreClock??null))return false;
     if (!validReference(saved) || !validReference(current)) return false;
     for (const field of ["part", "line", "rate", "start", "end", "latency"]) {
       if ((saved[field] ?? null) !== (current[field] ?? null)) return false;

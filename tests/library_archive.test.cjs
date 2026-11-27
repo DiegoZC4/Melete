@@ -73,3 +73,19 @@ test('private track policy survives score revisions but does not affect rehearsa
     assert.ok(!cloud.localOnly(p.adds.comps[0][1]));
   }finally{if(previous)global.localStorage=previous;else delete global.localStorage;}
 });
+test('incoming explicitly private tracks remain private under remapped keys',()=>{
+  const source=fixture('web'),base=fixture('local'),flag='melete:cloud:local-only:v1';
+  source.preferences[flag]=JSON.stringify([JSON.stringify(['song',1,0,null])]);
+  const p=L.plan(base,source,'d'.repeat(64)),slot=p.adds.comps[0][1].descriptor.slot;
+  assert.ok(JSON.parse(p.preferences[flag]).includes(JSON.stringify(['song',1,0,slot])));
+});
+test('merging never replaces or installs another origin\'s active microphone timing chain',()=>{
+  const base=fixture('local'),src=fixture('web'),key='active-timing-chain-v1';
+  src.stores.counters.push([key,{id:'web'}]);src.stores.takes[0][1].pitchReference.latency=.082;
+  for(const current of [[],[[key,{id:'local'}]]]){
+    const dest={...base,stores:{...base.stores,counters:base.stores.counters.concat(current)}};
+    const p=L.plan(dest,src,'e'.repeat(64));
+    assert.ok(!p.adds.counters.concat(p.updates.counters).some(([k])=>k===key));
+    assert.equal(p.adds.takes[0][1].pitchReference.latency,.082);
+  }
+});

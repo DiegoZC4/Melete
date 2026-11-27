@@ -12,23 +12,19 @@
 <main>
 <h1>Melete Library</h1>
 <nav><button id="backup">Back Up Library</button><button id="metadata">Export Diagnostic Metadata</button><label>Destination Backup <input id="destination" type="file" accept=".melete"></label><label>Incoming Archive <input id="archive" type="file" accept=".melete,.pack"></label><button id="merge" disabled>Merge Library</button></nav>
+<details id="history"><summary>Recover an earlier practice comp</summary>
+<label>Saved edit <select id="edits"></select></label> <button id="copyEdit" disabled>Copy as separate local track</button></details>
 <output id="status" role="status">Ready</output><pre id="report"></pre>
 </main>
 <script src="/local-library/archive.js"></script>
 <script>
 const statusEl=document.getElementById('status'), reportEl=document.getElementById('report'), lib=MeleteLibraryArchive;
 let backupHash=null, incoming=null, sourceHash=null;
-async function current(){const db=await lib.open();try{return await lib.snapshot(db);}finally{db.close();}}
+async function current(metadataOnly=false){const db=await lib.open();try{return await lib.snapshot(db,{metadataOnly});}finally{db.close();}}
 function report(data){reportEl.textContent=JSON.stringify(data,null,2);}
 async function run(task){try{await task();}catch(e){statusEl.textContent=e.message;}}
 document.getElementById('metadata').onclick=()=>run(async()=>{
-  const db=await lib.open(), names=['takes','comps','counters'], stores={chunks:[]};
-  try{await new Promise((resolve,reject)=>{
-    const tx=db.transaction(names,'readonly');tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
-    for(const name of names){stores[name]=[];const q=tx.objectStore(name).openCursor();q.onsuccess=()=>{
-      const cursor=q.result;if(cursor){stores[name].push([cursor.key,cursor.value]);cursor.continue();}
-    };}
-  });}finally{db.close();}
+  const {stores}=await current(true), names=['takes','comps','counters'];
   const blob=lib.pack({stores,preferences:{},diagnostic:true}), link=document.createElement('a');link.href=URL.createObjectURL(blob);
   link.download='melete-metadata-'+new Date().toISOString().replace(/[:.]/g,'-')+'.melete-diagnostic';link.click();
   setTimeout(()=>URL.revokeObjectURL(link.href),60000);
@@ -72,6 +68,21 @@ document.getElementById('merge').onclick=()=>run(async()=>{
     protectedTracks:JSON.parse(localStorage.getItem('melete:cloud:local-only:v1')||'[]').length});
   statusEl.textContent=changes.alreadyMerged?'This archive was already merged.':'Merged locally. No recordings uploaded. Source library unchanged.';
 });
-run(async()=>report(lib.summary(await current())));
+const edits=document.getElementById('edits'), copy=document.getElementById('copyEdit');let choices=[];
+document.getElementById('history').ontoggle=()=>run(async()=>{
+  if(!document.getElementById('history').open)return;
+  copy.disabled=true;choices=lib.savedEdits((await current(true)).stores);
+  edits.replaceChildren(...choices.map((e,i)=>new Option(
+    [new Date(e.at).toLocaleString(),e.song,e.label,e.ref?'Ref':'MIDI','takes '+e.numbers.join(', ')].join(' | '),String(i))));
+  copy.disabled=!choices.length;if(!choices.length)statusEl.textContent='No earlier personal practice edits available.';
+});
+copy.onclick=()=>run(async()=>{
+  const choice=choices[edits.selectedIndex];if(!choice)return;
+  copy.disabled=true;const db=await lib.open();
+  try {
+    const r=await lib.copySavedEdit(db,choice);
+    statusEl.textContent=(r.alreadyCopied?'Already copied':'Copied')+' as a separate local track: takes '+choice.numbers.join(', ')+'. The current comp is unchanged.';
+  } finally {db.close();copy.disabled=false;}
+});
 </script>
 </html>

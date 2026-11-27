@@ -255,6 +255,22 @@ test('canceling cold startup cannot start playback after audio finally wakes', a
   assert.equal(e.scheduled.size, 0);
 });
 
+test('recording takes its timing snapshot only after the reference clock is ready, unless canceled',async()=>{
+  for(const cancel of [false,true]){
+    const e=engine(), armed=[];let resolve,plays=0;
+    const pending=new Promise(r=>{resolve=r;});
+    e.pendingReference=()=>pending;
+    e.beforeStart=()=>{armed.push(e.performanceId);return true;};
+    e.api={play(){plays++;},pause(){}};
+    const starting=e.startTransport();
+    assert.deepEqual(armed,[]);
+    if(cancel)e.pauseTransport();
+    e.performanceId='performance';resolve();await starting;
+    assert.deepEqual(armed,cancel?[]:['performance']);
+    assert.equal(plays,0,'the recorder owns the subsequent play gesture');
+  }
+});
+
 test('a first recording entrance can precede or follow the loop start; repeats return to the downbeat', async () => {
   for (const entry of [.5, 1.5]) {
     const e = engine();

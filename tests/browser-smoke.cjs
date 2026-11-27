@@ -116,9 +116,22 @@ async function main() {
     if ((!focused || process.env.QA_SINGER_REVIEW_ONLY) && fsSync.existsSync(path.join(__dirname,'browser-singer-review.cjs')))
       results.push({singerReview:await require('./browser-singer-review.cjs').checkSingerCollections(browser,temporary,output)});
     if (!focused || process.env.QA_REFERENCE_ONLY) results.push({referenceMix:await checkReferenceMix(browser,temporary,output)});
+    if (!focused || process.env.QA_REFERENCE_ONLY) results.push({referenceCache:await require('./browser-hosted-references.cjs').checkHostedReferences(browser,temporary)});
     if (!focused || process.env.QA_ROUTES_ONLY) results.push({practiceRoutes:await checkPracticeRoutes(browser,temporary,output)});
     for (const mobile of [false, true]) {
       if(process.env.QA_TABLET_ONLY)continue;
+      if (!focused || process.env.QA_SECTION_DRILLS_ONLY) {
+        const ctx = await newContext(mobile);
+        try {
+          const page = await ctx.newPage();
+          page.on('pageerror', e => errors.push(e.message));
+          await page.goto(origin);
+          await page.waitForFunction(() => window.__qa && !__qa.busy);
+          results.push({sectionDrills: await require('./browser-section-drills.cjs').checkSectionDrills(
+            page, [['Intro',1,1],['Verse',2,2],['Chorus',3,4]], {touch: mobile})});
+        } finally { await ctx.close(); }
+        if (process.env.QA_SECTION_DRILLS_ONLY) continue;
+      }
       if(!focused || process.env.QA_NOTE_STEP_ONLY){
         const ctx=await newContext(mobile);
         try{const tab=await ctx.newPage();tab.on('pageerror',e=>errors.push(e.message));

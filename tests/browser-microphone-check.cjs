@@ -21,6 +21,7 @@ async function checkMicrophone(frame, page, {output,label}) {
     devices.getUserMedia=async constraints=>{
       const t=window.micCheckTest;t.requests++;t.constraints=constraints;
       if(t.mode==='denied') throw new DOMException('Test permission denied','NotAllowedError');
+      if(t.mode==='missing') throw new DOMException('Test input removed','NotFoundError');
       if(t.mode==='pending') await new Promise(resolve=>{t.resolve=resolve;});
       const granted=await original(constraints);
       granted.getTracks().forEach(track=>track.stop());
@@ -46,6 +47,19 @@ async function checkMicrophone(frame, page, {output,label}) {
     const recovery=frame.locator('#micRecoveryDialog'),dismiss=()=>recovery.getByRole('button',{name:'Close microphone settings'}).click();
     assert.ok(await recovery.isVisible());assert.equal(await frame.evaluate(()=>micCheckTest.requests),0,'inspecting a meter never starts the mic');
     await dismiss();
+    await frame.evaluate(()=>{
+      const store=(window.__qa||window.__probe).takeStore;
+      micCheckTest.usage=store.usage;
+      store.usage=async()=>{throw new DOMException('Test site storage blocked','SecurityError');};
+    });
+    try {
+      await open();
+      await frame.waitForFunction(()=>(window.__qa||window.__probe).recording.notice.startsWith('Local storage unavailable.'));
+      assert.equal(await dialog.getAttribute('data-state'),'idle','a library failure must not report a hardware or permission failure on the mic meter');
+      assert.equal(await frame.evaluate(()=>micCheckTest.requests),0,'storage failed before the microphone was requested');
+    } finally {
+      await frame.evaluate(()=>{(window.__qa||window.__probe).takeStore.usage=micCheckTest.usage;});
+    }
     await open();await state('signal');
     assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).recording.microphone),true);
     assert.equal(await frame.evaluate(()=>(window.__qa||window.__probe).recording.pitch),'armed');
@@ -74,6 +88,9 @@ async function checkMicrophone(frame, page, {output,label}) {
 
     await open();await state('signal');await endInput();await state('error');
     assert.match(await frame.locator('#checkMicrophone').getAttribute('title'),/disconnected/);
+    await frame.evaluate(()=>micCheckTest.mode='missing');
+    await open();await state('error');
+    assert.match(await frame.locator('#checkMicrophone').getAttribute('title'),/Microphone unavailable/);
     await frame.evaluate(()=>micCheckTest.mode='denied');
     await open();await state('error');
     assert.match(await frame.locator('#checkMicrophone').getAttribute('title'),

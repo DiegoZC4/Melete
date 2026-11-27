@@ -40,3 +40,15 @@ test('duplicate system cues across parts are displayed once while retaining thei
   assert.equal(marks.length, 1);
   assert.deepEqual(marks[0].sources.map(source => source.track), [0, 1]);
 });
+
+test('written drills span to the next rehearsal mark or the end, never a generated chapter', () => {
+  assert.deepEqual([...tools.sections([{bar: 5, cue: 'rit.'}], 10)], []);
+  const sections = tools.sections([
+    {bar: 8, heading: 'A'}, {bar: 1, heading: ' A '}, {bar: 3, heading: 'B'},
+    {bar: 1, heading: 'A'}, {bar: 6, cue: 'rit.'}, {bar: 4, heading: ' '},
+    {bar: -1, heading: 'x'}, {bar: 9, heading: 'x'},
+  ], 9);
+  assert.deepEqual([...sections.values()], [
+    {first: 1, after: 3, label: 'A'}, {first: 3, after: 8, label: 'B'}, {first: 8, after: 9, label: 'A'},
+  ]);
+});

@@ -53,8 +53,8 @@ class AssetPool:
                 chunks.append(self.add("".join(pending)))
                 pending.clear()
 
-        def encode(item):
-            if isinstance(item, str) and len(item) >= 1024:
+        def encode(item, field=None, parent=None):
+            if isinstance(item, str) and (len(item) >= 1024 or (field == 'data' and parent == 'referenceAudio')):
                 flush()
                 chunks.append(self.add(script_json(item)))
             elif isinstance(item, dict):
@@ -63,7 +63,7 @@ class AssetPool:
                     if index:
                         pending.append(",")
                     pending.append(script_json(key) + ":")
-                    encode(child)
+                    encode(child, key, field)
                 pending.append("}")
             elif isinstance(item, list):
                 pending.append("[")
@@ -90,6 +90,8 @@ class PlayerChunks(HTMLParser):
         self.lines.extend(match.end() for match in re.finditer("\n", document))
         self.pending = None
         self.spans = []
+        self.named = {}
+        self.without_reference = None
 
     def source_offset(self):
         line, column = self.getpos()
@@ -102,7 +104,10 @@ class PlayerChunks(HTMLParser):
     def handle_endtag(self, tag):
         if self.pending and self.pending[0] == tag:
             _, attrs, start = self.pending
-            self.spans.append((start, self.source_offset(), attrs.get("type") == "application/json"))
+            end = self.source_offset()
+            self.spans.append((start, end, attrs.get("type") == "application/json"))
+            if tag == "script" and attrs.get("id"):
+                self.named[attrs["id"]] = (start, end)
             self.pending = None
 
     def chunks(self):
@@ -115,7 +120,12 @@ class PlayerChunks(HTMLParser):
             result.append(self.pool.add(self.document[cursor:start]))
             content = self.document[start:end]
             if is_json and content.strip():
-                result.extend(self.pool.json_chunks(json.loads(content)))
+                value = json.loads(content)
+                chunks = self.pool.json_chunks(value)
+                if self.named.get('trainer-config') == (start,end) and value.get('referenceAudio'):
+                    self.without_reference = [len(result), len(chunks),
+                        self.pool.json_chunks({k:v for k,v in value.items() if k != 'referenceAudio'})]
+                result.extend(chunks)
             elif content.startswith("\n" + self.pool.inflater + "\n"):
                 # The loader and player use the very same bundled fflate source.
                 result.extend(self.pool.add(part) for part in
@@ -145,9 +155,11 @@ def pack_players(songs, *, title="Melete Collection", download_name="melete-coll
         ids.add(song_id)
         document = song["html"]
         original_bytes += len(document.encode("utf-8"))
-        chunks = PlayerChunks(document, pool).chunks()
-        manifest["songs"].append({"id": song_id, "title": song["title"],
-                                  "icon": song.get("icon", ""), "chunks": chunks})
+        parser = PlayerChunks(document,pool)
+        item = {"id":song_id,"title":song["title"],"icon":song.get("icon",""),"chunks":parser.chunks()}
+        if parser.without_reference:
+            item['withoutReference'] = parser.without_reference
+        manifest["songs"].append(item)
     manifest["sizes"] = {"standaloneBytes": original_bytes,
                          "uniqueBytes": sum(pool.raw_bytes.values()),
                          "assetCount": len(pool.assets)}

@@ -31,6 +31,13 @@
 !/examples/
 !/tools/
 /tools/*
+!/tools/prepare_performance.py
+!/tools/alignment_editor/
+/tools/alignment_editor/*
+!/tools/alignment_editor/*.js
+!/tools/alignment_editor/editor.css
+!/tools/alignment_editor/index.html
+!/tools/alignment_editor/README.md
 !/tools/local_station/
 !/tools/build_song_vowel_map.py
 !/tools/vowel-lab-routes.htaccess
@@ -70,6 +77,7 @@ auditions/scores/
 *.mscx
 *.pdf
 *.mp3
+!tests/fixtures/stereo-reference-24k.mp3
 *.wav
 *.flac
 station-roster.json

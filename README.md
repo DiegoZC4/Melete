@@ -25,8 +25,9 @@ WASAPI host, devices and calibration. It must not substitute different UI
 templates, table behavior or controls. The native adapter is already included
 in the common build and activates only when the local host supplies it.
 
-Build and validate a release once, then publish and install that same artifact.
-Compare its SHA-256 against `release.json` when checking website/laptop parity.
+Build and validate a release once. In `release.json`, the top-level digest
+identifies the self-contained station file; `hosted`, when present, identifies
+the equivalent web page and its reference recordings. They use the same UI.
 Separate checkouts and previews are development tools; they must not become
 independently maintained laptop and website products. Recordings, private roster
 and audio calibration remain outside the shared release.
@@ -64,9 +65,38 @@ a browser. It is the only file singers need, not the whole generated folder.
 
 **Offline iPad/Home Screen use:** For a hosted player, first run
 `python3 offline_player.py path/to/dist/index.html --output-dir hosted`.
-Serve the matching `hosted/index.html`, `hosted/release.json` and `hosted/melete-offline.js` together in
-their own HTTPS directory. A single downloadable HTML file is not by itself an
-offline installation of a web address.
+Serve the entire output directory together over HTTPS. Aligned reference MP3s
+go in `media/<sha256>.mp3`, byte-for-byte unchanged. The first install verifies
+every song's audio before it reports ready. A change to just the GUI reuses
+the verified MP3s without another audio request. Do not remove old hashed files
+while clients may still use that release. Publish the manifest last.
+
+**Tools → Download** saves one self-contained practice file with MIDI, scores,
+settings and annotations. Original recordings are **not** included by default.
+Check **Include reference recordings** in the download dialog to embed them
+for all songs, even when saving from an offline installation. Neither option
+exports singers' takes. The station updater still uses the complete
+`melete-portable.html`, without a service worker.
+
+**Original performance timing:** To follow rubato, build the score first, then
+run `python3 tools/prepare_performance.py --playback path/to/assets/playback.json
+--alignment alignment.json --audio source.flac --output performance.mp3`
+(requires FFmpeg and ffprobe). The alignment JSON gives the source file's
+SHA-256, the score division, a list of measures with tick, meter and start
+time, and a `time_map.final_release` in source seconds. By default only the
+reviewed barlines set the pulse: notes and clicks divide each bar in written
+proportions. Optional `--beat-groups groups.json` (e.g. `{"7/4":[3,4]}`)
+adds group downbeats, using a measured onset at that exact tick when available,
+otherwise its proportional position. Automated syllable attacks never bend the
+timing between primary handles. A reviewed editor export can be installed with
+`--review song-reviewed-anchors.json`; only the individual onsets the editor
+explicitly pinned become additional anchors. A printed rest after the final
+vocal release elapses in silence. Set
+`"referenceAudio": {"path": "performance.mp3"}` in the song's config and rebuild.
+With **Ref** on, MIDI, click and cursor follow the unwarped recording; Ref off
+uses the written score. Practice speed scales the chosen timeline. Takes
+recorded on one timeline are reviewed and comped on that same timeline.
+Legacy pre-aligned MP3s with no performance map keep their written timing.
 
 Open the existing Home Screen icon once while online. The app verifies its copy
 silently, including all songs and embedded score assets. For confirmation, use
@@ -537,6 +567,9 @@ optional and is not installed or needed on other machines.
   track or history entry plays; there is no normal unused-takes table. Failed saves,
   processing failures and interrupted recordings retain a recovery surface.
   The optional audition mode still exposes its individual-take workflow.
+- In Pitchbar, tap a boxed rehearsal letter (or focus it and press Enter) to
+  cue that section as a loop. Press Play to practice from its downbeat through
+  the bar before the next letter; the last letter runs to the end of the score.
 - The pitchbar and top playbar include a permanent lead-in before measure 1.
   Seek into it to record or replay early consonants; recording otherwise starts
   wherever the playhead is. The ordinary metronome volume controls all clicks,

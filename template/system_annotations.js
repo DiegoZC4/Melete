@@ -40,6 +40,17 @@ const systemAnnotationTools = (() => {
     return [...marks.values()];
   }
 
+  function sections(marks, measureCount) {
+    // Use the same heading as the printed master bar. Transport chapters can
+    // instead be editorial lyric cues or automatic four-bar navigation stops.
+    const headings = new Map();
+    for (const {bar, heading} of marks) {
+      if (Number.isInteger(bar) && bar >= 0 && bar < measureCount && heading?.trim()) headings.set(bar, heading.trim());
+    }
+    const starts = [...headings.keys()].sort((a,b) => a-b);
+    return new Map(starts.map((first,i) => [first, {first, after: starts[i+1] ?? measureCount, label: headings.get(first)}]));
+  }
+
   function installRhythmCues(alphaTab) {
     if (rhythmInstalled) return;
     rhythmInstalled = true;
@@ -161,20 +172,23 @@ const systemAnnotationTools = (() => {
       settings.display.effectBandPaddingBottom = 6;
     };
   }
-  return { create, fromXml };
+  return { create, fromXml, sections };
 })();
 
 if (typeof module === 'object' && module.exports) module.exports = systemAnnotationTools;
 let systemAnnotationScore = null;
 let updateSystemAnnotations = null;
+let cachedSystemAnnotations;
+function writtenSystemAnnotations() {
+  return cachedSystemAnnotations ??= config.systemAnnotations ?? systemAnnotationTools.fromXml(
+    new DOMParser().parseFromString(fullScoreXml, 'application/xml'));
+}
 function prepareSystemAnnotations(tracks = scoreTracks.filter((_, index) => visibleTracks.has(index))) {
   const score = scoreTracks[0]?.score;
   if (!score || !api) return;
   if (score !== systemAnnotationScore) {
     systemAnnotationScore = score;
-    const annotations = config.systemAnnotations ?? systemAnnotationTools.fromXml(
-      new DOMParser().parseFromString(fullScoreXml, 'application/xml'));
-    updateSystemAnnotations = systemAnnotationTools.create(window.alphaTab, score, annotations, sequence.division);
+    updateSystemAnnotations = systemAnnotationTools.create(window.alphaTab, score, writtenSystemAnnotations(), sequence.division);
   }
   updateSystemAnnotations(tracks, api.settings);
 }

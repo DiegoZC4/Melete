@@ -370,8 +370,13 @@ async function checkPitchTraceResolution(frame, page, {probe='__qa', reload, out
       if(output)await page.screenshot({path:path.join(output,`octave-${label}-${offset}.png`)});
     }
     await frame.evaluate(name=>window[name].pitchResolution.seedOctave('crossing'),probe);
-    const crossing=frame.locator('#barScore .bar-pitch-trace-edge line[stroke^="url("]').first();
-    const witness=await crossing.evaluate(snapshotEdge);
+    // The pitch range change replaces the SVG on the next paint. Read the
+    // connected gradient edge after layout, not an edge from the previous SVG.
+    const edgeSelector='#barScore .bar-pitch-trace-edge line[stroke^="url("]';
+    await frame.waitForFunction(({name,selector})=>!window[name].busy&&
+      [...document.querySelectorAll(selector)].some(el=>el.getBoundingClientRect().height>0),
+      {name:probe,selector:edgeSelector});
+    const witness=await frame.locator(edgeSelector+':visible').first().evaluate(snapshotEdge);
     const {bands,colors}=await frame.evaluate(rasterEdge,witness);
     assert.ok(bands>=5 && colors[6][1]>245 && colors[6][0]<16,'a live sharp/flat crossing must visibly pass through green');
     const oldTrace=await frame.evaluate(name=>window[name].pitchResolution.seedOldMovingOnset(),probe);

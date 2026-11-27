@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Timing editor · Melete</title><link rel="stylesheet" href="editor.css">
+<script defer src="icons.js"></script><script defer src="beat-editor.js"></script><script defer src="synth.js"></script>
+<script defer src="model.js"></script><script defer src="transport.js"></script><script defer src="editor.js"></script></head>
+<body><main>
+<header><div class="identity"><i data-lucide="audio-lines"></i><h1>Timing editor</h1><span>Melete</span></div>
+<nav id="songs" aria-label="Performance" role="tablist"></nav>
+<div class="actions"><button id="undo" title="Undo" aria-label="Undo"><i data-lucide="undo-2"></i></button><button id="redo" title="Redo" aria-label="Redo"><i data-lucide="redo-2"></i></button>
+<button id="export" title="Export timing JSON" aria-label="Export timing JSON"><i data-lucide="download"></i></button><button id="apply" class="primary" disabled><i data-lucide="check"></i>Apply to Melete</button></div></header>
+<section id="score" role="tabpanel" aria-label="Performance alignment">
+<div class="transport"><div class="group"><button id="play" class="play" aria-label="Play" title="Play / pause"><i data-lucide="play"></i></button>
+<output id="clock">0:00.00</output><button id="loop" aria-pressed="false" title="Loop selected measure" aria-label="Loop selected measure"><i data-lucide="repeat-2"></i></button>
+<label>Measure <select id="measure"></select></label></div>
+<div class="group mix" aria-label="Audible layers"><button id="recording" aria-pressed="true">Recording</button><button id="midi" aria-pressed="true">MIDI</button><button id="click" aria-pressed="false">Click</button>
+<label><span class="sr">Voice part</span><select id="part"></select></label>
+<label class="balance" title="Recording / MIDI balance">Mix<input id="balance" aria-label="Recording / MIDI balance" type="range" min="0" max="100" value="33"></label></div>
+<div class="group zoom"><button id="out" title="Zoom out" aria-label="Zoom out"><i data-lucide="zoom-out"></i></button><button id="in" title="Zoom in" aria-label="Zoom in"><i data-lucide="zoom-in"></i></button><button id="fit" title="Fit selected measure" aria-label="Fit selected measure"><i data-lucide="scan"></i></button></div></div>
+<div class="sectionline"><h2>Pitchbars</h2><div id="legend"></div><label class="switch"><input id="onsets" type="checkbox">Note handles</label></div>
+<div id="timeline" aria-label="Score and original recording"><canvas id="plot" aria-label="Written pitches above the original waveform"></canvas><div id="handles"></div><div id="cursor"></div></div>
+<div class="overview-label"><h2>Recording</h2><span id="viewTime"></span></div>
+<canvas id="overview" aria-label="Navigate recording" role="slider" tabindex="0" aria-valuemin="0"></canvas>
+<footer><div class="selection"><strong id="selected">Downbeat</strong><output id="time"></output>
+<button id="earlier" title="10 milliseconds earlier" aria-label="10 milliseconds earlier"><i data-lucide="chevron-left"></i></button>
+<button id="later" title="10 milliseconds later" aria-label="10 milliseconds later"><i data-lucide="chevron-right"></i></button>
+<button id="reset" title="Reset selected handle" aria-label="Reset selected handle"><i data-lucide="rotate-ccw"></i></button></div>
+<span id="status" role="status"></span></footer>
+</section></main></body></html>

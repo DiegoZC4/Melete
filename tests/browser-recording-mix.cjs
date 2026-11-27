@@ -12,7 +12,7 @@ async function checkRecordingMix(page, frame, {output,label}) {
   if(await toolsToggle.count()&&await toolsToggle.getAttribute('aria-expanded')==='false')await toolsToggle.click();
   const toolColumns=await frame.locator('.tools-group').evaluate(el=>getComputedStyle(el).gridTemplateColumns.split(' ').length);
   assert.equal(toolColumns,2,'Tools retains the two-column arrangement on phones too');
-  assert.equal(await frame.locator('#practicePart').evaluate(el=>el.hidden),false);
+  assert.equal(await frame.locator('#practicePart').isVisible(),false,'ordinary practice follows Parts > See without a second selector');
   assert.equal(await frame.locator('#takeTitle').textContent(),'Record');
   assert.equal(await frame.locator('#downloadTakes').count(),0);
   assert.equal(await frame.locator('#compView [data-take-sort="start"], #compView [data-take-sort="end"]').count(),0);

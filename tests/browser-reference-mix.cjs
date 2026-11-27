@@ -41,18 +41,19 @@ async function checkReferenceMix(browser,temporary,output) {
       assert.equal(await page.evaluate(()=>__refQA.engine.referenceLayers.size),0,'reference is lazy and off by default');
       const before=await page.evaluate(()=>__refQA.state);
       await hear.click();
-      await page.waitForFunction(()=>__refQA.engine.referenceLayers.get('reference:original')?.stretchNode);
+      await page.waitForFunction(()=>__refQA.engine.referenceLayers.get('reference:original')?.buffer);
       assert.equal(await page.evaluate(()=>__refQA.engine.takeLayers.size),0,'reference is not a saved take');
       await page.evaluate(()=>{
         const e=__refQA.engine;e.updateMix(new Set(),[],[]);
         const meter=e.context.createAnalyser();meter.fftSize=8192;e.master.connect(meter);__refQA.meter=meter;
         __refQA.rms=()=>{const a=new Float32Array(meter.fftSize);meter.getFloatTimeDomainData(a);return Math.sqrt(a.reduce((s,x)=>s+x*x,0)/a.length);};
-        const layer=e.referenceLayers.get('reference:original'), start=layer.stretchNode.start.bind(layer.stretchNode);
-        __refQA.starts=[];layer.stretchNode.start=o=>{__refQA.starts.push(o);return start(o);};
+        const make=MeleteTakeStretch.create;__refQA.starts=[];
+        MeleteTakeStretch.create=async(...args)=>{const n=await make(...args),start=n.start.bind(n);
+          n.start=o=>{__refQA.starts.push(o);return start(o);};return n;};
       });
       await page.locator('#playPause').click();
       await page.waitForFunction(()=>__refQA.rms()>.02);
-      assert.equal(await page.evaluate(()=>__refQA.starts.at(-1).semitones),0);
+      assert.equal(await page.evaluate(()=>__refQA.engine.referenceLayers.get('reference:original').source instanceof AudioBufferSourceNode),true,'normal speed needs no worklet');
       await page.evaluate(()=>__refQA.engine.setRate(.75));
       await page.waitForFunction(()=>__refQA.starts.at(-1)?.rate===.75);
       assert.equal(await page.evaluate(()=>__refQA.starts.at(-1).semitones),0,'speed does not transpose the recording');

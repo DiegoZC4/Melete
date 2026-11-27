@@ -1220,7 +1220,7 @@ console.log(JSON.stringify({{
         self.assertIn("if (hasLoop && first + offset === loopEndMeasure) {", app)
         # The closing sign closes the measure, so it stands on that measure's
         # far barline rather than beside its number.
-        self.assertIn("svg.append(pitchBarRepeatSign(xAtTick(loopRange.end) - 1, 11, repeatSignHeight, -1).group);", app)
+        self.assertIn("svg.append(pitchBarRepeatSign(xAtTick(loopRange.end) - 1, headerBaseline, repeatSignHeight, -1).group);", app)
 
         start = app.index("  function pitchBarRepeatSign")
         end = app.index("\n  }", start) + len("\n  }")

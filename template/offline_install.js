@@ -6,6 +6,23 @@
   if (["localhost","127.0.0.1","[::1]"].includes(location.hostname) && location.port==="18746") return;
   const build = "__MELETE_BUILD__", base = new URL("./", location.href);
   const workerURL = new URL("melete-offline.js", base).href;
+  window.MeleteHostedMedia = {
+    async read(ref) {
+      if (!/^[a-f0-9]{64}$/.test(ref?.mp3) || !Number.isSafeInteger(ref.bytes) || ref.bytes <= 0)
+        throw Error("Invalid reference recording");
+      const response = await fetch(new URL("media/" + ref.mp3 + ".mp3", base), {redirect:"error"});
+      if (response.status !== 200) throw Error("Reference recording unavailable");
+      const data = new Uint8Array(await response.arrayBuffer());
+      const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", data)), b=>b.toString(16).padStart(2,"0")).join("");
+      if (data.length !== ref.bytes || hash !== ref.mp3) throw Error("Incomplete reference recording");
+      return data;
+    },
+    base64(bytes) {
+      const chunks = [];
+      for (let i=0; i<bytes.length; i+=32768) chunks.push(String.fromCharCode(...bytes.subarray(i,i+32768)));
+      return btoa(chunks.join(""));
+    }
+  };
   const buttons = new Set();
   let state = "saving", reg, pending, lastCheck = 0, checkNumber = 0;
   const copy = {

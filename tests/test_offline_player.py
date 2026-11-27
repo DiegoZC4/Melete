@@ -1,4 +1,5 @@
 import hashlib
+import base64
 import json
 import struct
 import zlib
@@ -6,10 +7,36 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from offline_player import MARKER, TOUCH_ICON, WORKER, hosted_files, write_hosted
+from offline_player import MARKER, TOUCH_ICON, WORKER, PORTABLE, hosted_files, write_hosted, spans
+from collection import pack_players, script_json
 
 
 class OfflinePlayerTests(unittest.TestCase):
+    def test_only_reference_is_split_and_portable_is_byte_exact(self):
+        clip=(Path(__file__).parent/'fixtures/stereo-reference-24k.mp3').read_bytes()
+        def song(raw):
+            cfg={'referenceAudio':{'mime':'audio/mpeg','data':base64.b64encode(raw).decode()},'partsPdf':'untouched'}
+            return ('<!doctype html><html><head><title>Melete</title></head><body>'
+                    '<script id="trainer-config" type="application/json">'+script_json(cfg)+'</script>'
+                    '<script id="playback-data" type="application/json">{}</script><script>void window.MeleteHostedMedia;</script></body></html>')
+        sha=hashlib.sha256(clip).hexdigest()
+        one=song(clip); f=hosted_files(one); manifest=json.loads(f['release.json'])
+        self.assertEqual(f[PORTABLE],one.encode())
+        self.assertEqual(f['media/'+sha+'.mp3'],clip)
+        self.assertNotIn(base64.b64encode(clip),f['index.html'])
+        self.assertEqual(manifest['sha256'],hashlib.sha256(f[PORTABLE]).hexdigest())
+        self.assertEqual(manifest['hosted']['sha256'],hashlib.sha256(f['index.html']).hexdigest())
+        self.assertEqual(manifest['hosted']['media'],[{'mp3':sha,'bytes':len(clip)}])
+        bundle,inflater=pack_players([dict(id=i,title=i,html=one) for i in ['first','second']])
+        multi=('<html><head></head><body><script id="melete-collection-data" type="application/json">'+script_json(bundle)+
+               '</script><script id="melete-collection-inflater">'+inflater+'</script><script>void window.MeleteHostedMedia</script></body></html>')
+        f=hosted_files(multi)
+        self.assertEqual(f[PORTABLE],multi.encode())
+        self.assertEqual([k for k in f if k.startswith('media/')],['media/'+sha+'.mp3'])
+        html=f['index.html'].decode();i,j=spans(html)['melete-collection-data'];stored=json.loads(html[i:j])
+        self.assertEqual(sum(isinstance(v,dict) for v in stored['assets'].values()),1)
+        self.assertNotIn(base64.b64encode(clip[:60]),f['index.html'])
+
     def test_touch_icon_is_opt_in_and_versions_the_hosted_release(self):
         def png(level):
             def chunk(kind,data):

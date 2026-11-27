@@ -30,7 +30,8 @@
   const decoded = new Map();
   const decode = key => {
     if (!decoded.has(key)) {
-      const text = key === bundle.inflater
+      const asset = bundle.assets[key];
+      const text = asset?.mp3 ? JSON.stringify(asset) : key === bundle.inflater
         ? document.getElementById("melete-collection-inflater").textContent
         : new TextDecoder().decode(fflate.unzlibSync(Uint8Array.from(atob(bundle.assets[key]), c => c.charCodeAt(0))));
       decoded.set(key, text);
@@ -170,7 +171,7 @@
     save.id = "saveCollection";
     save.title = `Save all ${songs.length} songs with current settings and annotations for offline practice`;
     save.setAttribute("aria-label", save.title);
-    save.addEventListener("click", saveCollection);
+    save.addEventListener("click", e=>child.defaultView.MeleteReferenceAudio.chooseDownload(e,songs.some(s=>s.withoutReference),saveCollection));
     download.replaceWith(save);
     window.MeleteOfflinePlayer?.mount(child);
     paint(player);
@@ -336,11 +337,10 @@
     if (detail.error || !detail.state) throw Error(detail.error || `Could not export ${songs[index].title}'s settings.`);
     return detail.state;
   }
-  async function saveCollection(event) {
-    event.preventDefault();
+  async function saveCollection(button,includeReferences) {
     if (saving) return;
     saving = true;
-    const button = event.currentTarget, child = button.ownerDocument;
+    const child = button.ownerDocument;
     button.setAttribute("aria-busy", "true");
     try {
       let handle = null;
@@ -350,10 +350,26 @@
         } catch (error) { if (error.name === "AbortError") return; }
       }
       const exportedSongs = [];
-      for (const [index, song] of songs.entries()) exportedSongs.push({...song, portableState: await songState(index)});
+      for (const [index, song] of songs.entries()) {
+        const item={...song,chunks:[...song.chunks],portableState:await songState(index)};
+        if(!includeReferences && item.withoutReference) {
+          const [start,count,keys]=item.withoutReference;
+          item.chunks.splice(start,count,...keys);
+          delete item.withoutReference;
+        }
+        exportedSongs.push(item);
+      }
       const outputDocument = new DOMParser().parseFromString(source, "text/html");
       outputDocument.getElementById("melete-offline-install")?.remove();
-      outputDocument.getElementById("melete-collection-data").textContent = scriptJson({...bundle, songs: exportedSongs});
+      outputDocument.querySelector('link[rel="apple-touch-icon"]')?.remove();
+      const used=new Set([bundle.inflater,...exportedSongs.flatMap(s=>[...s.chunks,...(s.withoutReference?.[2]||[])])]);
+      const assets = Object.fromEntries([...used].map(key=>[key,bundle.assets[key]])), media = window.MeleteHostedMedia;
+      for (const [key, ref] of Object.entries(assets)) {
+        if (!ref?.mp3) continue;
+        const encoded = media.base64(await media.read(ref));
+        assets[key] = media.base64(fflate.zlibSync(fflate.strToU8(JSON.stringify(encoded))));
+      }
+      outputDocument.getElementById("melete-collection-data").textContent = scriptJson({...bundle, assets, songs: exportedSongs});
       const blob = new Blob(["<!doctype html>\n" + outputDocument.documentElement.outerHTML], {type: "text/html;charset=utf-8"});
       if (handle) {
         const writable = await handle.createWritable();

@@ -291,6 +291,7 @@
                 <div class="take-review" id="takeReviewTable" tabindex="0" role="region" aria-label="Saved takes"><div class="take-review-content">
                   <button class="take-command" id="retryTakeSave" type="button" hidden>Retry save</button>
                   <div id="compView">
+                    <button type="button" id="otherClockTakes" class="take-command" title="Switch playback timing to review recordings made at the other tempo" hidden></button>
                     <div class="take-columns comp-columns" id="takeColumns">
                       <span><button type="button" data-take-sort="number">Take</button></span><span class="take-singer-heading"><button type="button" data-take-sort="singer">Singer</button></span><span><button type="button" data-take-sort="part">Part</button></span>
                       <span title="Tracked singing divided by all written singing in the song; rests excluded"><button type="button" data-take-sort="tracked">Tracked (%)</button></span>
@@ -378,6 +379,12 @@
 
     {{EXPERIMENTAL_VOWEL_PANEL}}
 
+    <dialog id="portableDownloadDialog" class="comp-cloud-dialog" aria-labelledby="portableDownloadTitle">
+      <form method="dialog"><h2 id="portableDownloadTitle">Download player</h2>
+        <label><input id="portableReferences" type="checkbox"> Include reference recordings</label>
+        <div class="comp-cloud-actions"><button type="button" value="cancel">Cancel</button><button type="submit">Download</button></div>
+      </form>
+    </dialog>
     <dialog id="takeDistributionDialog" class="comp-cloud-dialog" aria-labelledby="distributionTitle">
       <form method="dialog"><strong id="distributionTitle">Intonation distribution</strong><button aria-label="Close intonation distribution">Close</button></form>
       <p class="distribution-take"></p>
